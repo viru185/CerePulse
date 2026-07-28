@@ -1,0 +1,24 @@
+<!--
+  Synthetic stand-in for the populated leave register. Reproduces the real quirks: an
+  undated summary row per leave type, single-cell section separators, and the comp-off type
+  labelled "CO- / CO+".
+-->
+<html>
+<body>
+  <table id="ctl00_BodyContentPlaceHolder_GridView2">
+    <tr>
+      <th>+/-</th><th>User Leave Type</th><th>Opening Balance</th><th>Consumed Days</th>
+      <th>Credit Days</th><th>Available Balance</th><th>Transaction Date</th><th>Remark</th>
+    </tr>
+    <tr><td>+</td><td>PL</td><td>0.00</td><td>0</td><td>6.00</td><td>6.00</td><td></td><td></td></tr>
+    <tr><td></td><td>Muster Data</td></tr>
+    <tr><td></td><td>PL</td><td>0.00</td><td></td><td>1.50</td><td>1.50</td>
+        <td>30-Apr-26 Thu</td><td>[Adjustment] Monthly Incr Added</td></tr>
+    <tr><td></td><td>PL</td><td>1.50</td><td></td><td>1.50</td><td>3.00</td>
+        <td>31-May-26 Sun</td><td>[Adjustment] Monthly Incr Added</td></tr>
+    <tr><td>+</td><td>CO- / CO+</td><td>0.00</td><td>0</td><td>2.00</td><td>2.00</td><td></td><td></td></tr>
+    <tr><td>+</td><td>CF</td><td>3.00</td><td>0</td><td>0.00</td><td>3.00</td><td></td><td></td></tr>
+    <tr><td>+</td><td>ML</td><td>0.00</td><td>0</td><td>0.00</td><td>0.00</td><td></td><td></td></tr>
+  </table>
+</body>
+</html>
