@@ -1,0 +1,24 @@
+<!-- H — Day arc. The working day drawn as a sun path from clock-in to clock-out, with a
+     filled marker showing how far along you are. Says "where you are in your day" without
+     any letter or medical metaphor. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/><stop offset="100%" stop-color="#34D399"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#0E0E10"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="none" stroke="#1F1F23" stroke-width="4"/>
+
+  <!-- The whole day. -->
+  <path d="M 46 176 A 82 82 0 0 1 210 176" fill="none" stroke="#1F1F23" stroke-width="20"
+        stroke-linecap="round"/>
+  <!-- Elapsed so far, ending at the marker. -->
+  <path d="M 46 176 A 82 82 0 0 1 150 99" fill="none" stroke="url(#g)" stroke-width="20"
+        stroke-linecap="round"/>
+  <!-- You are here. -->
+  <circle cx="150" cy="99" r="20" fill="#0E0E10"/>
+  <circle cx="150" cy="99" r="13" fill="url(#g)"/>
+  <!-- The ground: clock-in on the left, clock-out on the right. -->
+  <path d="M 40 206 H 216" fill="none" stroke="url(#g)" stroke-width="16" stroke-linecap="round"/>
+</svg>

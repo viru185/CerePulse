@@ -1,0 +1,22 @@
+<!-- G — Pulse ring. The ring is the working day and the gap is what is left of it; the
+     heartbeat is cut into the stroke itself rather than sitting inside. Rings hold their
+     shape at 16px better than any letterform. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/><stop offset="100%" stop-color="#34D399"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#0E0E10"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="none" stroke="#1F1F23" stroke-width="4"/>
+
+  <!-- The day not yet worked. -->
+  <circle cx="128" cy="128" r="72" fill="none" stroke="#1F1F23" stroke-width="24"/>
+  <!-- The day so far: three quarters round, starting at the top. -->
+  <path d="M 128 56 A 72 72 0 1 1 56 128"
+        fill="none" stroke="url(#g)" stroke-width="24" stroke-linecap="round"/>
+  <!-- The pulse, struck through the middle. -->
+  <path d="M 74 128 H 100 L 114 96 L 132 160 L 146 128 H 182"
+        fill="none" stroke="url(#g)" stroke-width="15"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

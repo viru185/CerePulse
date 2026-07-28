@@ -1,0 +1,24 @@
+<!-- K — Exit. The literal question the app answers: when can you leave. A doorway with an
+     arrow heading out, the arrow's shaft drawn as a pulse. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/><stop offset="100%" stop-color="#34D399"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#0E0E10"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="none" stroke="#1F1F23" stroke-width="4"/>
+
+  <!-- The doorway, open on the side you leave by. -->
+  <path d="M 148 54 H 74 A 12 12 0 0 0 62 66 V 190 A 12 12 0 0 0 74 202 H 148"
+        fill="none" stroke="url(#g)" stroke-width="20"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Heading out, with a heartbeat in the shaft. -->
+  <path d="M 104 128 H 126 L 138 100 L 152 156 L 162 128 H 190"
+        fill="none" stroke="url(#g)" stroke-width="16"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 172 104 L 200 128 L 172 152"
+        fill="none" stroke="url(#g)" stroke-width="20"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

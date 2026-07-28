@@ -1,0 +1,25 @@
+<!-- I — Segments. The app's own signature widget as the mark: work blocks in aqua, break
+     gaps in amber, drawn to scale. Nothing else looks like it, and horizontal bars survive
+     16px better than any other shape here. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/><stop offset="100%" stop-color="#34D399"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#0E0E10"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="none" stroke="#1F1F23" stroke-width="4"/>
+
+  <!-- Morning: the long stretch before lunch. -->
+  <rect x="40" y="70" width="130" height="34" rx="17" fill="url(#g)"/>
+  <!-- The break. -->
+  <rect x="182" y="70" width="34" height="34" rx="17" fill="#F59E0B"/>
+
+  <!-- Afternoon. -->
+  <rect x="40" y="122" width="60" height="34" rx="17" fill="url(#g)"/>
+  <rect x="112" y="122" width="104" height="34" rx="17" fill="url(#g)"/>
+
+  <!-- What is left of the target. -->
+  <rect x="40" y="174" width="96" height="34" rx="17" fill="url(#g)"/>
+  <rect x="148" y="174" width="68" height="34" rx="17" fill="#1F1F23"/>
+</svg>
