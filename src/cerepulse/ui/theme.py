@@ -129,6 +129,12 @@ def stylesheet(palette: Palette) -> str:
         font-size: 13px;
     }}
 
+    /* Labels inherit the QWidget background rule, which paints an opaque box over
+       whatever card they sit on. They must be transparent to read as text. */
+    QLabel, QCheckBox {{
+        background: transparent;
+    }}
+
     /* --- shell ------------------------------------------------------------- */
 
     #Sidebar {{

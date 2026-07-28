@@ -6,7 +6,7 @@ and so every screen renders a duration or a clock time identically.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from cerepulse.models.values import Duration
 
@@ -16,6 +16,13 @@ EMPTY = "—"
 
 def clock(moment: datetime | None) -> str:
     """``6:24 PM``. Windows has no %-I, so the leading zero is stripped by hand."""
+    if moment is None:
+        return EMPTY
+    return moment.strftime("%I:%M %p").lstrip("0")
+
+
+def clock_time(moment: time | None) -> str:
+    """As :func:`clock`, for a bare time-of-day."""
     if moment is None:
         return EMPTY
     return moment.strftime("%I:%M %p").lstrip("0")

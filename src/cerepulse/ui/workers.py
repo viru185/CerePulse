@@ -40,7 +40,11 @@ class Task(QRunnable):
         self.name = name
         self._operation = operation
         self.signals = TaskSignals()
-        self.setAutoDelete(True)
+        # Auto-delete would destroy this runnable — and the QObject carrying its signals —
+        # as soon as run() returns, which can happen before the queued callbacks are
+        # delivered to the GUI thread. TaskRunner holds the reference instead and drops it
+        # once `finished` has actually arrived.
+        self.setAutoDelete(False)
 
     @Slot()
     def run(self) -> None:
@@ -74,6 +78,8 @@ class TaskRunner(QObject):
         # See the module docstring: concurrent postbacks would corrupt page state.
         self._pool.setMaxThreadCount(1)
         self._in_flight = 0
+        #: Keeps each task alive until its signals have been delivered.
+        self._active: set[Task] = set()
 
     @property
     def busy(self) -> bool:
@@ -93,9 +99,10 @@ class TaskRunner(QObject):
             task.signals.succeeded.connect(on_success)
         if on_error is not None:
             task.signals.failed.connect(on_error)
-        task.signals.finished.connect(self._task_finished)
+        task.signals.finished.connect(lambda: self._task_finished(task))
 
         self._in_flight += 1
+        self._active.add(task)
         if self._in_flight == 1:
             self.busy_changed.emit(True)
 
@@ -103,7 +110,8 @@ class TaskRunner(QObject):
         return task
 
     @Slot()
-    def _task_finished(self) -> None:
+    def _task_finished(self, task: Task) -> None:
+        self._active.discard(task)
         self._in_flight = max(0, self._in_flight - 1)
         if self._in_flight == 0:
             self.busy_changed.emit(False)
