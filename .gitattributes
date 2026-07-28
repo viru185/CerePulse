@@ -1,0 +1,23 @@
+# Normalize line endings in the repository; check out native on Windows.
+* text=auto
+
+*.py    text diff=python
+*.toml  text
+*.md    text
+*.yml   text
+*.yaml  text
+*.js    text
+*.html  text
+*.qss   text
+
+# Keep shell scripts LF even on Windows — CI runners execute them.
+*.sh    text eol=lf
+
+# Binary assets: never touch.
+*.png   binary
+*.ico   binary
+*.gif   binary
+*.jpg   binary
+*.dll   binary
+*.exe   binary
+uv.lock text -diff
