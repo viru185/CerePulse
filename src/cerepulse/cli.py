@@ -49,6 +49,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("paths", help="Print resolved data directories and exit.")
 
+    sync = sub.add_parser(
+        "sync",
+        help="Sign in and refresh the local cache without opening a window.",
+    )
+    sync.add_argument("--year", type=int, default=None, help="Year to sync (default: today).")
+    sync.add_argument("--month", type=int, default=None, help="Month to sync (default: today).")
+    sync.add_argument(
+        "--secrets",
+        default=".secrets.toml",
+        help="TOML file holding portal credentials (default: .secrets.toml).",
+    )
+    sync.add_argument(
+        "--no-backfill",
+        action="store_true",
+        help="Skip fetching per-day punch detail.",
+    )
+
     return parser
 
 
@@ -63,6 +80,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         from cerepulse.capture import run_capture
 
         return run_capture(out_dir=args.out, secrets_path=args.secrets, config=config)
+
+    if args.command == "sync":
+        from cerepulse.headless import run_sync
+
+        return run_sync(
+            config=config,
+            secrets_path=args.secrets,
+            year=args.year,
+            month=args.month,
+            backfill=not args.no_backfill,
+        )
 
     if args.command == "paths":
         print(f"data root:  {paths.data_root()}")

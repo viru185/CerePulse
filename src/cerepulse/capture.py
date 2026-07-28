@@ -102,7 +102,7 @@ class PageReport:
 def run_capture(*, out_dir: str, secrets_path: str, config: AppConfig) -> int:
     """Entry point for ``cerepulse capture``. Returns a process exit code."""
     try:
-        username, password = _resolve_credentials(Path(secrets_path), config)
+        username, password = resolve_credentials(Path(secrets_path), config)
     except MissingCredentialsError as exc:
         # Printed rather than logged: this is setup guidance, and the log redaction
         # filter would (correctly, but unhelpfully) scrub the example password line.
@@ -363,7 +363,7 @@ def _capture_day_detail(
 # --- credentials ----------------------------------------------------------------------
 
 
-def _resolve_credentials(secrets_path: Path, config: AppConfig) -> tuple[str, str]:
+def resolve_credentials(secrets_path: Path, config: AppConfig) -> tuple[str, str]:
     """Resolve credentials from the secrets file, then the environment, then the keyring."""
     if secrets_path.exists():
         with secrets_path.open("rb") as handle:
