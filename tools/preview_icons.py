@@ -29,6 +29,26 @@ BACKGROUND = (24, 24, 27, 255)
 LABEL = (161, 161, 170, 255)
 
 
+#: Brand colours, swapped out to prove a mark holds up in a single flat colour.
+BRAND_COLOURS = ("#22D3EE", "#34D399", "#F59E0B")
+
+
+def monochrome(svg: Path, scratch: Path) -> Path:
+    """Write a flat white-on-black copy of an SVG.
+
+    The honest test of a timeless mark: strip the gradient and every accent, and see whether
+    the shape still carries it. Anything that only works in colour is decoration.
+    """
+    text = svg.read_text(encoding="utf-8")
+    for colour in BRAND_COLOURS:
+        text = text.replace(colour, "#FFFFFF").replace(colour.lower(), "#FFFFFF")
+    text = text.replace("#0E0E10", "#000000")
+
+    target = scratch / f"{svg.stem}-mono.svg"
+    target.write_text(text, encoding="utf-8")
+    return target
+
+
 def rasterize(svg: Path, size: int, scratch: Path) -> Image.Image:
     """Render via a temporary PNG.
 
@@ -65,7 +85,7 @@ def main() -> int:
     ]
 
     row_h = BIG + 34
-    row_w = BIG + 24 + 32 * SMALL_SCALE + 16 + 16 * SMALL_SCALE + 48
+    row_w = BIG * 2 + 24 + 24 + 32 * SMALL_SCALE + 16 + 16 * SMALL_SCALE + 48
     sheet = Image.new("RGBA", (row_w, row_h * len(candidates) + 16), BACKGROUND)
     draw = ImageDraw.Draw(sheet)
 
@@ -73,7 +93,12 @@ def main() -> int:
         top = index * row_h + 8
         sheet.alpha_composite(rasterize(path, BIG, scratch), (16, top))
 
-        x = 16 + BIG + 24
+        # Flat white, no gradient: does the shape alone still carry the mark?
+        sheet.alpha_composite(
+            rasterize(monochrome(path, scratch), BIG, scratch), (16 + BIG + 16, top)
+        )
+
+        x = 16 + BIG * 2 + 24 + 24
         for size in (32, 16):
             scaled = rasterize(path, size, scratch).resize(
                 (size * SMALL_SCALE, size * SMALL_SCALE), Image.Resampling.NEAREST
@@ -83,6 +108,7 @@ def main() -> int:
             x += size * SMALL_SCALE + 16
 
         draw.text((16, top + BIG + 8), label, fill=(244, 244, 245, 255))
+        draw.text((16 + BIG + 16, top + BIG + 8), "flat, one colour", fill=LABEL)
 
     target = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "icon-preview.png"
     sheet.save(target)

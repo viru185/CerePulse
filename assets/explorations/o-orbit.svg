@@ -1,0 +1,13 @@
+<!-- O — Orbit. A day is a cycle, so the mark is a ring; the ring beats once at the top.
+     The circle is opened by a 60-degree gap and the beat bridges it, so the pulse is part
+     of the cycle rather than drawn over it. One circle, one interruption. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <g fill="none" stroke="#22D3EE" stroke-width="26"
+     stroke-linecap="round" stroke-linejoin="round">
+    <!-- The cycle: a circle of radius 80 about (128,128), open between -120 and -60 degrees. -->
+    <path class="mark" d="M 168 59 A 80 80 0 1 1 88 59"/>
+    <!-- The beat, bridging the gap and breaking above the circle. -->
+    <path class="mark" d="M 88 59 L 106 59 L 120 22 L 140 96 L 154 59 L 168 59"/>
+  </g>
+</svg>

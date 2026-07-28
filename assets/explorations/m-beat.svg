@@ -1,0 +1,10 @@
+<!-- M — Beat. One heavy stroke, nothing else. Built on a strict grid: the baseline sits at
+     the vertical centre, the peak and trough are equal distances from it, and the line
+     leaves the frame flat on both sides so the mark reads as a fragment of something
+     continuous. Flat colour, no gradient, so it survives as pure black or pure white. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <path class="mark" d="M 26 128 H 84 L 106 60 L 140 196 L 160 128 H 230"
+        fill="none" stroke="#22D3EE" stroke-width="30"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

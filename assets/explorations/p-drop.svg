@@ -1,0 +1,25 @@
+<!-- P — Drop. A single solid organic form — a beat, the way a drop is a beat of water —
+     with the pulse taken out of it as negative space rather than laid on top. One shape,
+     one colour, and the counter does the work.
+
+     Constructed from a circle with one corner drawn to a point, so the silhouette stays
+     geometric rather than hand-drawn. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <mask id="pulse-counter">
+      <rect x="0" y="0" width="256" height="256" fill="white"/>
+      <path d="M 66 140 H 96 L 112 104 L 136 176 L 152 140 H 190"
+            fill="none" stroke="black" stroke-width="17"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <!-- Circle of radius 74 centred at (128,142), with the top-left quadrant pulled to a
+       point at (128,30) — the classic drop construction. -->
+  <path class="mark" mask="url(#pulse-counter)"
+        d="M 128 26
+           C 128 26, 202 106, 202 142
+           A 74 74 0 1 1 54 142
+           C 54 106, 128 26, 128 26 Z"
+        fill="#22D3EE"/>
+</svg>
