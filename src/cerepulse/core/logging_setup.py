@@ -101,7 +101,11 @@ def configure_logging(
     logger.remove()
     logger.configure(extra={"correlation_id": "-"}, patcher=_patcher)
 
-    if console:
+    # A windowed PyInstaller build has no console, and Python sets sys.stderr to None
+    # rather than to a null stream. Handing that to loguru raises, which crashed the app
+    # before it could open a window. It only reproduces when launched from Explorer or the
+    # Start Menu: starting the same executable from a terminal inherits usable handles.
+    if console and sys.stderr is not None:
         logger.add(sys.stderr, level=level, format=_CONSOLE_FORMAT, backtrace=False)
 
     directory = log_dir or paths.logs_dir()

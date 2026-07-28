@@ -82,6 +82,34 @@ jobs:
             "{0}  {1:N0} MB" -f $_.Name, ($_.Length / 1MB)
           }
 
+      - name: Smoke-test the built executable without a console
+        shell: pwsh
+        timeout-minutes: 3
+        # Start-Process detaches the process, so it gets no inherited console and Python
+        # sets sys.stdout/stderr to None — the state a user gets when double-clicking, and
+        # the one that shipped a crash-on-launch in 0.1.0. `paths` runs the same startup
+        # path as the GUI and then exits, so this works on a runner with no desktop.
+        #
+        # The wait is bounded rather than open-ended: PyInstaller reports an unhandled
+        # exception in a *modal dialog*, so a plain -Wait blocks forever on the very
+        # failure this step exists to catch.
+        run: |
+          $env:CEREPULSE_DATA_DIR = "$env:TEMP\smoke"
+          $p = Start-Process -FilePath "dist\CerePulse\CerePulse.exe" `
+                             -ArgumentList "paths" -PassThru
+          if (-not $p.WaitForExit(60000)) {
+            $p.Kill()
+            Write-Error "Windowed launch hung for 60s — most likely a crash dialog."
+            exit 1
+          }
+          if ($p.ExitCode -ne 0) {
+            Write-Error "Windowed launch failed with exit code $($p.ExitCode)"
+            Get-ChildItem "$env:CEREPULSE_DATA_DIR\logs" -ErrorAction SilentlyContinue |
+              ForEach-Object { Get-Content $_.FullName -Tail 30 }
+            exit 1
+          }
+          Write-Host "Windowed launch OK"
+
       - uses: actions/upload-artifact@v4
         with:
           name: cerepulse-dev-build

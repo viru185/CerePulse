@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-import pytest
+import sys
+from pathlib import Path
 
-from cerepulse.core.logging_setup import redact
+import pytest
+from loguru import logger
+
+from cerepulse.core.logging_setup import configure_logging, redact
 
 # The real captured session ticket shape — long, opaque, and must never survive redaction.
 _AUTH_TICKET = "A1B2C3D4E5F60718293A4B5C6D7E8F90A1B2C3D4E5F60718293A4B5C6D7E8F90"
@@ -64,3 +68,21 @@ def test_redaction_is_case_insensitive() -> None:
 def test_clean_text_is_untouched() -> None:
     message = "GET /Atten/MyAttendanceReport.aspx -> 200 in 412ms"
     assert redact(message) == message
+
+
+def test_console_sink_is_skipped_when_there_is_no_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A windowed build has sys.stderr set to None, and loguru refuses a None sink.
+
+    Regression test: this crashed the frozen app on launch from Explorer, before it could
+    open a window. It never reproduced from a terminal, which inherits usable handles.
+    """
+    monkeypatch.setattr(sys, "stderr", None)
+
+    configure_logging(level="INFO", log_dir=tmp_path, console=True)
+    logger.info("still reaches the file sink")
+
+    written = list(tmp_path.glob("*.log"))
+    assert written, "the file sink must still be installed"
+    assert "still reaches the file sink" in written[0].read_text(encoding="utf-8")
