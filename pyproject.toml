@@ -1,0 +1,69 @@
+[project]
+name = "cerepulse"
+dynamic = ["version"]
+description = "A smart attendance and leave companion for Windows — knows when you can leave, before you ask."
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [{ name = "Viren Hirpara" }]
+license = { text = "MIT" }
+dependencies = [
+    "PySide6>=6.8",
+    "httpx[http2]>=0.27",
+    "lxml>=5",
+    "cryptography>=43",
+    "keyring>=25",
+    "loguru>=0.7",
+    "platformdirs>=4",
+    "tomli-w>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-qt>=4",
+    "respx>=0.21",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pyinstaller>=6",
+    "pillow>=10",
+]
+
+[project.scripts]
+cerepulse = "cerepulse.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/cerepulse/__about__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cerepulse"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.mypy]
+python_version = "3.13"
+packages = ["cerepulse"]
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = "src"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Only collect classes ending in "Tests" so domain models never get collected as tests.
+python_classes = ["*Tests"]
+markers = [
+    "live: tests that hit the real SpineHR portal (never run in CI)",
+]
