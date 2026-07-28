@@ -1,0 +1,14 @@
+<!-- C — Circle badge. No letter at all: a heartbeat across a round badge, with the peak
+     marked by a dot. The most legible option at 16px, at the cost of the "P". -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/><stop offset="100%" stop-color="#34D399"/>
+    </linearGradient>
+  </defs>
+  <circle cx="128" cy="128" r="120" fill="#0E0E10"/>
+  <circle cx="128" cy="128" r="118" fill="none" stroke="url(#g)" stroke-width="8" opacity="0.5"/>
+  <path d="M 44 132 H 86 L 104 132 L 120 66 L 146 196 L 164 132 L 178 132 H 212"
+        fill="none" stroke="url(#g)" stroke-width="20"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

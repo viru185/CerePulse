@@ -35,7 +35,7 @@ from cerepulse.core.errors import (
     TransportError,
 )
 from cerepulse.intelligence.day import DayAnalysis
-from cerepulse.intelligence.insights import ActionKind, Insight, Severity
+from cerepulse.intelligence.insights import ActionKind, Insight, InsightKind, Severity
 from cerepulse.intelligence.month import analyze_week, week_start_for
 from cerepulse.notify.startup import set_registered
 from cerepulse.notify.tray import Tray
@@ -53,7 +53,9 @@ from cerepulse.ui.views.requests import RequestsView, open_url
 from cerepulse.ui.views.settings import SettingsView
 from cerepulse.ui.views.today import TodayView
 from cerepulse.ui.views.week import WeekView
+from cerepulse.ui.whats_new import UpdateAvailableDialog, WhatsNewDialog
 from cerepulse.ui.workers import TaskRunner
+from cerepulse.update import Release, check_for_update, mark_seen, should_show_whats_new
 
 SCREENS = ("Today", "Week", "Attendance", "Leave", "Requests", "Settings", "About")
 
@@ -132,6 +134,7 @@ class MainWindow(QMainWindow):
             lambda: open_url(self._context.client.url_for(pages.SWIPE_REQUESTS))
         )
         self.week.week_changed.connect(self._change_week)
+        self.about.update_check_requested.connect(self._check_for_update_now)
         self.settings.config_saved.connect(self._save_config)
         self.settings.sign_out_requested.connect(self._sign_out)
         self.settings.clear_cache_requested.connect(self._clear_cache)
@@ -181,6 +184,62 @@ class MainWindow(QMainWindow):
             self.refresh(force=False, quiet=True)
         else:
             self._sign_in_silently()
+
+        # Deferred so neither blocks the first paint.
+        QTimer.singleShot(400, self._show_whats_new_if_updated)
+        if self._context.config.updates.check_on_startup:
+            QTimer.singleShot(4000, self._check_for_update)
+
+    def _show_whats_new_if_updated(self) -> None:
+        """Show release notes once, the first time a new version runs."""
+        if not should_show_whats_new():
+            return
+        WhatsNewDialog(version=about.VERSION, parent=self).exec()
+        mark_seen()
+
+    def _check_for_update(self) -> None:
+        """Look for a newer release. Failures stay silent — this is never urgent."""
+        self._runner.submit(
+            "update-check",
+            check_for_update,
+            on_success=self._on_update_found,
+            on_error=lambda exc: logger.debug("Update check failed: {}", exc),
+        )
+
+    def _check_for_update_now(self) -> None:
+        """Explicit check from About. Unlike the startup one, this reports "up to date"."""
+        self._runner.submit(
+            "update-check",
+            check_for_update,
+            on_success=self._on_manual_check,
+            on_error=self._on_error,
+        )
+
+    def _on_manual_check(self, release: Release | None) -> None:
+        if release is None:
+            QMessageBox.information(
+                self,
+                "Up to date",
+                f"{about.NAME} {about.VERSION} is the latest version.",
+            )
+            return
+        UpdateAvailableDialog(release, parent=self).exec()
+
+    def _on_update_found(self, release: Release | None) -> None:
+        if release is None:
+            return
+        if self._tray is not None and not self.isVisible():
+            # Minimised to the tray: a toast is less intrusive than stealing focus.
+            self._tray.notify(
+                Insight(
+                    InsightKind.ON_TRACK,
+                    Severity.INFO,
+                    f"{about.NAME} {release.version} is available",
+                    "Open CerePulse to see what changed.",
+                )
+            )
+            return
+        UpdateAvailableDialog(release, parent=self).exec()
 
     def _sign_in_silently(self) -> None:
         """Try the saved password first; only prompt if that is unavailable or rejected."""

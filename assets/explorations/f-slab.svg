@@ -1,0 +1,31 @@
+<!-- F — Slab. A heavy geometric P with the pulse cut clean through it as a notch, running
+     past the letter on both sides. Reads as a letter first and a waveform second, which is
+     the opposite emphasis to E. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/><stop offset="100%" stop-color="#34D399"/>
+    </linearGradient>
+    <!-- The gap the pulse leaves as it passes through the letter. -->
+    <mask id="notch">
+      <rect x="0" y="0" width="256" height="256" fill="white"/>
+      <path d="M 16 168 H 74 L 90 168 L 104 128 L 124 208 L 140 168 H 240"
+            fill="none" stroke="black" stroke-width="34"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#0E0E10"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="none" stroke="#1F1F23" stroke-width="4"/>
+
+  <g mask="url(#notch)" fill="none" stroke="url(#g)"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 84 204 V 54" stroke-width="30"/>
+    <path d="M 84 54 H 126 A 38 38 0 0 1 126 130 H 84" stroke-width="30"/>
+  </g>
+
+  <!-- The pulse itself, drawn thinner than its notch so the gap reads as a cut. -->
+  <path d="M 22 168 H 74 L 90 168 L 104 128 L 124 208 L 140 168 H 234"
+        fill="none" stroke="url(#g)" stroke-width="14"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

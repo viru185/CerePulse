@@ -1,0 +1,20 @@
+<!-- D — Negative. A solid gradient tile with the P and pulse knocked out of it. The
+     highest-contrast option, which is what survives best on a busy taskbar. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/><stop offset="100%" stop-color="#34D399"/>
+    </linearGradient>
+    <mask id="knockout">
+      <rect x="0" y="0" width="256" height="256" fill="white"/>
+      <g fill="none" stroke="black" stroke-width="22"
+         stroke-linecap="round" stroke-linejoin="round">
+        <path d="M 92 190 V 58"/>
+        <path d="M 92 58 H 122 A 32 32 0 0 1 122 122 H 92"/>
+        <path d="M 36 190 H 92"/>
+        <path d="M 92 190 H 138 L 153 150 L 170 214 L 185 190 H 220"/>
+      </g>
+    </mask>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#g)" mask="url(#knockout)"/>
+</svg>

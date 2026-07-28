@@ -29,6 +29,10 @@ logs/
 packaging/innosetup/Output/
 packaging/nssm/nssm.exe
 RELEASE_NOTES.md
+# Generated from __about__.py by tools/build_all.py; never edited by hand.
+packaging/version_info.txt
+# Icon exploration renders; only the SVGs are source.
+icon-preview.png
 
 # Editor / OS
 .vscode/

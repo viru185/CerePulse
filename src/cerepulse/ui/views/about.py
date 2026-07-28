@@ -5,7 +5,7 @@ from __future__ import annotations
 import platform
 import sys
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -23,6 +23,8 @@ from cerepulse.ui.widgets import Card, SectionTitle, card_row
 
 class AboutView(QWidget):
     """Who made this, what version it is, and where its data lives."""
+
+    update_check_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -85,12 +87,25 @@ class AboutView(QWidget):
         layout.addWidget(data_dir)
 
         buttons = QHBoxLayout()
+        whats_new = QPushButton("What's new")
+        whats_new.clicked.connect(self._show_whats_new)
+        buttons.addWidget(whats_new)
+
+        check = QPushButton("Check for updates")
+        check.clicked.connect(self.update_check_requested)
+        buttons.addWidget(check)
+
         buttons.addWidget(_folder_button("Open data folder", str(paths.data_root())))
         buttons.addWidget(_folder_button("Open logs", str(paths.logs_dir())))
         buttons.addStretch(1)
         layout.addLayout(buttons)
 
         layout.addStretch(1)
+
+    def _show_whats_new(self) -> None:
+        from cerepulse.ui.whats_new import WhatsNewDialog
+
+        WhatsNewDialog(version=about.VERSION, parent=self).exec()
 
 
 def _link(text: str, url: str) -> QPushButton:

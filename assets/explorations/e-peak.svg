@@ -1,0 +1,18 @@
+<!-- E — Peak-P. The original brief, done properly: a heartbeat whose tall upstroke carries
+     the bowl, so the letter emerges from the waveform instead of sitting beside it. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/><stop offset="100%" stop-color="#34D399"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#0E0E10"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="none" stroke="#1F1F23" stroke-width="4"/>
+  <g fill="none" stroke="url(#g)" stroke-width="20"
+     stroke-linecap="round" stroke-linejoin="round">
+    <!-- Bowl riding the upstroke. -->
+    <path d="M 106 62 H 138 A 31 31 0 0 1 138 124 H 106"/>
+    <!-- Heartbeat: in low, tall upstroke doubling as the stem, deep trough, out low. -->
+    <path d="M 32 178 H 74 L 90 178 L 106 62 L 106 196 L 122 214 L 140 178 H 224"/>
+  </g>
+</svg>

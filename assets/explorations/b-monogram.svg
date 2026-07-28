@@ -1,0 +1,15 @@
+<!-- B — Monogram. The P is drawn as one continuous stroke that runs out into the
+     heartbeat, so letter and waveform are the same line rather than two shapes. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/><stop offset="100%" stop-color="#34D399"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#0E0E10"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="none" stroke="#1F1F23" stroke-width="4"/>
+  <path d="M 36 196 H 78 L 78 60 H 122 A 34 34 0 0 1 122 128 H 78
+           M 78 196 H 132 L 148 152 L 166 216 L 182 196 H 220"
+        fill="none" stroke="url(#g)" stroke-width="22"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
