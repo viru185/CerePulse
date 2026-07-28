@@ -70,17 +70,25 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; \
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
-Name: "{userstartup}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: startupicon
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; \
   Flags: nowait postinstall skipifsilent
 
-[UninstallDelete]
-; The startup entry the app itself may have written. Cached attendance data in
-; %LOCALAPPDATA% is deliberately left alone, so a reinstall keeps its history.
-Type: files; Name: "{userstartup}\{#AppName}.lnk"
-
 [Registry]
+; Start-with-Windows uses the HKCU Run key, the same mechanism the app's own Settings
+; toggle writes to. A Startup-folder shortcut would work equally well on its own, but then
+; the installer and the app would be using two different mechanisms and the Settings
+; checkbox would misreport whether startup is actually enabled.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
-  ValueName: "{#AppName}"; ValueType: none; Flags: deletevalue uninsdeletevalue
+  ValueName: "{#AppName}"; ValueType: string; ValueData: """{app}\{#AppExeName}"""; \
+  Flags: uninsdeletevalue; Tasks: startupicon
+
+; Clean the entry up on uninstall even when the task was never selected, since the app may
+; have written it itself. No `deletevalue` here: that fires during *installation*, which
+; would silently disable startup every time the user updates.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
+  ValueName: "{#AppName}"; ValueType: none; Flags: uninsdeletevalue
+
+; Cached attendance data in %LOCALAPPDATA% is deliberately left in place on uninstall, so a
+; reinstall keeps its history and does not need to re-sync months of detail.

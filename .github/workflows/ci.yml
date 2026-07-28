@@ -46,3 +46,46 @@ jobs:
           fetch-depth: 0
       - name: Lint commit messages
         uses: wagoid/commitlint-github-action@v6
+
+  package:
+    # Proves the installer and portable zip still build, on main and on demand. Without
+    # this the packaging is only ever exercised during a release, which is the worst
+    # possible moment to discover it is broken.
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Install InnoSetup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build
+        run: uv run python tools/build_all.py --clean
+
+      - name: Check both artifacts exist
+        shell: pwsh
+        run: |
+          $missing = @()
+          if (-not (Get-ChildItem dist -Filter *-Setup.exe)) { $missing += "installer" }
+          if (-not (Get-ChildItem dist -Filter *-portable.zip)) { $missing += "portable zip" }
+          if ($missing) { Write-Error "Not produced: $($missing -join ', ')"; exit 1 }
+          Get-ChildItem dist -File | ForEach-Object {
+            "{0}  {1:N0} MB" -f $_.Name, ($_.Length / 1MB)
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cerepulse-dev-build
+          path: |
+            dist/*-Setup.exe
+            dist/*-portable.zip
+          retention-days: 7
