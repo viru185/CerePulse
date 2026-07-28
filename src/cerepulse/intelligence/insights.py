@@ -39,6 +39,9 @@ class InsightKind(Enum):
     MISSING_PUNCH = "missing_punch"
     STILL_WORKING = "still_working"
     NO_PUNCHES = "no_punches"
+    LEAVE_EXPIRING = "leave_expiring"
+    HOURS_BANK_DEFICIT = "hours_bank_deficit"
+    ANOMALY = "anomaly"
 
 
 class ActionKind(Enum):
