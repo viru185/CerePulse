@@ -40,6 +40,9 @@ path = "src/cerepulse/__about__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cerepulse"]
+# Icons are committed, not generated at build time: the installer needs a real .ico on
+# disk before Python ever runs. Regenerate with `python tools/build_icons.py`.
+artifacts = ["src/cerepulse/ui/assets/*.png", "src/cerepulse/ui/assets/*.ico"]
 
 [tool.ruff]
 line-length = 100

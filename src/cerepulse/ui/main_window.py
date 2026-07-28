@@ -13,6 +13,7 @@ from datetime import date, datetime
 
 from loguru import logger
 from PySide6.QtCore import QTimer, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
@@ -33,12 +34,16 @@ from cerepulse.core.errors import (
     SessionExpiredError,
     TransportError,
 )
+from cerepulse.intelligence.day import DayAnalysis
 from cerepulse.intelligence.insights import ActionKind, Insight, Severity
 from cerepulse.intelligence.month import analyze_week, week_start_for
+from cerepulse.notify.startup import set_registered
+from cerepulse.notify.tray import Tray
 from cerepulse.services.attendance import MonthView
 from cerepulse.services.leave import LeaveView as LeaveData
 from cerepulse.transport import pages
 from cerepulse.ui import formatting as fmt
+from cerepulse.ui.assets import app_icon
 from cerepulse.ui.login_dialog import LoginDialog
 from cerepulse.ui.theme import Palette, palette_for, stylesheet
 from cerepulse.ui.views.about import AboutView
@@ -69,10 +74,12 @@ class MainWindow(QMainWindow):
         self._month_view: MonthView | None = None
 
         self.setWindowTitle(about.NAME)
+        self.setWindowIcon(app_icon())
         self.resize(1120, 760)
         self.setMinimumSize(900, 600)
 
         self._build_ui()
+        self._tray = self._build_tray()
         self._runner.busy_changed.connect(self._on_busy_changed)
 
         # Background refresh, on the interval from settings.
@@ -213,10 +220,47 @@ class MainWindow(QMainWindow):
         self.signed_in.emit(employee_code)
         self.refresh(force=True, quiet=True)
 
-    def closeEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+    def _build_tray(self) -> Tray | None:
+        """Create the tray icon, unless the desktop has no tray or the user opted out."""
+        if self._context.config.ui.background_mode != "tray":
+            return None
+        if not Tray.is_available():
+            logger.info("No system tray available; running foreground-only")
+            return None
+
+        tray = Tray(app_icon(), self._context.config.notifications, self)
+        tray.open_requested.connect(self._restore_window)
+        tray.refresh_requested.connect(lambda: self.refresh(force=True))
+        tray.quit_requested.connect(self._quit)
+        tray.show()
+        return tray
+
+    def _restore_window(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit(self) -> None:
+        """Leave for good, rather than back to the tray."""
+        from PySide6.QtWidgets import QApplication
+
+        self._quitting = True
+        if self._tray is not None:
+            self._tray.hide()
+        QApplication.quit()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 — Qt override
+        """Close to the tray when running in tray mode; otherwise actually exit."""
+        if self._tray is not None and not getattr(self, "_quitting", False):
+            event.ignore()
+            self.hide()
+            return
+
         self._auto.stop()
         self._runner.wait(3000)
-        super().closeEvent(event)  # type: ignore[arg-type]
+        if self._tray is not None:
+            self._tray.hide()
+        super().closeEvent(event)
 
     # --- data ------------------------------------------------------------------------
 
@@ -309,14 +353,18 @@ class MainWindow(QMainWindow):
         if target is None:
             return
 
+        def rendered(analysis: DayAnalysis) -> None:
+            self.today.show_analysis(analysis, is_today=analysis.day == today)
+            if self._tray is not None and analysis.day == today:
+                self._tray.set_analysis(analysis)
+                self._tray.notify_insights(list(analysis.insights))
+
         self._runner.submit(
             "analyze-day",
             lambda: self._context.attendance.load_day(
                 self._employee_code, target.day, now=datetime.now()
             ),
-            on_success=lambda analysis: self.today.show_analysis(
-                analysis, is_today=analysis.day == today
-            ),
+            on_success=rendered,
             on_error=lambda exc: logger.debug("Could not analyze today: {}", exc),
         )
 
@@ -332,6 +380,9 @@ class MainWindow(QMainWindow):
 
     def _apply_leave(self, data: LeaveData) -> None:
         self.leave.show_leave(data)
+        if self._tray is not None:
+            # Expiry warnings are worth a toast; the policy caps them to once a day.
+            self._tray.notify_insights(data.insights)
         self._runner.submit(
             "ledger",
             lambda: self._context.leave._leave.find_transactions(self._employee_code),
@@ -401,11 +452,21 @@ class MainWindow(QMainWindow):
             self.settings.banner.show_message(str(exc), Severity.CRITICAL)
             return
 
-        self.settings.banner.show_message(
-            "Saved. Some changes apply the next time CerePulse starts.", Severity.SUCCESS
-        )
         self._auto.setInterval(config.sync.refresh_interval_minutes * 60_000)  # type: ignore[attr-defined]
         self._apply_theme(config.ui.theme)  # type: ignore[attr-defined]
+        if self._tray is not None:
+            self._tray.update_config(config.notifications)  # type: ignore[attr-defined]
+
+        note = ""
+        if not set_registered(config.ui.start_with_windows):  # type: ignore[attr-defined]
+            if config.ui.start_with_windows:  # type: ignore[attr-defined]
+                # Almost always because this is a source run, not an installed build.
+                note = " Start-with-Windows needs an installed build."
+
+        self.settings.banner.show_message(
+            f"Saved. Switching tray mode or theme fully applies on the next start.{note}",
+            Severity.SUCCESS,
+        )
 
     def _apply_theme(self, theme: str) -> None:
         from PySide6.QtWidgets import QApplication

@@ -1,0 +1,34 @@
+<!--
+  CerePulse mark — source of truth for every rendered icon size.
+
+  A "P" standing on a pulse line, with the heartbeat spiking away to the right. The letter
+  and the waveform are kept as separate strokes on one baseline: overlapping them made the
+  baseline read as a strikethrough through the stem, and at 16px the two shapes merged into
+  noise. Held apart, the P survives at tray size and the spike gives it the pulse.
+
+  Colours are the brand accents: aqua-to-green on the near-black elevated surface.
+  Regenerate the PNG and ICO outputs with `python tools/build_icons.py`.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="pulse" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="100%" stop-color="#34D399"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#0E0E10"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="none" stroke="#1F1F23" stroke-width="4"/>
+
+  <g fill="none" stroke="url(#pulse)" stroke-width="18"
+     stroke-linecap="round" stroke-linejoin="round">
+    <!-- Stem of the P. -->
+    <path d="M 92 186 V 56"/>
+    <!-- Bowl of the P. Confined to the top half, with clear stem beneath it: a bowl
+         reaching further down gives the stem a second arm and the letter becomes a B. -->
+    <path d="M 92 56 H 120 A 30 30 0 0 1 120 116 H 92"/>
+    <!-- The pulse: flat in from the left, heartbeat out to the right. -->
+    <path d="M 32 186 H 92"/>
+    <path d="M 92 186 H 140 L 155 144 L 172 218 L 187 186 H 224"/>
+  </g>
+</svg>
