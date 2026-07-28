@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<!--
+Synthetic stand-in for the portal's login.aspx, reproducing its structure field for field:
+the same hidden-state names, the same two <select> tenant pickers, and the same
+hEnSa/txtPassword pairing. Values are fabricated. The real capture is gitignored because it
+carries a live session ticket and a real credential.
+-->
+<html>
+<head><title>Login</title></head>
+<body>
+<form method="post" action="./login.aspx" id="form1" class="loginContainer" autocomplete="off">
+  <div class="aspNetHidden">
+    <input type="hidden" name="__EVENTTARGET" id="__EVENTTARGET" value="" />
+    <input type="hidden" name="__EVENTARGUMENT" id="__EVENTARGUMENT" value="" />
+    <input type="hidden" name="__LASTFOCUS" id="__LASTFOCUS" value="" />
+    <input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="FAKEVIEWSTATE/abc+123==" />
+    <input type="hidden" name="__VIEWSTATEGENERATOR" id="__VIEWSTATEGENERATOR" value="C2EE9ABB" />
+    <input type="hidden" name="__SCROLLPOSITIONX" id="__SCROLLPOSITIONX" value="0" />
+    <input type="hidden" name="__SCROLLPOSITIONY" id="__SCROLLPOSITIONY" value="0" />
+    <input type="hidden" name="__VIEWSTATEENCRYPTED" id="__VIEWSTATEENCRYPTED" value="" />
+    <input type="hidden" name="__EVENTVALIDATION" id="__EVENTVALIDATION" value="FAKEEVENTVALIDATION==" />
+  </div>
+
+  <select name="dpCompanyCodeList" id="dpCompanyCodeList" style="width:300px;">
+    <option value="ACME">ACME</option>
+    <option selected="selected" value="CEREBU">CEREBU</option>
+  </select>
+
+  <select name="dpConnectAs" id="dpConnectAs" style="width:300px;">
+    <option selected="selected" value="User">User</option>
+    <option value="Admin">Admin</option>
+  </select>
+
+  <input name="txtUser" type="text" id="txtUser" value="" placeholder="User Name" />
+  <input name="txtPassword" type="password" id="txtPassword" placeholder="Password" />
+  <input name="txtHdnPass" type="hidden" id="txtHdnPass" />
+  <input name="hEnSa" type="hidden" id="hEnSa" value="1234567890123456" />
+
+  <input type="hidden" name="LDAPSignOn" id="LDAPSignOn" value="N" />
+  <input type="hidden" name="hdnChkHODLogin" id="hdnChkHODLogin" value="false" />
+  <input type="hidden" name="HdnFilterCond" id="HdnFilterCond" value="" />
+  <input type="hidden" name="txtHFld" id="txtHFld" value="" />
+  <input type="hidden" name="hdnEmp" id="hdnEmp" value="" />
+  <input type="hidden" name="hdnAppName" id="hdnAppName" value="" />
+  <input type="hidden" name="hdnAppVer" id="hdnAppVer" value="" />
+  <input type="hidden" name="hdnWinName" id="hdnWinName" value="" />
+  <input type="hidden" name="hdnDispImg" id="hdnDispImg" value="images\LoginLogo.gif" />
+  <input type="hidden" name="hdnDispPg" id="hdnDispPg" value="" />
+  <input type="hidden" name="hdnOldBrowserMode" id="hdnOldBrowserMode" value="" />
+  <input type="hidden" name="hdnShowDashBoardLight" id="hdnShowDashBoardLight" value="" />
+  <input type="hidden" name="hdnLBgImg" id="hdnLBgImg" value="loginbg1,loginbg10,loginbg11" />
+  <input type="hidden" name="hdnRestrictMozillabrowser" id="hdnRestrictMozillabrowser" value="N" />
+  <input type="hidden" name="hdnEnableAutoUpgradation" id="hdnEnableAutoUpgradation" value="Y" />
+  <input type="hidden" name="hdnShowPMCareFundOption" id="hdnShowPMCareFundOption" value="" />
+  <input type="hidden" name="hdnShowVaccineDtls" id="hdnShowVaccineDtls" value="" />
+  <input type="hidden" name="hdnUserkKeyToolTip" id="hdnUserkKeyToolTip" value="LicName : EXAMPLE LTD." />
+
+  <!-- Controls a browser would NOT submit: excluded by the collector. -->
+  <input type="checkbox" name="chkRemember" id="chkRemember" value="Y" />
+  <input type="submit" name="btnUnused" id="btnUnused" value="Unused" />
+  <input type="reset" name="btnReset" id="btnReset" value="Reset" />
+
+  <a id="btnLogin" href="javascript:__doPostBack('btnLogin','')">Sign in</a>
+  <span id="lblErrorMsg"></span>
+</form>
+</body>
+</html>
