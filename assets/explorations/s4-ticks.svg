@@ -1,0 +1,16 @@
+<!-- S4 — Ticks. Marks at twelve, three, six and nine turn the circle into an unmistakable
+     dial, so the hands are read as hands rather than as a shape inside a ring. The cost is
+     four more elements, which is what has to survive at 16px. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <circle cx="128" cy="128" r="88" fill="none" stroke="#22D3EE" stroke-width="20"/>
+  <g stroke="#22D3EE" stroke-width="14" stroke-linecap="round">
+    <path d="M 128 62 V 76"/>
+    <path d="M 194 128 H 180"/>
+    <path d="M 128 194 V 180"/>
+    <path d="M 62 128 H 76"/>
+  </g>
+  <path d="M 128 128 V 84" fill="none" stroke="#22D3EE" stroke-width="15" stroke-linecap="round"/>
+  <path d="M 128 128 V 172" fill="none" stroke="#F59E0B" stroke-width="23" stroke-linecap="round"/>
+  <circle cx="128" cy="128" r="13" fill="#F59E0B"/>
+</svg>

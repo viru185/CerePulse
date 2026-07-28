@@ -1,0 +1,15 @@
+<!-- S2 — Solid. A filled face rather than a ring, so the silhouette is unbroken and holds
+     at the smallest sizes. The minute hand is cut out of the disc as negative space; the
+     hour hand sits on top in amber, which is what fixes the time at six. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <mask id="minute">
+      <rect x="0" y="0" width="256" height="256" fill="white"/>
+      <path d="M 128 128 V 52" stroke="black" stroke-width="18" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <circle cx="128" cy="128" r="94" fill="#22D3EE" mask="url(#minute)"/>
+  <path d="M 128 128 V 190" fill="none" stroke="#F59E0B" stroke-width="24" stroke-linecap="round"/>
+  <circle cx="128" cy="128" r="15" fill="#F59E0B"/>
+</svg>

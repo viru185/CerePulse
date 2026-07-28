@@ -1,0 +1,12 @@
+<!-- S1 — Ring. Six o'clock, told plainly. Two colours do the work the geometry could not:
+     the hour hand is amber, short and heavy; the minute hand is aqua, long and light. That
+     contrast is what makes the time read as 6:00 rather than as a vertical bar. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <circle cx="128" cy="128" r="86" fill="none" stroke="#22D3EE" stroke-width="22"/>
+  <!-- Minute hand to twelve. -->
+  <path d="M 128 128 V 58" fill="none" stroke="#22D3EE" stroke-width="16" stroke-linecap="round"/>
+  <!-- Hour hand to six. -->
+  <path d="M 128 128 V 180" fill="none" stroke="#F59E0B" stroke-width="24" stroke-linecap="round"/>
+  <circle cx="128" cy="128" r="14" fill="#F59E0B"/>
+</svg>

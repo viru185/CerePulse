@@ -1,0 +1,15 @@
+<!-- S5 — Elapsed. The ring doubles as a progress track: amber for the day already worked,
+     aqua for what is left, with the join sitting at six where the hour hand points. The
+     two colours carry meaning here rather than just separating the hands. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <g fill="none" stroke-width="22" stroke-linecap="round">
+    <!-- Twelve round to six, clockwise: the part of the day already done. -->
+    <path d="M 128 42 A 86 86 0 0 1 128 214" stroke="#F59E0B"/>
+    <!-- Six back round to twelve: what is left. -->
+    <path d="M 128 214 A 86 86 0 0 1 128 42" stroke="#22D3EE"/>
+  </g>
+  <path d="M 128 128 V 66" fill="none" stroke="#22D3EE" stroke-width="16" stroke-linecap="round"/>
+  <path d="M 128 128 V 178" fill="none" stroke="#F59E0B" stroke-width="24" stroke-linecap="round"/>
+  <circle cx="128" cy="128" r="14" fill="#F59E0B"/>
+</svg>
