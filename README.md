@@ -12,7 +12,9 @@ log, paste it in. CerePulse removes every one of those steps — the data is alr
 when you open the window, and the tray tells you when you can leave without opening anything
 at all.
 
-> **Status:** in active development, pre-first-release.
+> **Read-only by design.** CerePulse reads from SpineHR and never writes to it. When it
+> detects that a swipe request is needed it tells you and opens the right portal page — it
+> does not file anything on your behalf.
 
 ---
 
@@ -41,11 +43,14 @@ arithmetic behind it, including any punch that was inferred or discarded, and wh
 
 Grab the latest [release](https://github.com/viru185/CerePulse/releases):
 
-- **`CerePulse-Setup-<version>.exe`** — per-user installer, no admin rights needed.
-  Auto-updates itself.
-- **`CerePulse-Portable-<version>.zip`** — unzip and run. Keeps all its data in a `Data`
-  folder beside the executable, so it travels on a USB stick. Notifies about updates but
-  does not self-install.
+- **`CerePulse-<version>-Setup.exe`** — per-user installer, no admin rights needed.
+- **`CerePulse-<version>-portable.zip`** — unzip and run. Keeps all its data in a `Data`
+  folder beside the executable, so it travels on a USB stick.
+
+Both check for updates and tell you when one is available, then open the download.
+CerePulse never installs anything by itself.
+
+Windows 10 or 11, 64-bit. No Python needed — the runtime is bundled.
 
 ---
 

@@ -1,0 +1,86 @@
+name: Release
+
+# Tag-driven: `git tag v0.1.0 && git push --tags` is the whole release process.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (for a re-run of a failed release)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # Must be Windows: PyInstaller cannot cross-compile, and the app is Windows-only.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git-cliff needs full history to build the changelog
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      # Re-run the full gate here rather than trusting CI: a release must never ship
+      # something that was not verified on the exact commit being tagged.
+      - name: Verify
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run mypy
+          uv run pytest -q -m "not live"
+
+      - name: Check the tag matches __about__.py
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}" -replace '^v', ''
+          $version = uv run python -c "from cerepulse import __about__ as a; print(a.VERSION)"
+          if ($tag -ne $version) {
+            Write-Error "Tag $tag does not match __about__.py version $version"
+            exit 1
+          }
+          Write-Host "Releasing $version"
+
+      - name: Install InnoSetup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer and portable zip
+        run: uv run python tools/build_all.py --clean
+
+      - name: Generate release notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: CerePulse ${{ github.event.inputs.tag || github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+          files: |
+            dist/*-Setup.exe
+            dist/*-portable.zip
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cerepulse-build
+          path: |
+            dist/*-Setup.exe
+            dist/*-portable.zip
+          retention-days: 14
