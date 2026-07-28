@@ -50,14 +50,27 @@ from cerepulse.transport.webforms import (
 )
 
 #: Pages to capture, as (output name, menu label, menu section).
+#:
+#: "Entitlement" is deliberately absent: BalanceLeave.aspx redirects to the same
+#: LeaveBalanceDetail.aspx page as "My Leave Register", so capturing both is duplication.
 TARGETS: tuple[tuple[str, str, str], ...] = (
     ("attendance_report", "My Attendance", "Time > Attendance"),
     ("attendance_calendar", "Opt your Holiday", "Time > Attendance"),
     ("swipe_requests", "Apply", "Time > Swipe"),
-    ("leave_balance", "Entitlement", "Leave > My Info"),
     ("leave_register", "My Leave Register", "Leave > My Info"),
     ("leave_list", "Apply", "Leave > Leave"),
     ("holiday_list", "Holiday List", "Self Service > Quick Info"),
+)
+
+#: Pages whose grid is empty until a filter is submitted, as
+#: (output name, menu label, menu section, submit button name).
+FILTERED_TARGETS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "leave_register_data",
+        "My Leave Register",
+        "Leave > My Info",
+        "ctl00$BodyContentPlaceHolder$btnView2",
+    ),
 )
 
 #: Text the portal renders when a page is requested without its privilege token.
@@ -120,6 +133,11 @@ def run_capture(*, out_dir: str, secrets_path: str, config: AppConfig) -> int:
 
         for name, label, section in TARGETS:
             reports.append(_capture_page(client, auth, menu, name, label, section, destination))
+
+        for name, label, section, target in FILTERED_TARGETS:
+            reports.append(
+                _capture_filtered(client, auth, menu, name, label, section, target, destination)
+            )
 
         reports.append(_capture_day_detail(client, auth, menu, destination))
         auth.logout()
@@ -223,6 +241,50 @@ def _capture_page(
             report.tables,
             report.date_targets,
         )
+    return report
+
+
+def _capture_filtered(
+    client: HttpClient,
+    auth: AuthManager,
+    menu: MenuIndex,
+    name: str,
+    label: str,
+    section: str,
+    target: str,
+    destination: Path,
+) -> PageReport:
+    """Submit a page's filter form and capture the populated result.
+
+    The leave pages render an empty grid on first load and only fill it after a View
+    postback. Capturing the initial load alone would suggest the employee has no leave
+    records at all.
+    """
+    logger.info("Capturing {} (submitting {})", name, target.rsplit("$", 1)[-1])
+    try:
+        entry = menu.require(label, section=section)
+        page = auth.check_response(client.get(entry.url, follow_redirects=True))
+        state = WebFormsState.from_html(page.text)
+        response = auth.check_response(
+            client.post(entry.url, data=state.submit(target), follow_redirects=True)
+        )
+    except CerePulseError as exc:
+        logger.error("  failed: {}", exc)
+        return PageReport(name=name, url="", status=0, bytes=0, error=str(exc))
+
+    body = response.text
+    target_file = destination / f"{name}.html"
+    target_file.write_text(body, encoding="utf-8")
+
+    report = PageReport(
+        name=name,
+        url=entry.url,
+        status=response.status_code,
+        bytes=len(body),
+        file=target_file.name,
+        tables=body.lower().count("<table"),
+    )
+    logger.info("  {} bytes, {} tables", report.bytes, report.tables)
     return report
 
 
