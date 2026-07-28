@@ -1,0 +1,23 @@
+<!-- J — Clock pulse. A clock face whose minute hand carries the heartbeat, fusing the two
+     things the app is about: the time you can leave, and the pulse of the day. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/><stop offset="100%" stop-color="#34D399"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#0E0E10"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="none" stroke="#1F1F23" stroke-width="4"/>
+
+  <circle cx="128" cy="128" r="80" fill="none" stroke="url(#g)" stroke-width="16"/>
+
+  <!-- The heartbeat, running across the face where the hands would be. -->
+  <path d="M 66 128 H 92 L 106 92 L 124 168 L 138 128 H 190"
+        fill="none" stroke="url(#g)" stroke-width="16"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Hour hand, pointing up: the day is still running. -->
+  <path d="M 128 128 V 78" fill="none" stroke="#F59E0B" stroke-width="14" stroke-linecap="round"/>
+  <circle cx="128" cy="128" r="11" fill="#0E0E10"/>
+  <circle cx="128" cy="128" r="7" fill="#F59E0B"/>
+</svg>

@@ -1,0 +1,11 @@
+<!-- J5 — Dial. The ring shows how much of the day is done, and the beat sits inside it.
+     Progress is expressed as a gap in the ring rather than as a second colour, so the mark
+     still says the same thing in one flat tone. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <g fill="none" stroke="#22D3EE" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Three quarters round, starting at twelve. -->
+    <path d="M 128 42 A 86 86 0 1 1 42 128" stroke-width="26"/>
+    <path d="M 74 132 H 98 L 112 100 L 134 168 L 148 132 H 182" stroke-width="20"/>
+  </g>
+</svg>

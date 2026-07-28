@@ -1,0 +1,9 @@
+<!-- J1 — Bare. The original stripped to two elements: the face and the beat crossing it.
+     No hand, no hub, no second colour. Everything that was doing decoration is gone. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <g fill="none" stroke="#22D3EE" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="128" cy="128" r="84" stroke-width="24"/>
+    <path d="M 62 128 H 92 L 108 90 L 132 170 L 148 128 H 194" stroke-width="21"/>
+  </g>
+</svg>
