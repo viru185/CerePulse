@@ -2,7 +2,15 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.1.1] - 2026-07-28
+
+### Bug Fixes
+- Survive having no console in a windowed build
+
 ## [0.1.0] - 2026-07-28
+
+### Bug Fixes
+- Stop the installer disabling start-with-Windows on update
 
 ### CI/CD
 - Add CI workflow, changelog config, and commit message linting
@@ -14,6 +22,9 @@ All notable changes to CerePulse are documented here.
 - Explore variations on the clock-and-pulse mark
 - Explore a six-o'clock dial with the name in the mark
 - Six-o'clock clock marks in two colours
+
+### Documentation
+- Add CLAUDE.md, release workflow, and changelog
 
 ### Features
 - Add configuration, paths, logging, and credential storage
