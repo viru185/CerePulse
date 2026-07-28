@@ -59,6 +59,9 @@ class WebFormsState:
     """A mutable snapshot of one WebForms page's postable state."""
 
     fields: dict[str, str] = field(default_factory=dict)
+    #: Submit/button inputs and their rendered values. Kept out of ``fields`` because a
+    #: browser posts only the button actually clicked — see :meth:`submit`.
+    buttons: dict[str, str] = field(default_factory=dict)
     action: str = ""
     form_id: str = "form1"
 
@@ -88,6 +91,8 @@ class WebFormsState:
             if tag == "input":
                 input_type = (element.get("type") or "text").lower()
                 if input_type in _SKIPPED_INPUT_TYPES:
+                    if input_type in {"submit", "button"}:
+                        self.buttons[name] = element.get("value", "")
                     continue
                 if input_type in _SELECTABLE_INPUT_TYPES and element.get("checked") is None:
                     continue
@@ -125,6 +130,23 @@ class WebFormsState:
         payload = dict(self.fields)
         payload["__EVENTTARGET"] = target
         payload["__EVENTARGUMENT"] = argument
+        payload.update(overrides)
+        return payload
+
+    def submit(self, button: str, value: str = "", **overrides: str) -> dict[str, str]:
+        """Build the payload for clicking a submit ``<input>``.
+
+        Distinct from :meth:`postback`: a submit input posts its own name/value pair and
+        leaves ``__EVENTTARGET`` empty, whereas a LinkButton does the reverse. Sending the
+        wrong shape makes the server raise rather than run the handler.
+
+        The button's rendered value is used when ``value`` is omitted, since ASP.NET
+        matches on it.
+        """
+        payload = dict(self.fields)
+        payload["__EVENTTARGET"] = ""
+        payload["__EVENTARGUMENT"] = ""
+        payload[button] = value or self.buttons.get(button, "")
         payload.update(overrides)
         return payload
 

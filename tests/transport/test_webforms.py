@@ -114,6 +114,39 @@ def test_postback_does_not_mutate_the_state(login_state: WebFormsState) -> None:
     assert login_state.fields["txtUser"] == ""
 
 
+def test_submit_button_posts_its_own_name_and_leaves_event_target_empty() -> None:
+    """A submit input and a LinkButton post opposite shapes.
+
+    Sending __EVENTTARGET for a submit input makes the server raise a 500 instead of
+    running the handler, which is how the leave register's View button first failed.
+    """
+    html = """
+      <form id="form1">
+        <input type="hidden" name="__EVENTTARGET" value="" />
+        <input type="hidden" name="__EVENTARGUMENT" value="" />
+        <input type="hidden" name="__VIEWSTATE" value="STATE" />
+        <input type="submit" name="ctl00$btnView2" value="View" />
+        <input type="submit" name="ctl00$btnClear" value="Reset" />
+      </form>
+    """
+    state = WebFormsState.from_html(html)
+
+    # Buttons are recorded separately: a browser posts only the one clicked.
+    assert state.buttons == {"ctl00$btnView2": "View", "ctl00$btnClear": "Reset"}
+    assert "ctl00$btnView2" not in state.fields
+
+    payload = state.submit("ctl00$btnView2")
+    assert payload["ctl00$btnView2"] == "View"  # value defaults to the rendered one
+    assert payload["__EVENTTARGET"] == ""
+    assert payload["__VIEWSTATE"] == "STATE"
+    assert "ctl00$btnClear" not in payload
+
+
+def test_submit_value_can_be_overridden() -> None:
+    html = '<form id="form1"><input type="submit" name="b" value="Go" /></form>'
+    assert WebFormsState.from_html(html).submit("b", "Other")["b"] == "Other"
+
+
 def test_async_postback_adds_the_script_manager_pairing(login_state: WebFormsState) -> None:
     payload = async_postback_payload(
         login_state,
