@@ -1,0 +1,11 @@
+<!-- R2 — Six, beating. As R1, but the hands are one continuous stroke that beats once as it
+     passes the hub. The C gives Cere, the beat gives Pulse, and the stroke still resolves
+     to six o'clock — long above the centre, short below. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <g fill="none" stroke="#22D3EE" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 192 74 A 84 84 0 1 0 192 182" stroke-width="26"/>
+    <!-- Down from twelve, kicking out and back at the hub, then on to six. -->
+    <path d="M 128 58 V 104 L 100 122 L 156 140 L 128 158 V 178" stroke-width="21"/>
+  </g>
+</svg>

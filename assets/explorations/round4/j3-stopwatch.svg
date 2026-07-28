@@ -1,0 +1,21 @@
+<!-- J3 — Stopwatch. A solid silhouette with the beat cut out of it as negative space. The
+     crown and stem make the outline distinctive: a bare disc is a generic shape, but a
+     stopwatch is recognisable from its edge alone, which is what carries an icon at 16px. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <mask id="beat">
+      <rect x="0" y="0" width="256" height="256" fill="white"/>
+      <path d="M 66 140 H 94 L 108 106 L 132 178 L 148 140 H 190"
+            fill="none" stroke="black" stroke-width="19"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <g mask="url(#beat)" fill="#22D3EE">
+    <!-- Crown. -->
+    <rect x="106" y="26" width="44" height="22" rx="11"/>
+    <rect x="118" y="42" width="20" height="24"/>
+    <!-- Face. -->
+    <circle cx="128" cy="142" r="84"/>
+  </g>
+</svg>

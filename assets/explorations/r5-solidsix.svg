@@ -1,0 +1,17 @@
+<!-- R5 — Solid six. One filled disc with everything taken out of it as negative space: the
+     C's opening, the hands at six, and a beat crossing the lower half. A solid silhouette
+     is what survives smallest, and here the counters do all the work. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <mask id="cut">
+      <rect x="0" y="0" width="256" height="256" fill="white"/>
+      <!-- The C's opening. -->
+      <path d="M 190 78 A 82 82 0 0 1 190 178" fill="none" stroke="black" stroke-width="28"/>
+      <!-- Hands at six: long to twelve, short to six. -->
+      <path d="M 128 128 V 62" stroke="black" stroke-width="22" stroke-linecap="round"/>
+      <path d="M 128 128 V 178" stroke="black" stroke-width="22" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <circle cx="128" cy="128" r="98" fill="#22D3EE" mask="url(#cut)"/>
+</svg>

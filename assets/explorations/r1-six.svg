@@ -1,0 +1,16 @@
+<!-- R1 — Six. The face is a C, open on the right, for Cere. The hands read six o'clock,
+     which at exactly 6:00 collapse into one vertical stroke — long up to twelve, short
+     down to six. The asymmetry is what fixes the time: a symmetric bar would be ambiguous.
+     Nothing here is decoration; every stroke is either the C or the hour. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <g fill="none" stroke="#22D3EE" stroke-linecap="round" stroke-linejoin="round">
+    <!-- The C: a circle of radius 84 opened between -40 and +40 degrees. -->
+    <path d="M 192 74 A 84 84 0 1 0 192 182" stroke-width="26"/>
+    <!-- Minute hand to twelve. -->
+    <path d="M 128 128 V 58" stroke-width="22"/>
+    <!-- Hour hand to six, deliberately shorter. -->
+    <path d="M 128 128 V 176" stroke-width="22"/>
+  </g>
+  <circle cx="128" cy="128" r="14" fill="#22D3EE"/>
+</svg>

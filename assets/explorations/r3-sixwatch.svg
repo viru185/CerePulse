@@ -1,0 +1,20 @@
+<!-- R3 — Six watch. The stopwatch silhouette that worked best last round, now telling six
+     o'clock instead of carrying a trace. The face is opened into a C on the right, so the
+     name is in the outline rather than added on top. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <mask id="face">
+      <rect x="0" y="0" width="256" height="256" fill="white"/>
+      <!-- The C's opening, and the hands, cut out of the solid form. -->
+      <path d="M 196 100 A 78 78 0 0 1 196 184" fill="none" stroke="black" stroke-width="26"/>
+      <path d="M 128 142 V 72" stroke="black" stroke-width="22" stroke-linecap="round"/>
+      <path d="M 128 142 V 192" stroke="black" stroke-width="22" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <g mask="url(#face)" fill="#22D3EE">
+    <rect x="106" y="24" width="44" height="22" rx="11"/>
+    <rect x="118" y="40" width="20" height="24"/>
+    <circle cx="128" cy="142" r="84"/>
+  </g>
+</svg>

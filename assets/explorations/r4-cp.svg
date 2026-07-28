@@ -1,0 +1,14 @@
+<!-- R4 — CP. Both initials, both from parts that are already doing a job: the face is the C,
+     and the six o'clock hand is the stem of a P whose bowl fills the C's opening. The mark
+     is a clock first and a monogram second, which is the right order. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect class="tile" x="0" y="0" width="256" height="256" rx="58" fill="#0E0E10"/>
+  <g fill="none" stroke="#22D3EE" stroke-linecap="round" stroke-linejoin="round">
+    <!-- C. -->
+    <path d="M 186 68 A 86 86 0 1 0 186 188" stroke-width="24"/>
+    <!-- The hand at six, doubling as the stem. -->
+    <path d="M 118 56 V 184" stroke-width="24"/>
+    <!-- The bowl, sitting in the C's opening. -->
+    <path d="M 118 56 H 152 A 33 33 0 0 1 152 122 H 118" stroke-width="24"/>
+  </g>
+</svg>
