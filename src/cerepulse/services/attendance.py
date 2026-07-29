@@ -12,7 +12,8 @@ before the tail of the month.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import date, datetime
 
 from loguru import logger
@@ -37,6 +38,30 @@ from cerepulse.services.portal import PortalGateway
 #: Days of detail fetched per backfill call. Each costs a postback, so this bounds how long
 #: a single refresh can occupy the connection.
 DEFAULT_DETAIL_BATCH = 5
+
+
+@dataclass(slots=True)
+class HistoryReport:
+    """What a backfill managed, and what it could not."""
+
+    planned: int = 0
+    fetched: int = 0
+    cancelled: bool = False
+    failures: list[str] = field(default_factory=list)
+
+    @property
+    def succeeded(self) -> bool:
+        return not self.failures and not self.cancelled
+
+    @property
+    def summary(self) -> str:
+        if self.planned == 0:
+            return "History is already up to date."
+        if self.cancelled:
+            return f"Stopped after {self.fetched} of {self.planned} months."
+        if self.failures:
+            return f"Fetched {self.fetched} of {self.planned} months; {len(self.failures)} failed."
+        return f"Fetched {self.fetched} month(s) of history."
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,8 +168,88 @@ class AttendanceService:
         )
 
     def cached_months(self, employee_code: str) -> list[tuple[int, int]]:
-        """Months available offline, newest first."""
+        """Months holding at least one day, newest first."""
         return self._attendance.cached_months(employee_code)
+
+    def synced_months(self) -> set[tuple[int, int]]:
+        """Months that have been fetched, whether or not they held any days.
+
+        Distinct from :meth:`cached_months`, which only sees months with rows. A month
+        before the employee joined is legitimately empty, and keying resume on rows would
+        re-fetch it on every single history sync.
+        """
+        found: set[tuple[int, int]] = set()
+        for scope in self._sync_meta.all_scopes():
+            _, _, period = scope.partition("attendance:")
+            if period and len(period) == 7 and period[4] == "-":
+                found.add((int(period[:4]), int(period[5:])))
+        return found
+
+    # --- history --------------------------------------------------------------------
+
+    def fetchable_months(self, *, today: date | None = None) -> list[tuple[int, int]]:
+        """Months the portal will actually serve, newest first, never into the future.
+
+        The year dropdown is the real ceiling — it currently offers only the running
+        portal year — so history stops at that January however many months are configured.
+        """
+        now = today or date.today()
+        offered = self._gateway.available_periods()
+        return [period for period in offered if period <= (now.year, now.month)]
+
+    def history_plan(
+        self,
+        employee_code: str,
+        *,
+        months: int | None = None,
+        today: date | None = None,
+        include_cached: bool = False,
+    ) -> list[tuple[int, int]]:
+        """Which months a backfill would fetch, newest first.
+
+        Already-synced months are skipped by default so a second run is cheap and a
+        cancelled one resumes where it stopped.
+        """
+        limit = months if months is not None else self._config.sync.history_months
+        candidates = self.fetchable_months(today=today)[:limit]
+        if include_cached:
+            return candidates
+
+        already = self.synced_months()
+        return [period for period in candidates if period not in already]
+
+    def backfill_history(
+        self,
+        employee_code: str,
+        *,
+        months: int | None = None,
+        today: date | None = None,
+        force: bool = False,
+        on_progress: Callable[[int, int, tuple[int, int]], bool] | None = None,
+    ) -> HistoryReport:
+        """Fetch and cache past months, newest first.
+
+        ``on_progress`` receives ``(done, total, period)`` and returns False to stop, which
+        is how the UI offers a cancel. One month failing does not abandon the rest: a gap
+        in the middle of the year should not cost the user everything after it.
+        """
+        plan = self.history_plan(employee_code, months=months, today=today, include_cached=force)
+        report = HistoryReport(planned=len(plan))
+
+        for index, (year, month) in enumerate(plan, start=1):
+            if on_progress is not None and not on_progress(index, len(plan), (year, month)):
+                report.cancelled = True
+                logger.info("History backfill cancelled after {} month(s)", report.fetched)
+                break
+            try:
+                self.refresh_month(employee_code, year, month)
+                report.fetched += 1
+            except CerePulseError as exc:
+                logger.warning("Could not fetch {:04d}-{:02d}: {}", year, month, exc)
+                report.failures.append(f"{year:04d}-{month:02d}: {exc}")
+
+        logger.info("History backfill: {} of {} month(s) fetched", report.fetched, report.planned)
+        return report
 
     # --- refreshing -----------------------------------------------------------------
 

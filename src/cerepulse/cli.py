@@ -65,6 +65,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip fetching per-day punch detail.",
     )
+    sync.add_argument(
+        "--history",
+        nargs="?",
+        type=int,
+        const=0,
+        default=None,
+        metavar="MONTHS",
+        help=(
+            "Also fetch past months, newest first. Defaults to the configured "
+            "history length; the portal only serves the current year."
+        ),
+    )
+    sync.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-fetch history months already cached.",
+    )
 
     return parser
 
@@ -90,6 +107,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             year=args.year,
             month=args.month,
             backfill=not args.no_backfill,
+            history=args.history,
+            force=args.force,
         )
 
     if args.command == "paths":

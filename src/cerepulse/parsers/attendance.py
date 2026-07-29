@@ -34,7 +34,6 @@ from cerepulse.parsers.primitives import clean, parse_date, parse_float, parse_t
 from cerepulse.parsers.tables import (
     cell_texts,
     data_rows,
-    find_table,
     find_table_opt,
     parse_document,
     row_cells,
@@ -42,6 +41,10 @@ from cerepulse.parsers.tables import (
 from cerepulse.transport.webforms import DeltaRecord
 
 SUMMARY_GRID_ID = "ctl00_BodyContentPlaceHolder_GridView1"
+
+#: Present on the attendance page whether or not the grid rendered, so it distinguishes an
+#: empty month from a page that is not the attendance page at all.
+_MONTH_SELECT_NAME = "ctl00$BodyContentPlaceHolder$drpFromMonth"
 PUNCH_GRID_ID = "ctl00_BodyContentPlaceHolder_GridView2"
 _EMPLOYEE_CODE_ID = "ctl00_BodyContentPlaceHolder_lblEmpCode"
 
@@ -139,7 +142,15 @@ class ParsedDay:
 def parse_month(html: str, *, year: int, month: int) -> tuple[AttendanceMonth, list[ParsedDay]]:
     """Parse the monthly summary. Returns the month and the per-day postback controls."""
     root = parse_document(html)
-    table = find_table(root, SUMMARY_GRID_ID)
+    table = find_table_opt(root, SUMMARY_GRID_ID)
+    if table is None:
+        # A month with no attendance at all — before the employee joined, for instance —
+        # renders the page without a grid rather than with an empty one. Distinguish that
+        # from a genuinely broken page by checking the period dropdowns are still there: if
+        # they are, this really is the attendance page and it really has nothing to show.
+        if not root.xpath(f"//select[@name={_MONTH_SELECT_NAME!r}]"):
+            raise ParserError(f"Expected table {SUMMARY_GRID_ID!r} was not found in the response")
+        return AttendanceMonth(employee_code="", year=year, month=month), []
 
     employee_code = ""
     code_nodes = root.xpath(f"//*[@id={_EMPLOYEE_CODE_ID!r}]")

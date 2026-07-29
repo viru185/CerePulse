@@ -273,3 +273,114 @@ def test_the_grid_employee_code_wins_over_the_login_name(
     )
     stored = attendance_service.refresh_month("typed-by-user", *JULY)
     assert stored.employee_code == "FROMGRID"
+
+
+# --- history backfill -----------------------------------------------------------------
+
+
+def test_history_is_bounded_by_the_configured_length(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    plan = attendance_service.history_plan(EMPLOYEE, months=3, today=date(2026, 7, 29))
+    assert plan == [(2026, 7), (2026, 6), (2026, 5)]
+
+
+def test_history_never_reaches_into_the_future(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """The portal offers all twelve months of the year, including ones not yet lived."""
+    plan = attendance_service.history_plan(EMPLOYEE, months=12, today=date(2026, 7, 29))
+    assert plan[0] == (2026, 7)
+    assert all(period <= (2026, 7) for period in plan)
+
+
+def test_history_skips_months_already_cached(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """So a second run is cheap and a cancelled one resumes where it stopped."""
+    seed_month(gateway, day(date(2026, 7, 1)))
+    attendance_service.load_month(EMPLOYEE, *JULY)
+
+    plan = attendance_service.history_plan(EMPLOYEE, months=3, today=date(2026, 7, 29))
+    assert (2026, 7) not in plan
+    assert plan == [(2026, 6), (2026, 5)]
+
+
+def test_force_refetches_cached_months(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    seed_month(gateway, day(date(2026, 7, 1)))
+    attendance_service.load_month(EMPLOYEE, *JULY)
+
+    plan = attendance_service.history_plan(
+        EMPLOYEE, months=2, today=date(2026, 7, 29), include_cached=True
+    )
+    assert (2026, 7) in plan
+
+
+def test_backfill_fetches_each_planned_month(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    report = attendance_service.backfill_history(EMPLOYEE, months=3, today=date(2026, 7, 29))
+
+    assert report.planned == 3
+    assert report.fetched == 3
+    assert report.succeeded
+    assert gateway.month_fetches == 3
+
+
+def test_one_failing_month_does_not_abandon_the_rest(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """A gap mid-year should not cost the user everything after it."""
+    gateway.fail_month_with = offline()
+    report = attendance_service.backfill_history(EMPLOYEE, months=3, today=date(2026, 7, 29))
+
+    assert report.fetched == 2
+    assert len(report.failures) == 1
+    assert not report.succeeded
+
+
+def test_progress_can_cancel_the_backfill(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    seen: list[tuple[int, int]] = []
+
+    def progress(done: int, total: int, period: tuple[int, int]) -> bool:
+        # Called before each fetch; returning False stops without fetching that month.
+        seen.append(period)
+        return done <= 2
+
+    report = attendance_service.backfill_history(
+        EMPLOYEE, months=5, today=date(2026, 7, 29), on_progress=progress
+    )
+
+    assert report.cancelled
+    assert report.fetched == 2
+    assert len(seen) == 3  # two fetched, the third refused
+
+
+def test_nothing_to_do_reports_cleanly(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    gateway.periods = []
+    report = attendance_service.backfill_history(EMPLOYEE, today=date(2026, 7, 29))
+
+    assert report.planned == 0
+    assert "already up to date" in report.summary
+
+
+def test_an_empty_month_is_not_refetched_forever(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """A month before the employee joined has no rows but has still been fetched.
+
+    Keying resume on cached rows alone would re-fetch it on every history sync.
+    """
+    attendance_service.refresh_month(EMPLOYEE, 2026, 1)  # the fake returns no days
+
+    assert attendance_service.cached_months(EMPLOYEE) == []
+    assert (2026, 1) in attendance_service.synced_months()
+
+    plan = attendance_service.history_plan(EMPLOYEE, months=12, today=date(2026, 7, 29))
+    assert (2026, 1) not in plan

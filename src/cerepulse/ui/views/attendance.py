@@ -95,12 +95,26 @@ class AttendanceView(QWidget):
 
     # --- rendering ------------------------------------------------------------------
 
-    def set_available_months(self, months: list[tuple[int, int]], current: tuple[int, int]) -> None:
-        """Populate the period picker without re-emitting a change for the current month."""
+    def set_available_months(
+        self,
+        months: list[tuple[int, int]],
+        current: tuple[int, int],
+        *,
+        cached: set[tuple[int, int]] | None = None,
+    ) -> None:
+        """Populate the period picker without re-emitting a change for the current month.
+
+        Months the portal can serve are all listed, not just the cached ones, so history is
+        reachable. Uncached entries are marked, since choosing one costs a round trip.
+        """
+        held = cached if cached is not None else set(months)
         self._period.blockSignals(True)
         self._period.clear()
         for year, month in months:
-            self._period.addItem(fmt.month_label(year, month), (year, month))
+            label = fmt.month_label(year, month)
+            if (year, month) not in held:
+                label = f"{label}  ·  not synced"
+            self._period.addItem(label, (year, month))
         index = self._period.findData(current)
         if index >= 0:
             self._period.setCurrentIndex(index)

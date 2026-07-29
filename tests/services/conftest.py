@@ -48,9 +48,15 @@ class FakeGateway:
         self.fail_with: Exception | None = None
         #: Raise on every call until cleared.
         self.always_fail_with: Exception | None = None
+        #: Raise on the next month fetch only, then clear. Lets a test fail one month
+        #: of a history backfill without breaking the period lookup that precedes it.
+        self.fail_month_with: Exception | None = None
         #: Raise on the next day-detail fetch only, then clear. Lets a test fail one day
         #: of a backfill batch without aborting the month fetch that precedes it.
         self.fail_detail_with: Exception | None = None
+
+        #: Periods the fake portal claims to offer, newest first.
+        self.periods: list[tuple[int, int]] = [(2026, m) for m in range(12, 0, -1)]
 
         self.month_fetches = 0
         self.detail_fetches: list[date] = []
@@ -73,6 +79,9 @@ class FakeGateway:
 
     def fetch_month(self, year: int, month: int) -> tuple[AttendanceMonth, list[ParsedDay]]:
         self._maybe_fail()
+        if self.fail_month_with is not None:
+            error, self.fail_month_with = self.fail_month_with, None
+            raise error
         self.month_fetches += 1
         found = self.months.get(
             (year, month), AttendanceMonth(employee_code=EMPLOYEE, year=year, month=month)
@@ -82,6 +91,10 @@ class FakeGateway:
             for index, day in enumerate(found.days)
         ]
         return found, parsed
+
+    def available_periods(self, html: str | None = None) -> list[tuple[int, int]]:
+        self._maybe_fail()
+        return list(self.periods)
 
     def fetch_day_detail(self, day: ParsedDay) -> list[Punch]:
         self._maybe_fail()

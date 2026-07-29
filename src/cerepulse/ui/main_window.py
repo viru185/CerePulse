@@ -74,6 +74,8 @@ class MainWindow(QMainWindow):
         self._period = (date.today().year, date.today().month)
         self._week_start = week_start_for(date.today())
         self._month_view: MonthView | None = None
+        #: Populated in the background; empty until the portal has been asked once.
+        self._fetchable_months: list[tuple[int, int]] = []
 
         self.setWindowTitle(about.NAME)
         self.setWindowIcon(app_icon())
@@ -139,6 +141,8 @@ class MainWindow(QMainWindow):
         self.settings.config_saved.connect(self._save_config)
         self.settings.sign_out_requested.connect(self._sign_out)
         self.settings.clear_cache_requested.connect(self._clear_cache)
+        self.settings.sync_history_requested.connect(self.sync_history)
+        self.settings.cancel_history_requested.connect(self.cancel_history)
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
@@ -187,6 +191,7 @@ class MainWindow(QMainWindow):
             self._sign_in_silently()
 
         # Deferred so neither blocks the first paint.
+        QTimer.singleShot(600, self._load_fetchable_months)
         QTimer.singleShot(400, self._show_whats_new_if_updated)
         if self._context.config.updates.check_on_startup:
             QTimer.singleShot(4000, self._check_for_update)
@@ -371,6 +376,51 @@ class MainWindow(QMainWindow):
         )
         self._refresh_leave()
 
+    def _load_fetchable_months(self) -> None:
+        """Ask the portal which months it will serve, so the picker can offer them."""
+
+        def adopt(periods: list[tuple[int, int]]) -> None:
+            self._fetchable_months = periods
+            if self._month_view is not None:
+                self._apply_month(self._month_view)
+
+        self._runner.submit(
+            "periods",
+            lambda: self._context.attendance.fetchable_months(),
+            on_success=adopt,
+            on_error=lambda exc: logger.debug("Could not list periods: {}", exc),
+        )
+
+    def sync_history(self) -> None:
+        """Fetch past months in the background, reporting progress in the sidebar."""
+        employee = self._employee_code
+
+        def run() -> object:
+            return self._context.attendance.backfill_history(
+                employee,
+                on_progress=lambda done, total, period: self._history_progress(done, total, period),
+            )
+
+        def done(report: object) -> None:
+            summary = getattr(report, "summary", "History sync finished.")
+            self.settings.banner.show_message(summary, Severity.SUCCESS)
+            self._history_cancelled = False
+            self._load_fetchable_months()
+            if self._month_view is not None:
+                self._apply_month(self._month_view)
+
+        self._history_cancelled = False
+        self.settings.banner.show_message("Fetching history…", Severity.INFO)
+        self._runner.submit("history", run, on_success=done, on_error=self._on_error)
+
+    def cancel_history(self) -> None:
+        self._history_cancelled = True
+
+    def _history_progress(self, done: int, total: int, period: tuple[int, int]) -> bool:
+        # Runs on the worker thread, so it only reads a flag and writes no widgets.
+        logger.info("History {}/{}: {:04d}-{:02d}", done, total, *period)
+        return not getattr(self, "_history_cancelled", False)
+
     def _refresh_leave(self) -> None:
         self._runner.submit(
             "leave",
@@ -391,10 +441,18 @@ class MainWindow(QMainWindow):
         self._month_view = view
         year, month = self._period
 
-        months = self._context.attendance.cached_months(self._employee_code)
-        if (year, month) not in months:
-            months = [(year, month), *months]
-        self.attendance.set_available_months(months, (year, month))
+        # Offer every month the portal can serve, not only what is cached, so history is
+        # reachable from the picker. The fetchable list needs the portal, so fall back to
+        # the cache when offline.
+        # Synced, not merely non-empty: a month before the employee joined is genuinely
+        # empty and should not read as "not synced" forever.
+        cached = self._context.attendance.synced_months() | set(
+            self._context.attendance.cached_months(self._employee_code)
+        )
+        months = sorted(cached | {(year, month)}, reverse=True)
+        if self._fetchable_months:
+            months = sorted(set(self._fetchable_months) | cached | {(year, month)}, reverse=True)
+        self.attendance.set_available_months(months, (year, month), cached=cached)
         self.attendance.show_month(view)
 
         week = analyze_week(

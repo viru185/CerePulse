@@ -29,6 +29,8 @@ def run_sync(
     year: int | None = None,
     month: int | None = None,
     backfill: bool = True,
+    history: int | None = None,
+    force: bool = False,
 ) -> int:
     """Entry point for ``cerepulse sync``. Returns a process exit code."""
     try:
@@ -53,6 +55,21 @@ def run_sync(
             backfill=backfill,
         )
 
+        if history is not None:
+            # 0 means "use the configured length"; argparse const for a bare --history.
+            history_report = app.sync.run(
+                lambda: app.attendance.backfill_history(
+                    employee_code,
+                    months=history or None,
+                    today=today,
+                    force=force,
+                    on_progress=_log_progress,
+                )
+            )
+            logger.info(history_report.summary)
+            for failure in history_report.failures:
+                logger.warning("  {}", failure)
+
         view = app.attendance.load_month(
             employee_code, year or today.year, month or today.month, today=today
         )
@@ -60,6 +77,11 @@ def run_sync(
         app.sign_out()
 
     return 0 if report.succeeded else 1
+
+
+def _log_progress(done: int, total: int, period: tuple[int, int]) -> bool:
+    logger.info("  [{}/{}] {:04d}-{:02d}", done, total, *period)
+    return True
 
 
 def _summarize(report: SyncReport, analysis: MonthAnalysis, pending: int) -> None:

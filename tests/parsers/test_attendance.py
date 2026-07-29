@@ -195,3 +195,29 @@ def test_comp_off_earned_in_the_second_column_counts_as_worked() -> None:
 def test_on_duty_is_attended_but_not_measurable() -> None:
     assert DayStatus.ON_DUTY.is_attended
     assert not DayStatus.ON_DUTY.counts_as_worked
+
+
+def test_a_month_with_no_attendance_parses_as_empty() -> None:
+    """Before the employee joined, the portal omits the grid rather than emptying it.
+
+    Regression: January failed the history backfill with "GridView1 was not found" because
+    a missing grid was treated as a broken page. The period dropdown tells the two apart.
+    """
+    page = """
+      <html><body><form id="form1">
+        <select name="ctl00$BodyContentPlaceHolder$drpFromMonth">
+          <option selected value="01">January</option>
+        </select>
+      </form></body></html>
+    """
+    month, parsed = parse_month(page, year=2026, month=1)
+
+    assert month.days == ()
+    assert parsed == []
+    assert month.year == 2026
+
+
+def test_a_page_that_is_not_the_attendance_page_still_raises() -> None:
+    """A genuinely wrong page must stay loud rather than silently reporting no data."""
+    with pytest.raises(ParserError, match="was not found"):
+        parse_month("<html><body>some other page</body></html>", year=2026, month=1)

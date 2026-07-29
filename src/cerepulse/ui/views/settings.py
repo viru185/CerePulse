@@ -100,6 +100,8 @@ class SettingsView(QWidget):
     config_saved = Signal(object)  # AppConfig
     sign_out_requested = Signal(bool)  # forget stored credentials
     clear_cache_requested = Signal()
+    sync_history_requested = Signal()
+    cancel_history_requested = Signal()
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -138,7 +140,8 @@ class SettingsView(QWidget):
         grid.addWidget(self._build_notifications(), 1, 0, 2, 1)
         grid.addWidget(self._build_sync(), 1, 1)
         grid.addWidget(self._build_appearance(), 2, 1)
-        grid.addWidget(self._build_cache(), 3, 0, 1, 2)
+        grid.addWidget(self._build_history(), 3, 0)
+        grid.addWidget(self._build_cache(), 3, 1)
 
         page.addStretch(1)
 
@@ -241,6 +244,25 @@ class SettingsView(QWidget):
             box = QCheckBox(label)
             self._alerts[field] = box
             card.add_full(box)
+        return card.finish()
+
+    def _build_history(self) -> Card:
+        card = Card(
+            "History",
+            "Pulls past months so trends and month-over-month comparisons have something "
+            "to work with. The portal only serves the current year, so history stops at "
+            "that January.",
+        )
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        sync = QPushButton("Sync history")
+        sync.clicked.connect(self.sync_history_requested)
+        cancel = QPushButton("Stop")
+        cancel.clicked.connect(self.cancel_history_requested)
+        row.addWidget(sync)
+        row.addWidget(cancel)
+        row.addStretch(1)
+        card.body.addLayout(row)
         return card.finish()
 
     def _build_cache(self) -> Card:
