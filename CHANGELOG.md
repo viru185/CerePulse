@@ -8,6 +8,7 @@ All notable changes to CerePulse are documented here.
 - Repair month selection, sign-in persistence, and day accounting
 - Stop charging today for hours it does not owe yet
 - Two things six months of real data made obvious
+- Stop reporting "nothing logged" for a day with hours
 
 ### Features
 - Fetch past months and make them reachable
