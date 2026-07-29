@@ -405,6 +405,34 @@ def test_anomalies_finally_reach_a_screen(
     assert any(anomaly.day == broken for anomaly in view.anomalies)
 
 
+def test_today_is_not_reported_as_an_anomaly_for_being_unfinished(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """A single punch is an anomaly last Tuesday and simply Tuesday afternoon today."""
+    today = date(2026, 7, 29)
+    seed_span(attendance_service, gateway, [(2026, 7)])
+    gateway.months[JULY] = AttendanceMonth(
+        employee_code=EMPLOYEE,
+        year=2026,
+        month=7,
+        days=tuple(
+            AttendanceDay(
+                day=d.day,
+                weekday=d.weekday,
+                status=d.status,
+                first_in=time(9, 0) if d.status.counts_as_worked else None,
+                last_out=None if d.day == today else (time(18, 0) if d.first_in else None),
+                total_hours=Duration(0) if d.day == today else d.total_hours,
+            )
+            for d in gateway.months[JULY].days
+        ),
+    )
+    attendance_service.refresh_month(EMPLOYEE, *JULY)
+
+    view = attendance_service.load_trends(EMPLOYEE, today=today)
+    assert not any(anomaly.day == today for anomaly in view.anomalies)
+
+
 def test_the_forecast_counts_the_working_days_actually_left(
     attendance_service: AttendanceService, gateway: FakeGateway
 ) -> None:

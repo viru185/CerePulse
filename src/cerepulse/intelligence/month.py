@@ -39,6 +39,8 @@ class DayRollup:
     is_working_day: bool
     #: Marked as worked by the portal, but carrying no punches and no hours at all.
     unmeasured: bool = False
+    #: Today, still being worked. Its target is not owed yet.
+    in_progress: bool = False
 
     @property
     def counts_toward_target(self) -> bool:
@@ -106,9 +108,13 @@ def analyze_month(
     """Roll a month's grid up, using punch-level analysis wherever it is available."""
     policy = policy or ShiftPolicy.default()
     analyses = analyses or {}
-    rollups = tuple(_rollup(day, policy, analyses) for day in days)
+    rollups = tuple(_rollup(day, policy, analyses, today) for day in days)
 
-    worked_days = [r for r in rollups if r.is_working_day]
+    # An in-progress day owes nothing yet. Counting today's four hours against a full
+    # eight-hour target reports a deficit that exists only because it is lunchtime, and it
+    # shrinks by itself as the afternoon passes — which is the signature of a number that
+    # was never real. It is counted as a day still to come instead.
+    worked_days = [r for r in rollups if r.is_working_day and not r.in_progress]
     total_worked = _sum(r.worked for r in worked_days)
     total_overtime = _sum(
         _clamp(r.worked - policy.work_target) for r in worked_days if r.worked > policy.work_target
@@ -120,7 +126,7 @@ def analyze_month(
     working_days_elapsed = len(worked_days)
     working_days_remaining = _remaining_working_days(
         days, year=year, month=month, holidays=holidays or [], today=today
-    )
+    ) + sum(1 for r in rollups if r.in_progress)
 
     elapsed_target = Duration(working_days_elapsed * policy.work_target.minutes)
     month_target = Duration(
@@ -180,7 +186,10 @@ def analyze_week(
 
 
 def _rollup(
-    day: AttendanceDay, policy: ShiftPolicy, analyses: dict[date, DayAnalysis]
+    day: AttendanceDay,
+    policy: ShiftPolicy,
+    analyses: dict[date, DayAnalysis],
+    today: date | None = None,
 ) -> DayRollup:
     analysis = analyses.get(day.day)
     if analysis is not None and analysis.state is not DayState.EMPTY:
@@ -204,7 +213,21 @@ def _rollup(
         estimated=estimated and not unmeasured,
         is_working_day=day.status.counts_as_worked and not unmeasured,
         unmeasured=unmeasured,
+        in_progress=_is_in_progress(day, analysis, today),
     )
+
+
+def _is_in_progress(day: AttendanceDay, analysis: DayAnalysis | None, today: date | None) -> bool:
+    """Whether this is today and the working day has not finished yet.
+
+    Clocked in with no out-punch. The grid reports no total for such a day, so without this
+    it looks identical to a day someone worked zero hours.
+    """
+    if today is None or day.day != today:
+        return False
+    if analysis is not None:
+        return analysis.state is DayState.INCOMPLETE
+    return day.first_in is not None and day.last_out is None
 
 
 def _is_unmeasured(day: AttendanceDay, analysis: DayAnalysis | None) -> bool:

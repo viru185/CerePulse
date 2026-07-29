@@ -506,13 +506,24 @@ def _clamp(duration: Duration) -> Duration:
     return duration if duration.minutes > 0 else Duration(0)
 
 
-def working_days_left(today: date, *, off_weekdays: set[int], holidays: set[date]) -> int:
-    """Working days after ``today`` in its month, from the employee's own off-day pattern."""
+def working_days_left(
+    today: date,
+    *,
+    off_weekdays: set[int],
+    holidays: set[date],
+    including_today: bool = False,
+) -> int:
+    """Working days left in ``today``'s month, from the employee's own off-day pattern.
+
+    ``including_today`` counts today itself, which is right whenever today is a working day
+    still in progress: it has contributed no finished hours, so leaving it out of both the
+    elapsed days and the remaining ones would make it disappear from the forecast entirely.
+    """
     from calendar import monthrange
 
     _, last = monthrange(today.year, today.month)
     remaining = 0
-    cursor = today + timedelta(days=1)
+    cursor = today if including_today else today + timedelta(days=1)
     while cursor <= date(today.year, today.month, last):
         if cursor.weekday() not in off_weekdays and cursor not in holidays:
             remaining += 1

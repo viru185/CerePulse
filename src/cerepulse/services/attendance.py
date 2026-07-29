@@ -231,6 +231,9 @@ class AttendanceService:
         }
 
         this_month = [day for day in days if (day.day.year, day.day.month) == (now.year, now.month)]
+        # An unfinished today contributes no measured hours, so it has to be counted as a
+        # day still to come or it falls out of the forecast on both sides.
+        today_row = next((day for day in this_month if day.day == now), None)
         report = analyze_trends(
             days,
             policy=self.policy,
@@ -240,11 +243,16 @@ class AttendanceService:
                 now,
                 off_weekdays=_off_weekdays(this_month),
                 holidays={holiday.day for holiday in self._holidays.find_all()},
+                including_today=today_row is None or today_row.last_out is None,
             ),
         )
+        # Today is excluded from the scan. A day with an in-punch and no out-punch is a
+        # genuine anomaly on Tuesday of last week and simply Tuesday afternoon today, and
+        # every live day would otherwise open the app with a warning about itself.
+        settled = [day for day in this_month if day.day < now]
         return TrendsView(
             report=report,
-            anomalies=detect_anomalies(this_month, analyses=analyses, policy=self.policy),
+            anomalies=detect_anomalies(settled, analyses=analyses, policy=self.policy),
             months_cached=len({(day.day.year, day.day.month) for day in days}),
             months_available=len(self.synced_months()),
             today=now,

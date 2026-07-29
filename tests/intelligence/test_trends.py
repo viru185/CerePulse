@@ -345,6 +345,48 @@ def test_no_days_this_month_means_no_forecast() -> None:
     )
 
 
+# --- the month rollup agrees with the forecast ------------------------------------------
+
+
+def test_a_day_still_being_worked_is_not_scored_against_a_full_target() -> None:
+    """It shrinks by itself as the afternoon passes, which is the signature of a fake number.
+
+    Both screens read the same month, so a partial day counted as short in one and skipped
+    in the other made Attendance and Insights disagree about the bank by exactly eight hours.
+    """
+    from cerepulse.intelligence.month import analyze_month
+
+    today = date(2026, 6, 10)  # a Wednesday
+    settled = [workday(d, total="8.00") for d in weekdays_from(MONDAY, 7) if d < today]
+    live = AttendanceDay(
+        day=today,
+        weekday="Wed",
+        status=DayStatus.PRESENT,
+        first_in=time(9, 0),
+        last_out=None,
+        total_hours=Duration(0),
+    )
+
+    analysis = analyze_month(settled + [live], year=2026, month=6, today=today)
+    rollup = next(r for r in analysis.days if r.day == today)
+
+    assert rollup.in_progress
+    assert analysis.working_days_elapsed == len(settled)
+    # Excluded from the bank, and owed as a day still to come rather than lost from both.
+    assert analysis.bank_delta.minutes == -60 * len(settled)
+
+
+def test_a_finished_day_today_still_counts() -> None:
+    today = date(2026, 6, 10)
+    days = [workday(d, total="9.00") for d in weekdays_from(MONDAY, 7) if d <= today]
+
+    from cerepulse.intelligence.month import analyze_month
+
+    analysis = analyze_month(days, year=2026, month=6, today=today)
+    assert not any(r.in_progress for r in analysis.days)
+    assert analysis.working_days_elapsed == len(days)
+
+
 # --- working days left ------------------------------------------------------------------
 
 
@@ -352,6 +394,14 @@ def test_working_days_left_skips_the_roster_and_holidays() -> None:
     # Wednesday 24 June 2026; the rest of the month is 25, 26, 29, 30 minus one holiday.
     left = working_days_left(date(2026, 6, 24), off_weekdays={5, 6}, holidays={date(2026, 6, 26)})
     assert left == 3
+
+
+def test_an_unfinished_today_is_counted_as_a_day_still_to_come() -> None:
+    """It contributed no measured hours, so leaving it out of both sides erases it."""
+    left = working_days_left(
+        date(2026, 6, 24), off_weekdays={5, 6}, holidays=set(), including_today=True
+    )
+    assert left == 5
 
 
 # --- the whole report -------------------------------------------------------------------
