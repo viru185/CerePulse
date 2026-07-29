@@ -182,6 +182,29 @@ def test_cached_months_are_listed_newest_first(attendance: AttendanceRepository)
     assert attendance.cached_months(EMPLOYEE) == [(2026, 7), (2026, 6), (2026, 5)]
 
 
+def test_a_date_range_crosses_month_boundaries(attendance: AttendanceRepository) -> None:
+    """Trends span months, which find_month cannot serve without a query each."""
+    attendance.save_month(make_month(make_day(date(2026, 5, 4)), year=2026, month=5))
+    attendance.save_month(make_month(make_day(date(2026, 6, 2)), year=2026, month=6))
+    attendance.save_month(make_month(make_day(JUL_1), year=2026, month=7))
+
+    found = attendance.find_days_between(EMPLOYEE, date(2026, 6, 1), date(2026, 7, 31))
+    assert [day.day for day in found] == [date(2026, 6, 2), JUL_1]
+
+
+def test_a_date_range_brings_its_punches_with_it(attendance: AttendanceRepository) -> None:
+    attendance.save_month(make_month(make_day(JUL_1)))
+    attendance.save_day_detail(EMPLOYEE, JUL_1, make_punches())
+
+    found = attendance.find_days_between(EMPLOYEE, JUL_1, JUL_1)
+    assert found[0].punches
+    assert found[0].punches[0].direction is PunchDirection.IN
+
+
+def test_an_empty_range_is_empty_not_an_error(attendance: AttendanceRepository) -> None:
+    assert attendance.find_days_between(EMPLOYEE, date(2025, 1, 1), date(2025, 12, 31)) == []
+
+
 def test_months_are_isolated_from_each_other(attendance: AttendanceRepository) -> None:
     attendance.save_month(make_month(make_day(date(2026, 6, 30)), year=2026, month=6))
     attendance.save_month(make_month(make_day(JUL_1), year=2026, month=7))

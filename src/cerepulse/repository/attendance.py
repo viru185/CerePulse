@@ -178,6 +178,38 @@ class AttendanceRepository:
         ).fetchall()
         return [row_to_punch(row) for row in rows]
 
+    def find_days_between(self, employee_code: str, start: date, end: date) -> list[AttendanceDay]:
+        """Every cached day in a date range, punches included, oldest first.
+
+        Trends span months, so they cannot be assembled from :meth:`find_month` without
+        one query per month and a gap wherever a month was never cached.
+        """
+        rows = self.database.execute(
+            """
+            SELECT * FROM attendance_day
+             WHERE employee_code = ? AND day BETWEEN ? AND ?
+             ORDER BY day
+            """,
+            (employee_code, start.isoformat(), end.isoformat()),
+        ).fetchall()
+        if not rows:
+            return []
+
+        punch_rows = self.database.execute(
+            """
+            SELECT * FROM punch
+             WHERE employee_code = ? AND day BETWEEN ? AND ?
+             ORDER BY day, sequence
+            """,
+            (employee_code, start.isoformat(), end.isoformat()),
+        ).fetchall()
+
+        grouped: dict[str, list[Punch]] = {}
+        for row in punch_rows:
+            grouped.setdefault(row["day"], []).append(row_to_punch(row))
+
+        return [row_to_attendance_day(row, tuple(grouped.get(row["day"], ()))) for row in rows]
+
     def days_missing_detail(self, employee_code: str, year: int, month: int) -> list[date]:
         """Worked days whose punch log has not been fetched — the sync backlog."""
         rows = self.database.execute(

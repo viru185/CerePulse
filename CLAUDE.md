@@ -107,6 +107,13 @@ authentication storm against the employer's HR system. A second expiry is surfac
 **Parsers raise `ParserError` rather than returning empty.** A vendor UI change must surface
 as a diagnostic, not as a silently blank screen.
 
+**Trends report their own footing, and refuse to overstate.** `intelligence/trends.py` uses
+medians throughout, so one 3 AM deployment night cannot become "your typical start"; it
+carries the sample size behind every figure; it needs `MIN_SAMPLE` days before it will claim
+a habit or a record at all; and the break figure comes only from punch logs, because the
+grid has no break column to derive one from. Days the portal marks worked but holds nothing
+for are dropped, not scored zero — the same reasoning as `unmeasured_days`.
+
 **Voice appends, never substitutes.** `intelligence/voice.py` may only add a sentence to an
 insight's detail. It cannot change a number, reword a warning, or drop a line, so no tone
 setting can alter what the app actually reported. Warnings, expiring leave and anomalies get

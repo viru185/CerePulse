@@ -48,6 +48,7 @@ from cerepulse.ui.login_dialog import LoginDialog
 from cerepulse.ui.theme import Palette, palette_for, stylesheet
 from cerepulse.ui.views.about import AboutView
 from cerepulse.ui.views.attendance import AttendanceView
+from cerepulse.ui.views.insights import InsightsView
 from cerepulse.ui.views.leave import LeaveViewWidget
 from cerepulse.ui.views.requests import RequestsView, open_url
 from cerepulse.ui.views.settings import SettingsView
@@ -57,7 +58,7 @@ from cerepulse.ui.whats_new import UpdateAvailableDialog, WhatsNewDialog
 from cerepulse.ui.workers import TaskRunner
 from cerepulse.update import Release, check_for_update, mark_seen, should_show_whats_new
 
-SCREENS = ("Today", "Week", "Attendance", "Leave", "Requests", "Settings", "About")
+SCREENS = ("Today", "Week", "Attendance", "Insights", "Leave", "Requests", "Settings", "About")
 
 
 class MainWindow(QMainWindow):
@@ -109,6 +110,7 @@ class MainWindow(QMainWindow):
         self.today = TodayView(self._palette)
         self.week = WeekView(self._palette)
         self.attendance = AttendanceView(self._palette)
+        self.insights = InsightsView(self._palette)
         self.leave = LeaveViewWidget(self._palette)
         self.requests = RequestsView(self._palette)
         self.settings = SettingsView(self._context.config)
@@ -118,6 +120,7 @@ class MainWindow(QMainWindow):
             self.today,
             self.week,
             self.attendance,
+            self.insights,
             self.leave,
             self.requests,
             self.settings,
@@ -137,6 +140,8 @@ class MainWindow(QMainWindow):
             lambda: open_url(self._context.client.url_for(pages.SWIPE_REQUESTS))
         )
         self.week.week_changed.connect(self._change_week)
+        self.insights.refresh_requested.connect(self._refresh_trends)
+        self.insights.sync_history_requested.connect(self.sync_history)
         self.about.update_check_requested.connect(self._check_for_update_now)
         self.settings.config_saved.connect(self._save_config)
         self.settings.sign_out_requested.connect(self._sign_out)
@@ -421,6 +426,19 @@ class MainWindow(QMainWindow):
         logger.info("History {}/{}: {:04d}-{:02d}", done, total, *period)
         return not getattr(self, "_history_cancelled", False)
 
+    def _refresh_trends(self) -> None:
+        """Rebuild the Insights screen from the cache. Never fetches.
+
+        History is expensive to pull and cheap to read, so this reads what is stored and
+        the screen says how much that is. Filling it is an explicit Sync history.
+        """
+        self._runner.submit(
+            "trends",
+            lambda: self._context.attendance.load_trends(self._employee_code, today=date.today()),
+            on_success=self.insights.show_trends,
+            on_error=lambda exc: self.insights.show_error(str(exc)),
+        )
+
     def _refresh_leave(self) -> None:
         self._runner.submit(
             "leave",
@@ -464,6 +482,9 @@ class MainWindow(QMainWindow):
 
         self._render_today(view)
         self._render_status(view)
+        # Trends read straight from the cache the month refresh has just written, so they
+        # follow it rather than running on their own schedule.
+        self._refresh_trends()
 
     def _render_today(self, view: MonthView) -> None:
         today = date.today()

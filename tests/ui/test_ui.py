@@ -183,6 +183,69 @@ def test_a_past_day_still_shows_it_because_there_is_no_countdown(qapp: QApplicat
     assert view._insights._layout.count() == len(analysis.insights)
 
 
+# --- insights view ----------------------------------------------------------------------
+
+
+def _trends_view(days: int, *, today: date):  # type: ignore[no-untyped-def]
+    from datetime import timedelta
+
+    from cerepulse.intelligence.trends import analyze_trends
+    from cerepulse.models.attendance import AttendanceDay, DayStatus
+    from cerepulse.services.attendance import TrendsView
+
+    rows = []
+    cursor = today - timedelta(days=days * 2)
+    while len(rows) < days:
+        if cursor.weekday() < 5:
+            rows.append(
+                AttendanceDay(
+                    day=cursor,
+                    weekday=cursor.strftime("%a"),
+                    status=DayStatus.PRESENT,
+                    first_in=time(9, 0),
+                    last_out=time(18, 0),
+                    total_hours=Duration(9 * 60),
+                )
+            )
+        cursor += timedelta(days=1)
+
+    return TrendsView(
+        report=analyze_trends(rows, today=today, working_days_remaining=3),
+        anomalies=[],
+        months_cached=2,
+        months_available=2,
+        today=today,
+    )
+
+
+def test_insights_renders_a_full_history(qapp: QApplication) -> None:
+    from cerepulse.ui.views.insights import InsightsView
+
+    view = InsightsView(DARK)
+    view.show_trends(_trends_view(30, today=date(2026, 7, 29)))
+
+    assert view.months.rowCount() >= 1
+    assert "9:00 AM" in view.typical_in._value.text()
+    # Says what it is standing on before it says anything else.
+    assert "30 working days" in view.footing.text()
+    assert "estimated from the grid" in view.footing.text()
+    # No punch detail cached, so the break stays blank rather than being back-solved.
+    assert view.typical_break._value.text() == fmt.EMPTY
+
+
+def test_insights_says_so_rather_than_inventing_a_habit_from_four_days(
+    qapp: QApplication,
+) -> None:
+    """Drawing a habit from four days teaches the user to distrust the whole screen."""
+    from cerepulse.ui.views.insights import InsightsView
+
+    view = InsightsView(DARK)
+    view.show_trends(_trends_view(4, today=date(2026, 7, 29)))
+
+    assert "too few" in view.footing.text()
+    assert view.footing.objectName() == "BannerWarning"
+
+
 # --- task runner ----------------------------------------------------------------------
 
 

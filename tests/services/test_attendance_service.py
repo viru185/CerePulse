@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 import pytest
 
@@ -317,6 +317,103 @@ def test_the_grid_employee_code_wins_over_the_login_name(
     )
     stored = attendance_service.refresh_month("typed-by-user", *JULY)
     assert stored.employee_code == "FROMGRID"
+
+
+# --- trends -----------------------------------------------------------------------------
+
+
+def seed_span(
+    attendance_service: AttendanceService,
+    gateway: FakeGateway,
+    periods: list[tuple[int, int]],
+) -> None:
+    """Cache a run of ordinary weekdays across several months."""
+    for year, month in periods:
+        cursor = date(year, month, 1)
+        days = []
+        while cursor.month == month:
+            status = DayStatus.WEEKLY_OFF if cursor.weekday() >= 5 else DayStatus.PRESENT
+            days.append(day(cursor, status=status, total="0.00" if status.is_off else "9.00"))
+            cursor += timedelta(days=1)
+        gateway.months[(year, month)] = AttendanceMonth(
+            employee_code=EMPLOYEE, year=year, month=month, days=tuple(days)
+        )
+        attendance_service.refresh_month(EMPLOYEE, year, month)
+
+
+def test_trends_read_across_months_from_the_cache_alone(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """A month picker reads one month; trends need the span, without touching the portal."""
+    seed_span(attendance_service, gateway, [(2026, 5), (2026, 6), (2026, 7)])
+    before = gateway.month_fetches
+
+    view = attendance_service.load_trends(EMPLOYEE, today=date(2026, 7, 15))
+
+    assert gateway.month_fetches == before  # offline by design
+    assert view.months_cached == 3
+    assert [(s.year, s.month) for s in view.report.months] == [(2026, 5), (2026, 6), (2026, 7)]
+
+
+def test_trends_are_bounded_by_the_configured_history_length(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    seed_span(attendance_service, gateway, [(2026, 4), (2026, 5), (2026, 6), (2026, 7)])
+    view = attendance_service.load_trends(EMPLOYEE, today=date(2026, 7, 15), months=2)
+
+    assert [(s.year, s.month) for s in view.report.months] == [(2026, 6), (2026, 7)]
+
+
+def test_a_nearly_empty_cache_is_reported_as_thin_rather_than_analyzed(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """Four days of history is not a habit, and drawing one from it teaches distrust."""
+    target = date(2026, 7, 1)
+    seed_month(gateway, day(target), day(target + timedelta(days=1)))
+    attendance_service.load_month(EMPLOYEE, *JULY)
+
+    view = attendance_service.load_trends(EMPLOYEE, today=date(2026, 7, 15))
+    assert view.is_thin
+    assert not view.report.habits.has_enough
+
+
+def test_anomalies_finally_reach_a_screen(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """detect_anomalies has been implemented and tested since Phase 3 and shown nowhere."""
+    seed_span(attendance_service, gateway, [(2026, 7)])
+    broken = date(2026, 7, 6)  # a Monday
+    gateway.months[JULY] = AttendanceMonth(
+        employee_code=EMPLOYEE,
+        year=2026,
+        month=7,
+        days=tuple(
+            AttendanceDay(
+                day=d.day,
+                weekday=d.weekday,
+                status=d.status,
+                first_in=time(9, 0) if d.day != broken else time(9, 0),
+                last_out=None if d.day == broken else time(18, 0),
+                total_hours=Duration(0) if d.day == broken else d.total_hours,
+            )
+            for d in gateway.months[JULY].days
+        ),
+    )
+    attendance_service.refresh_month(EMPLOYEE, *JULY)
+
+    view = attendance_service.load_trends(EMPLOYEE, today=date(2026, 7, 31))
+    assert any(anomaly.day == broken for anomaly in view.anomalies)
+
+
+def test_the_forecast_counts_the_working_days_actually_left(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    seed_span(attendance_service, gateway, [(2026, 7)])
+    view = attendance_service.load_trends(EMPLOYEE, today=date(2026, 7, 29))
+
+    assert view.report.forecast is not None
+    # 30 and 31 July 2026 are a Thursday and a Friday.
+    assert view.report.forecast.working_days_remaining == 2
 
 
 # --- history backfill -----------------------------------------------------------------

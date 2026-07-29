@@ -20,11 +20,18 @@ from loguru import logger
 
 from cerepulse.core.config import AppConfig
 from cerepulse.core.errors import CerePulseError, TransportError
+from cerepulse.intelligence.anomalies import Anomaly, detect_anomalies
 from cerepulse.intelligence.day import DayAnalysis, analyze_day
 from cerepulse.intelligence.month import MonthAnalysis, analyze_month
 from cerepulse.intelligence.policy import ShiftPolicy
+from cerepulse.intelligence.trends import (
+    MIN_SAMPLE,
+    TrendReport,
+    analyze_trends,
+    working_days_left,
+)
 from cerepulse.intelligence.voice import Tone, voice_day
-from cerepulse.models.attendance import AttendanceMonth
+from cerepulse.models.attendance import AttendanceDay, AttendanceMonth, DayStatus
 from cerepulse.models.values import Duration
 from cerepulse.repository.attendance import AttendanceRepository
 from cerepulse.repository.employee import EmployeeRepository
@@ -63,6 +70,25 @@ class HistoryReport:
         if self.failures:
             return f"Fetched {self.fetched} of {self.planned} months; {len(self.failures)} failed."
         return f"Fetched {self.fetched} month(s) of history."
+
+
+@dataclass(frozen=True, slots=True)
+class TrendsView:
+    """The Insights screen's payload: the report, plus how much history backs it."""
+
+    report: TrendReport
+    anomalies: list[Anomaly]
+    #: Months with cached rows inside the window the report covers.
+    months_cached: int
+    #: Months ever synced, including ones that turned out to be empty.
+    months_available: int
+    #: The day the report was built for, so the view can mark the month still in progress.
+    today: date
+
+    @property
+    def is_thin(self) -> bool:
+        """Whether there is too little history for the screen to say anything useful."""
+        return self.report.measured_days < MIN_SAMPLE
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +205,50 @@ class AttendanceService:
         # Voiced here rather than in the views, so the window, the tray tooltip and the
         # notifications all say the same thing about the same day.
         return voice_day(analysis, tone=Tone.parse(self._config.ui.tone))
+
+    def load_trends(
+        self,
+        employee_code: str,
+        *,
+        today: date | None = None,
+        months: int | None = None,
+    ) -> TrendsView:
+        """Assemble the Insights screen from cached history. Never touches the network.
+
+        Offline by design: history is expensive to fetch and cheap to read, so this reads
+        whatever the cache holds and reports how much that is rather than triggering a sync
+        the user did not ask for.
+        """
+        now = today or date.today()
+        span = months if months is not None else self._config.sync.history_months
+        start = _months_before(date(now.year, now.month, 1), span - 1)
+        days = self._attendance.find_days_between(employee_code, start, now)
+
+        analyses = {
+            day.day: analyze_day(list(day.punches), day=day.day, policy=self.policy)
+            for day in days
+            if day.detail_loaded and day.punches
+        }
+
+        this_month = [day for day in days if (day.day.year, day.day.month) == (now.year, now.month)]
+        report = analyze_trends(
+            days,
+            policy=self.policy,
+            analyses=analyses,
+            today=now,
+            working_days_remaining=working_days_left(
+                now,
+                off_weekdays=_off_weekdays(this_month),
+                holidays={holiday.day for holiday in self._holidays.find_all()},
+            ),
+        )
+        return TrendsView(
+            report=report,
+            anomalies=detect_anomalies(this_month, analyses=analyses, policy=self.policy),
+            months_cached=len({(day.day.year, day.day.month) for day in days}),
+            months_available=len(self.synced_months()),
+            today=now,
+        )
 
     def cached_months(self, employee_code: str) -> list[tuple[int, int]]:
         """Months holding at least one day, newest first."""
@@ -367,3 +437,21 @@ class AttendanceService:
             from_cache=from_cache,
             pending_detail=len(self._attendance.days_missing_detail(code, year, period_month)),
         )
+
+
+def _months_before(anchor: date, count: int) -> date:
+    """The first of the month ``count`` months before ``anchor``."""
+    index = anchor.year * 12 + (anchor.month - 1) - count
+    return date(index // 12, index % 12 + 1, 1)
+
+
+def _off_weekdays(days: list[AttendanceDay]) -> set[int]:
+    """Which weekdays this employee is rostered off, read from the portal's own markings.
+
+    Falls back to Saturday and Sunday only when the month is too empty to tell — better a
+    conventional guess than counting a weekend as a working day still to come.
+    """
+    off = {day.day.weekday() for day in days if day.status is DayStatus.WEEKLY_OFF}
+    worked = {day.day.weekday() for day in days if day.status.counts_as_worked}
+    inferred = off - worked
+    return inferred or {5, 6}
