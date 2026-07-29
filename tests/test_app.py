@@ -84,3 +84,58 @@ def test_closing_releases_both_resources(tmp_path: Path) -> None:
 
     with pytest.raises(RepositoryError, match="not open"):
         _ = context.database.connection
+
+
+# --- account persistence --------------------------------------------------------------
+
+
+def test_signing_in_persists_the_username(app_context, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Regression: the username was never written, so Remember me could not work.
+
+    The password lives in the Credential Manager keyed *by* username — without keeping the
+    username there is nothing to look it up by. Losing it silently broke the "signed in as"
+    label, silent sign-in on launch, and session recovery all at once.
+    """
+    monkeypatch.setattr(app_context.auth, "login", lambda *_: None)
+    monkeypatch.setattr(app_context.gateway, "fetch_employee", lambda: Employee(code="CIPL00364"))
+    stored: dict[str, str] = {}
+    monkeypatch.setattr(
+        "cerepulse.core.secrets.store_password",
+        lambda user, pwd: stored.__setitem__(user, pwd) or True,
+    )
+
+    app_context.sign_in("CIPL00364", "secret", remember=True)
+
+    assert app_context.config.portal.username == "CIPL00364"
+    assert app_context.config.portal.remember_me is True
+    assert app_context.saved_username == "CIPL00364"
+    assert stored == {"CIPL00364": "secret"}
+
+
+def test_the_credential_provider_sees_a_later_sign_in(app_context, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The provider is bound to the context, not to the config it was built with."""
+    monkeypatch.setattr(app_context.auth, "login", lambda *_: None)
+    monkeypatch.setattr(app_context.gateway, "fetch_employee", lambda: Employee(code="CIPL00364"))
+    monkeypatch.setattr("cerepulse.core.secrets.store_password", lambda *_: True)
+    monkeypatch.setattr("cerepulse.core.secrets.get_password", lambda user: "secret")
+
+    app_context.sign_in("CIPL00364", "secret", remember=True)
+
+    assert app_context.auth.credential_provider is not None
+    assert app_context.auth.credential_provider() == ("CIPL00364", "secret")
+
+
+def test_signing_out_and_forgetting_clears_the_username(app_context, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(app_context.auth, "login", lambda *_: None)
+    monkeypatch.setattr(app_context.auth, "logout", lambda: None)
+    monkeypatch.setattr(app_context.gateway, "fetch_employee", lambda: Employee(code="CIPL00364"))
+    monkeypatch.setattr("cerepulse.core.secrets.store_password", lambda *_: True)
+    cleared: list[str] = []
+    monkeypatch.setattr("cerepulse.core.secrets.clear_password", cleared.append)
+
+    app_context.sign_in("CIPL00364", "secret", remember=True)
+    app_context.sign_out(forget=True)
+
+    assert cleared == ["CIPL00364"]
+    assert app_context.config.portal.username == ""
+    assert app_context.config.portal.remember_me is False

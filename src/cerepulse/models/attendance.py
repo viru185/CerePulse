@@ -50,12 +50,29 @@ class DayStatus(Enum):
     WEEKLY_OFF = "weekly_off"
     HOLIDAY = "holiday"
     LEAVE = "leave"
+    ON_DUTY = "on_duty"
     UNKNOWN = "unknown"
 
     @property
     def counts_as_worked(self) -> bool:
-        """Whether the day contributes working time, for streaks and monthly rollups."""
+        """Whether this day's hours are measured against the target.
+
+        Outdoor duty is deliberately excluded even though the employee was working: there
+        are no swipes to measure, so counting it would score a full day as zero hours and
+        report a deficit the employee cannot act on. It is a real working day
+        (:attr:`is_attended`) but not a measurable one.
+        """
         return self in {DayStatus.PRESENT, DayStatus.HALF_DAY}
+
+    @property
+    def is_attended(self) -> bool:
+        """Whether the employee was working, measurable hours or not."""
+        return self.counts_as_worked or self is DayStatus.ON_DUTY
+
+    @property
+    def is_off(self) -> bool:
+        """Whether the day was legitimately not worked, as opposed to unexplained."""
+        return self in {DayStatus.WEEKLY_OFF, DayStatus.HOLIDAY, DayStatus.LEAVE}
 
 
 @dataclass(frozen=True, slots=True)

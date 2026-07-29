@@ -37,6 +37,8 @@ class DayRollup:
     status: DayStatus
     estimated: bool
     is_working_day: bool
+    #: Marked as worked by the portal, but carrying no punches and no hours at all.
+    unmeasured: bool = False
 
     @property
     def counts_toward_target(self) -> bool:
@@ -73,6 +75,8 @@ class MonthAnalysis:
     total_overtime: Duration
     short_days: int
     estimated_days: int
+    #: Days the portal calls worked but for which it holds no punches or hours at all.
+    unmeasured_days: int
     average_in_time: time | None
     working_days_elapsed: int
     working_days_remaining: int
@@ -137,6 +141,7 @@ def analyze_month(
         total_overtime=total_overtime,
         short_days=short_days,
         estimated_days=sum(1 for r in worked_days if r.estimated),
+        unmeasured_days=sum(1 for r in rollups if r.unmeasured),
         average_in_time=_average_in_time(days),
         working_days_elapsed=working_days_elapsed,
         working_days_remaining=working_days_remaining,
@@ -186,12 +191,33 @@ def _rollup(
         worked = _clamp(day.total_hours - policy.break_target)
         estimated = day.total_hours.minutes > 0
 
+    # The portal marks some days present with no punches and no hours at all — swipe data
+    # that simply does not exist. Scoring those as a full day short invents a deficit the
+    # employee can neither verify nor act on, so they are excluded from the bank and
+    # reported separately instead.
+    unmeasured = _is_unmeasured(day, analysis)
+
     return DayRollup(
         day=day.day,
         worked=worked,
         status=day.status,
-        estimated=estimated,
-        is_working_day=day.status.counts_as_worked,
+        estimated=estimated and not unmeasured,
+        is_working_day=day.status.counts_as_worked and not unmeasured,
+        unmeasured=unmeasured,
+    )
+
+
+def _is_unmeasured(day: AttendanceDay, analysis: DayAnalysis | None) -> bool:
+    """Whether a nominally worked day carries nothing that can be measured."""
+    if not day.status.counts_as_worked:
+        return False
+    if analysis is not None and analysis.state is not DayState.EMPTY:
+        return False
+    return (
+        day.total_hours.minutes == 0
+        and day.first_in is None
+        and day.last_out is None
+        and not day.punches
     )
 
 

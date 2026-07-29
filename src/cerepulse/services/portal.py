@@ -13,12 +13,15 @@ already on screen is the one asked for.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date
+from typing import TypeVar
 
 from loguru import logger
+from lxml import html as lxml_html
 
 from cerepulse.auth.manager import AuthManager
-from cerepulse.core.errors import ParserError
+from cerepulse.core.errors import ParserError, PrivilegeError
 from cerepulse.models.attendance import AttendanceMonth, Punch
 from cerepulse.models.leave import Holiday, LeaveBalance, LeaveTransaction
 from cerepulse.models.swipe import SwipeRequest
@@ -53,6 +56,8 @@ LEAVE_VIEW_BUTTON = "ctl00$BodyContentPlaceHolder$btnView2"
 
 _EMPLOYEE_BANNER_ID = "ctl00_BodyContentPlaceHolder_lblEmpCode"
 
+T = TypeVar("T")
+
 
 class PortalGateway:
     """Fetches and parses portal pages. Holds no cache and makes no policy decisions."""
@@ -77,24 +82,46 @@ class PortalGateway:
         self._menu = None
 
     def _fetch(self, label: str, section: str) -> str:
-        entry = self.menu().require(label, section=section)
-        response = self._auth.check_response(self._client.get(entry.url, follow_redirects=True))
-        return response.text
+        def get() -> str:
+            entry = self.menu().require(label, section=section)
+            return self._auth.check_response(
+                self._client.get(entry.url, follow_redirects=True)
+            ).text
+
+        return self._retrying_stale_menu(get)
 
     def _url(self, label: str, section: str) -> str:
         return self.menu().require(label, section=section).url
+
+    def _retrying_stale_menu(self, operation: Callable[[], T]) -> T:
+        """Run an operation, reloading the menu once if its token turned out to be stale.
+
+        Menu tokens expire independently of the session, so this is recoverable without
+        touching credentials. Exactly one retry: if a freshly loaded menu is also refused,
+        the problem is not staleness and looping would only hammer the portal.
+        """
+        try:
+            return operation()
+        except PrivilegeError:
+            logger.info("Menu token rejected; reloading the menu and retrying once")
+            self.menu(refresh=True)
+            return operation()
 
     # --- attendance -----------------------------------------------------------------
 
     def fetch_month(self, year: int, month: int) -> tuple[AttendanceMonth, list[ParsedDay]]:
         """Fetch one month's attendance grid."""
-        url = self._url(*MENU_ATTENDANCE)
-        html = self._auth.check_response(self._client.get(url, follow_redirects=True)).text
 
-        if not self._shows_period(html, year, month):
-            html = self._select_period(url, html, year, month)
+        def get() -> tuple[AttendanceMonth, list[ParsedDay]]:
+            url = self._url(*MENU_ATTENDANCE)
+            html = self._auth.check_response(self._client.get(url, follow_redirects=True)).text
 
-        return parse_month(html, year=year, month=month)
+            if not self._shows_period(html, year, month):
+                html = self._select_period(url, html, year, month)
+
+            return parse_month(html, year=year, month=month)
+
+        return self._retrying_stale_menu(get)
 
     def fetch_day_detail(self, day: ParsedDay) -> list[Punch]:
         """Fetch one day's punch log via the async postback its date link triggers."""
@@ -134,8 +161,16 @@ class PortalGateway:
         ) == str(year)
 
     def _select_period(self, url: str, html: str, year: int, month: int) -> str:
+        """Submit the period filter and return the re-rendered page.
+
+        Refresh is an ``<input type="submit">``, so it must be posted as its own name/value
+        pair. Sending ``__EVENTTARGET`` instead — as a LinkButton would need — leaves the
+        server with no event to raise: it re-renders the page without running the handler,
+        the grid never appears, and the parser fails with a confusing "table not found".
+        That was the bug behind every non-default month failing to load.
+        """
         state = WebFormsState.from_html(html)
-        payload = state.postback(
+        payload = state.submit(
             REFRESH_BUTTON,
             **{MONTH_SELECT: f"{month:02d}", YEAR_SELECT: str(year)},
         )
@@ -143,6 +178,31 @@ class PortalGateway:
         return self._auth.check_response(
             self._client.post(url, data=payload, follow_redirects=True)
         ).text
+
+    def available_periods(self, html: str | None = None) -> list[tuple[int, int]]:
+        """Every year/month the portal will actually serve, newest first.
+
+        The year dropdown is the real limit: it currently offers only the running portal
+        year, so history cannot reach further back than that January however much the user
+        asks for.
+        """
+        page = html if html is not None else self._attendance_page()
+        document = lxml_html.fromstring(page)
+
+        def options(name: str) -> list[str]:
+            nodes = document.xpath(f"//select[@name={name!r}]/option/@value")
+            return [str(value) for value in nodes if str(value).strip()]
+
+        years = sorted({int(value) for value in options(YEAR_SELECT) if value.isdigit()})
+        months = sorted({int(value) for value in options(MONTH_SELECT) if value.isdigit()})
+        if not years or not months:
+            raise ParserError("Attendance page has no period dropdowns")
+
+        return sorted(((year, month) for year in years for month in months), reverse=True)
+
+    def _attendance_page(self) -> str:
+        url = self._url(*MENU_ATTENDANCE)
+        return self._auth.check_response(self._client.get(url, follow_redirects=True)).text
 
     # --- leave, swipe, holidays -----------------------------------------------------
 

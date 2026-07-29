@@ -64,6 +64,16 @@ class ParserError(ProtocolError):
     user_message = "Could not read the attendance page. The portal layout may have changed."
 
 
+class PrivilegeError(ProtocolError):
+    """The portal served its "insufficient privileges (ROLE)" page.
+
+    Distinct from an expired session: signing in again will not help, because the fault is
+    a stale menu navigation token. Recovery is to reload the menu and retry.
+    """
+
+    user_message = "The portal refused that page. Refreshing usually fixes it."
+
+
 # --- Storage -----------------------------------------------------------------------
 
 

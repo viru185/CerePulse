@@ -125,6 +125,7 @@ class MainWindow(QMainWindow):
 
         self.today.refresh_requested.connect(lambda: self.refresh(force=True))
         self.today.insight_action.connect(self._handle_insight_action)
+        self.today.back_to_today.connect(self._show_today)
         self.attendance.refresh_requested.connect(lambda: self.refresh(force=True))
         self.attendance.month_changed.connect(self._change_month)
         self.attendance.day_selected.connect(self._open_day)
@@ -408,8 +409,11 @@ class MainWindow(QMainWindow):
 
     def _render_today(self, view: MonthView) -> None:
         today = date.today()
-        target = view.month.day_on(today) or (view.month.days[-1] if view.month.days else None)
-        if target is None:
+        # Only ever render today as today. Falling back to the last cached day made a
+        # failed sync look like a successful one showing the wrong figures, which is how a
+        # missing clock-in went unnoticed.
+        if view.month.day_on(today) is None:
+            self.today.show_awaiting_today(today, last_synced=view.last_synced)
             return
 
         def rendered(analysis: DayAnalysis) -> None:
@@ -421,7 +425,7 @@ class MainWindow(QMainWindow):
         self._runner.submit(
             "analyze-day",
             lambda: self._context.attendance.load_day(
-                self._employee_code, target.day, now=datetime.now()
+                self._employee_code, today, now=datetime.now()
             ),
             on_success=rendered,
             on_error=lambda exc: logger.debug("Could not analyze today: {}", exc),
@@ -479,6 +483,15 @@ class MainWindow(QMainWindow):
                 policy=self._context.attendance.policy,
             )
             self.week.show_week(week, self._context.attendance.policy.work_target)
+
+    def _show_today(self) -> None:
+        """Return to today, switching the period back if the user wandered months."""
+        today = date.today()
+        if self._period != (today.year, today.month):
+            self._change_month(today.year, today.month)
+            return
+        if self._month_view is not None:
+            self._render_today(self._month_view)
 
     def _open_day(self, day: date) -> None:
         self._stack.setCurrentIndex(0)

@@ -36,6 +36,7 @@ class TodayView(QWidget):
 
     insight_action = Signal(object)
     refresh_requested = Signal()
+    back_to_today = Signal()
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -93,6 +94,22 @@ class TodayView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
+        # Viewing a past day is a distinct mode and has to look like one, with an obvious
+        # way out. Opening a date from Attendance previously left no route back.
+        context = QHBoxLayout()
+        context.setSpacing(8)
+        self._viewing = QLabel()
+        self._viewing.setObjectName("CardCaption")
+        self._back = QPushButton("Back to today")
+        self._back.clicked.connect(self.back_to_today)
+        context.addWidget(self._viewing)
+        context.addWidget(self._back)
+        context.addStretch(1)
+        self._context_bar = QWidget()
+        self._context_bar.setLayout(context)
+        self._context_bar.setVisible(False)
+        layout.addWidget(self._context_bar)
+
         top = QHBoxLayout()
         self._hero_label = QLabel("You can leave at")
         self._hero_label.setObjectName("HeroLabel")
@@ -131,10 +148,40 @@ class TodayView(QWidget):
 
     # --- rendering ------------------------------------------------------------------
 
+    def show_awaiting_today(self, day: date, *, last_synced: datetime | None = None) -> None:
+        """State plainly that today has not arrived in the data yet.
+
+        Preferable to rendering the most recent cached day in its place: that reads as a
+        successful refresh showing wrong numbers, and it is how a missed clock-in hides.
+        """
+        self._analysis = None
+        self._clock.stop()
+        self._context_bar.setVisible(False)
+
+        self._hero_label.setText("Waiting for today")
+        self._hero_value.setText(fmt.EMPTY)
+        synced = f" Last synced {fmt.relative_time(last_synced)}." if last_synced else ""
+        self._hero_caption.setText(
+            f"{fmt.long_day_label(day)} is not in the portal's data yet.{synced} "
+            f"It appears once your first punch of the day is recorded."
+        )
+
+        for card in (self.worked, self.break_taken, self.remaining, self.extra):
+            card.set_value(fmt.EMPTY)
+            card.set_caption("")
+        self._segments.set_segments(())
+        self._legend.setText("")
+        self._insights.set_insights([])
+        self._render_timeline_empty("Nothing recorded for today yet.")
+
     def show_analysis(self, analysis: DayAnalysis, *, is_today: bool = True) -> None:
         """Render a day. ``is_today`` drives whether the live countdown runs."""
         self._analysis = analysis
         palette = self._palette
+
+        self._context_bar.setVisible(not is_today)
+        if not is_today:
+            self._viewing.setText(f"Viewing {fmt.long_day_label(analysis.day)}")
 
         self.worked.set_value(fmt.duration(analysis.worked), accent=palette.work)
         self.break_taken.set_value(fmt.duration(analysis.break_taken), accent=palette.rest)
@@ -217,18 +264,26 @@ class TodayView(QWidget):
             parts.append("hatched = inferred from a missing punch")
         return "  ·  ".join(parts)
 
-    def _render_timeline(self, analysis: DayAnalysis) -> None:
+    def _render_timeline_empty(self, message: str) -> None:
         while self._timeline.count():
             item = self._timeline.takeAt(0)
             widget = item.widget() if item is not None else None
             if widget is not None:
                 widget.deleteLater()
+        empty = QLabel(message)
+        empty.setObjectName("CardCaption")
+        self._timeline.addWidget(empty)
 
+    def _render_timeline(self, analysis: DayAnalysis) -> None:
         if not analysis.segments:
-            empty = QLabel("No punches recorded for this day.")
-            empty.setObjectName("CardCaption")
-            self._timeline.addWidget(empty)
+            self._render_timeline_empty("No punches recorded for this day.")
             return
+
+        while self._timeline.count():
+            item = self._timeline.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
 
         for index, segment in enumerate(analysis.segments, start=1):
             row = QLabel(

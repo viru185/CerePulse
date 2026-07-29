@@ -196,3 +196,45 @@ def test_a_custom_policy_changes_the_target() -> None:
     )
     assert week.total_worked.as_clock() == "7:00"
     assert week.delta.minutes == 0
+
+
+# --- unmeasurable days ----------------------------------------------------------------
+
+
+def test_a_present_day_with_no_punches_is_excluded_from_the_bank() -> None:
+    """The portal marks some days present while holding no swipe data for them at all.
+
+    Regression: scoring those as a full day short produced a large deficit that was not
+    real and that the employee could neither verify nor act on. Live June data showed
+    -79:05 for a month that was actually slightly ahead.
+    """
+    days = [
+        day(date(2026, 6, 22), gross="9.00"),
+        day(date(2026, 6, 23), gross="0.00", first_in=None),
+    ]
+    analysis = analyze_month(days, year=2026, month=6, today=date(2026, 6, 30))
+
+    assert analysis.working_days_elapsed == 1
+    assert analysis.unmeasured_days == 1
+    assert analysis.bank_delta.minutes == 0
+    assert analysis.short_days == 0
+
+
+def test_a_day_with_hours_is_still_measured() -> None:
+    days = [day(date(2026, 6, 22), gross="7.00")]
+    analysis = analyze_month(days, year=2026, month=6, today=date(2026, 6, 30))
+
+    assert analysis.unmeasured_days == 0
+    assert analysis.short_days == 1
+
+
+def test_on_duty_days_do_not_count_against_the_target() -> None:
+    """Working off-site is a real day, but there are no swipes to measure it by."""
+    days = [
+        day(date(2026, 6, 22), gross="9.00"),
+        day(date(2026, 6, 23), status=DayStatus.ON_DUTY, gross="0.00", first_in=None),
+    ]
+    analysis = analyze_month(days, year=2026, month=6, today=date(2026, 6, 30))
+
+    assert analysis.working_days_elapsed == 1
+    assert analysis.bank_delta.minutes == 0

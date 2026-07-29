@@ -56,10 +56,18 @@ _MIN_SUMMARY_COLS = 14
 # A day carries *two* type columns and they can disagree: a half day shows up as
 # ("ABS", "DP") with a portion of 0.50. Classifying on the first column alone would report
 # that as a plain absence and lose six hours of work, so :func:`_day_status` reads both.
+# The portal's user-type codes. Anything unmapped becomes UNKNOWN, which is excluded from
+# every rollup — so a missing code silently deflates the month rather than erroring. These
+# were all observed in live data; OD, LWP and the comp-off pair were originally absent and
+# were quietly landing whole days in UNKNOWN.
 _STATUS_CODES = {
     "DP": DayStatus.PRESENT,
     "P": DayStatus.PRESENT,
     "PR": DayStatus.PRESENT,
+    "WFH": DayStatus.PRESENT,
+    "WH": DayStatus.PRESENT,
+    # Comp-off earned: the day was worked, which is how the credit arose.
+    "CO+": DayStatus.PRESENT,
     "ABS": DayStatus.ABSENT,
     "A": DayStatus.ABSENT,
     "WO": DayStatus.WEEKLY_OFF,
@@ -68,6 +76,14 @@ _STATUS_CODES = {
     "HD": DayStatus.HOLIDAY,
     "LV": DayStatus.LEAVE,
     "L": DayStatus.LEAVE,
+    # Leave without pay, and comp-off taken as leave.
+    "LWP": DayStatus.LEAVE,
+    "LOP": DayStatus.LEAVE,
+    "CO-": DayStatus.LEAVE,
+    "CO": DayStatus.LEAVE,
+    # Outdoor / on duty: working, but off-site with no swipes to measure.
+    "OD": DayStatus.ON_DUTY,
+    "ODT": DayStatus.ON_DUTY,
 }
 
 
@@ -90,6 +106,10 @@ def _day_status(user_type_1: str, user_type_2: str, portion: float) -> DayStatus
     if present:
         # A lone present code with a fractional portion is still a half day.
         return DayStatus.HALF_DAY if 0 < portion < 1 else DayStatus.PRESENT
+    # Checked before leave and absent: a day marked both on-duty and absent was worked
+    # off-site, and the absence is only the lack of swipes.
+    if DayStatus.ON_DUTY in both:
+        return DayStatus.ON_DUTY
     if DayStatus.LEAVE in both:
         return DayStatus.LEAVE
     if DayStatus.ABSENT in both:

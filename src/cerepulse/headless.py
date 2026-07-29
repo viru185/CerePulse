@@ -78,6 +78,11 @@ def _summarize(report: SyncReport, analysis: MonthAnalysis, pending: int) -> Non
         analysis.short_days,
         analysis.total_overtime,
     )
+    if analysis.unmeasured_days:
+        logger.info(
+            "{} day(s) excluded from the bank — the portal holds no punches for them",
+            analysis.unmeasured_days,
+        )
     if analysis.is_ahead:
         logger.success("Hours bank: {} ahead", analysis.bank_delta)
     else:

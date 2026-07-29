@@ -129,13 +129,20 @@ class AttendanceView(QWidget):
     def _render_bank(self, analysis: MonthAnalysis) -> None:
         from cerepulse.intelligence.insights import Severity
 
-        qualifier = ""
+        notes = []
         if analysis.estimated_days:
             # Say so rather than implying a precision the cache cannot support.
-            qualifier = (
-                f"  ({analysis.estimated_days} of {analysis.working_days_elapsed} days "
-                f"estimated until their punch detail syncs)"
+            notes.append(
+                f"{analysis.estimated_days} of {analysis.working_days_elapsed} days "
+                f"estimated until their punch detail syncs"
             )
+        if analysis.unmeasured_days:
+            # These are excluded from the bank entirely; saying so stops the totals looking
+            # unaccountably low against the calendar.
+            notes.append(
+                f"{analysis.unmeasured_days} day(s) excluded — the portal holds no punches for them"
+            )
+        qualifier = f"  ({'; '.join(notes)})" if notes else ""
 
         if analysis.is_ahead:
             self.bank.show_message(
@@ -209,6 +216,7 @@ def _status_text(status: DayStatus) -> str:
         DayStatus.WEEKLY_OFF: "Weekly off",
         DayStatus.HOLIDAY: "Holiday",
         DayStatus.LEAVE: "Leave",
+        DayStatus.ON_DUTY: "On duty",
         DayStatus.UNKNOWN: "—",
     }[status]
 
@@ -220,5 +228,6 @@ def _status_colour(status: DayStatus, palette: Palette) -> QColor:
             DayStatus.HALF_DAY: palette.rest,
             DayStatus.ABSENT: palette.bad,
             DayStatus.LEAVE: palette.adjust,
+            DayStatus.ON_DUTY: palette.work,
         }.get(status, palette.text_muted)
     )

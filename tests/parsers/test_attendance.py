@@ -158,3 +158,40 @@ def test_punches_unwrap_a_delta_envelope(panel_html: str) -> None:
 
 def test_no_punch_grid_yields_no_punches() -> None:
     assert parse_punches("<div>No details available</div>") == []
+
+
+# --- status codes ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("OD", DayStatus.ON_DUTY),
+        ("LWP", DayStatus.LEAVE),
+        ("CO-", DayStatus.LEAVE),
+        ("WFH", DayStatus.PRESENT),
+        ("DP", DayStatus.PRESENT),
+        ("ABS", DayStatus.ABSENT),
+    ],
+)
+def test_portal_codes_map_to_a_status(code: str, expected: DayStatus) -> None:
+    """Every code seen in live data must map.
+
+    Unmapped codes fall to UNKNOWN, which is excluded from every rollup — so a missing one
+    silently deflates the month rather than failing loudly. OD, LWP and the comp-off pair
+    were all landing there.
+    """
+    from cerepulse.parsers.attendance import _day_status
+
+    assert _day_status(code, "---", 1.0) is expected
+
+
+def test_comp_off_earned_in_the_second_column_counts_as_worked() -> None:
+    from cerepulse.parsers.attendance import _day_status
+
+    assert _day_status("", "CO+", 0.5) is DayStatus.HALF_DAY
+
+
+def test_on_duty_is_attended_but_not_measurable() -> None:
+    assert DayStatus.ON_DUTY.is_attended
+    assert not DayStatus.ON_DUTY.counts_as_worked

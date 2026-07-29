@@ -11,7 +11,7 @@ before any credential is needed.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 from typing import Self
@@ -20,8 +20,8 @@ from loguru import logger
 
 from cerepulse.auth.manager import AuthManager
 from cerepulse.core import paths, secrets
-from cerepulse.core.config import AppConfig, load_config
-from cerepulse.core.errors import AuthenticationError
+from cerepulse.core.config import AppConfig, load_config, save_config
+from cerepulse.core.errors import AuthenticationError, CerePulseError
 from cerepulse.repository.attendance import AttendanceRepository
 from cerepulse.repository.database import Database, open_database
 from cerepulse.repository.employee import Employee, EmployeeRepository
@@ -84,28 +84,60 @@ class AppContext:
         return self.auth.username or self.config.portal.username
 
     def sign_in(self, username: str, password: str, *, remember: bool = False) -> str:
-        """Authenticate and record the employee. Returns the resolved employee code."""
+        """Authenticate and record the employee. Returns the resolved employee code.
+
+        The username is persisted to config on success. Only the password belongs in the
+        Credential Manager, and it is stored *under* the username — so without keeping the
+        username there is nothing to look the password up by. Omitting it silently broke
+        Remember me, the "signed in as" label, and session recovery all at once.
+        """
         self.auth.login(username, password)
         if remember:
             secrets.store_password(username, password)
 
         employee = self.gateway.fetch_employee()
         self.employees.save(employee)
+        self._remember_account(username, remember=remember)
         logger.info("Signed in as {}", employee.code)
         return employee.code
 
     def sign_in_with_saved_credentials(self) -> str:
         """Sign in using the stored password, if there is one."""
-        username = self.config.portal.username
+        username = self.saved_username
         password = secrets.get_password(username) if username else None
         if not username or not password:
             raise AuthenticationError("No saved credentials are available")
-        return self.sign_in(username, password)
+        return self.sign_in(username, password, remember=True)
+
+    @property
+    def saved_username(self) -> str:
+        """The username to try on launch, preferring config over a live session."""
+        return self.config.portal.username or self.auth.username
 
     def sign_out(self, *, forget: bool = False) -> None:
         self.auth.logout()
-        if forget and self.config.portal.username:
-            secrets.clear_password(self.config.portal.username)
+        if forget:
+            username = self.saved_username
+            if username:
+                secrets.clear_password(username)
+            self._remember_account("", remember=False)
+
+    def _remember_account(self, username: str, *, remember: bool) -> None:
+        """Persist the account details config is allowed to hold. Never the password."""
+        portal = self.config.portal
+        if portal.username == username and portal.remember_me == remember:
+            return
+
+        self.config = replace(
+            self.config,
+            portal=replace(portal, username=username, remember_me=remember),
+        )
+        try:
+            save_config(self.config)
+        except CerePulseError as exc:
+            # Not fatal: the session is live either way, the user just gets asked again
+            # next launch.
+            logger.warning("Could not persist the account details: {}", exc)
 
 
 def build_app(
@@ -148,11 +180,7 @@ def build_app(
     )
     sync = SyncCoordinator(auth=auth, gateway=gateway, attendance=attendance, leave=leave)
 
-    # Lets the coordinator recover an expired session without prompting, when the user
-    # asked to be remembered.
-    auth.credential_provider = _saved_credential_provider(resolved)
-
-    return AppContext(
+    context = AppContext(
         config=resolved,
         database=database,
         client=client,
@@ -164,10 +192,16 @@ def build_app(
         employees=employee_repo,
     )
 
+    # Bound to the context, not to the config snapshot: signing in replaces the config on
+    # the context, and a provider closed over the original would keep reading the empty
+    # username it was built with.
+    auth.credential_provider = _saved_credential_provider(context)
+    return context
 
-def _saved_credential_provider(config: AppConfig) -> Callable[[], tuple[str, str]]:
+
+def _saved_credential_provider(context: AppContext) -> Callable[[], tuple[str, str]]:
     def provide() -> tuple[str, str]:
-        username = config.portal.username
+        username = context.saved_username
         password = secrets.get_password(username) if username else None
         if not username or not password:
             raise AuthenticationError("The session expired and no saved credentials are available")

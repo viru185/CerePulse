@@ -22,7 +22,12 @@ from loguru import logger
 
 from cerepulse.auth.crypto import encrypt_password
 from cerepulse.core.config import AppConfig
-from cerepulse.core.errors import AuthenticationError, ProtocolError, SessionExpiredError
+from cerepulse.core.errors import (
+    AuthenticationError,
+    PrivilegeError,
+    ProtocolError,
+    SessionExpiredError,
+)
 from cerepulse.transport import pages
 from cerepulse.transport.client import HttpClient
 from cerepulse.transport.webforms import WebFormsState
@@ -173,10 +178,22 @@ class AuthManager:
         return True
 
     def check_response(self, response: httpx.Response) -> httpx.Response:
-        """Raise :class:`SessionExpiredError` if the portal bounced us to the login page."""
+        """Reject a response that is not really the page we asked for.
+
+        Two failure modes look like success at the HTTP level. A bounce to the login page
+        means the session is gone. A privileges page means the session is fine but the menu
+        token used to reach the page has gone stale — a different problem with a different
+        fix, so it gets its own error rather than surfacing later as a parser failure about
+        a missing table.
+        """
         if _is_login_redirect(response):
             self._transition(SessionState.EXPIRED)
             raise SessionExpiredError("The portal redirected to the login page")
+        if is_privilege_error(response):
+            raise PrivilegeError(
+                "The portal refused the page for lack of privileges. Its navigation "
+                "token has probably expired; reloading the menu usually fixes it."
+            )
         return response
 
     def reauthenticate(self) -> None:
@@ -197,6 +214,19 @@ class AuthManager:
         finally:
             self._client.clear_cookies()
             self._transition(SessionState.ANONYMOUS)
+
+
+#: Rendered by the portal when a page is reached without a valid menu privilege token.
+#: The doubled space is the portal's own, so both spellings are matched.
+_PRIVILEGE_MARKERS = ("sufficient  privileges", "sufficient privileges")
+
+
+def is_privilege_error(response: httpx.Response) -> bool:
+    """Whether the portal served its "insufficient privileges (ROLE)" page."""
+    if response.status_code != 200:
+        return False
+    body = response.text
+    return any(marker in body for marker in _PRIVILEGE_MARKERS)
 
 
 def _is_login_redirect(response: httpx.Response) -> bool:
