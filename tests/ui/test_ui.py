@@ -18,7 +18,7 @@ from cerepulse.models.attendance import Punch, PunchDirection
 from cerepulse.models.values import Duration
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import DARK, LIGHT, palette_for, stylesheet
-from cerepulse.ui.views.today import summary_text
+from cerepulse.ui.views.today import TodayView, summary_text
 from cerepulse.ui.widgets import Banner, Card, InsightStrip, SegmentBar
 from cerepulse.ui.workers import TaskRunner
 
@@ -159,6 +159,28 @@ def test_summary_text_is_pasteable() -> None:
 def test_summary_notes_a_repaired_punch() -> None:
     analysis = analyze_day(punches(("09:00", "in"), ("12:00", "in"), ("18:00", "out")), day=DAY)
     assert "Note:" in summary_text(analysis)
+
+
+# --- today view -------------------------------------------------------------------------
+
+
+def test_the_strip_does_not_repeat_the_hero_on_a_live_day(qapp: QApplication) -> None:
+    """The hero already says "you can leave at 6:00 PM" in sixty-point type."""
+    analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=datetime(2026, 7, 28, 14, 0))
+    view = TodayView(DARK)
+    view.show_analysis(analysis, is_today=True)
+
+    assert InsightKind.STILL_WORKING in {i.kind for i in analysis.insights}
+    assert view._insights._layout.count() == len(analysis.insights) - 1
+
+
+def test_a_past_day_still_shows_it_because_there_is_no_countdown(qapp: QApplication) -> None:
+    """Viewing a day you never punched out of, the hero has no answer to duplicate."""
+    analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=datetime(2026, 7, 28, 14, 0))
+    view = TodayView(DARK)
+    view.show_analysis(analysis, is_today=False)
+
+    assert view._insights._layout.count() == len(analysis.insights)
 
 
 # --- task runner ----------------------------------------------------------------------

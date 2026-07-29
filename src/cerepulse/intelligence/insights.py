@@ -42,6 +42,7 @@ class InsightKind(Enum):
     LEAVE_EXPIRING = "leave_expiring"
     HOURS_BANK_DEFICIT = "hours_bank_deficit"
     ANOMALY = "anomaly"
+    BREAK_HEADROOM = "break_headroom"
 
 
 class ActionKind(Enum):

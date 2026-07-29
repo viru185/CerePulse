@@ -254,8 +254,21 @@ def _with_insights(
                 f"{policy.work_target}.",
             )
         )
+    elif analysis.state is DayState.INCOMPLETE and analysis.break_remaining:
+        # The shift span already prices in the full break allowance, so break taken up to
+        # that point is free — it does not move the finish line. Past it, every minute does,
+        # which is the part worth knowing before deciding on a second coffee.
+        insights.append(
+            Insight(
+                InsightKind.BREAK_HEADROOM,
+                Severity.INFO,
+                f"{analysis.break_remaining} of break still free",
+                f"Taking it will not move {_clock(analysis.leave_at)}. Anything beyond "
+                f"pushes that later minute for minute.",
+            )
+        )
 
-    return replace(analysis, insights=tuple(insights))
+    return replace(analysis, insights=tuple(sorted(insights, key=_display_order)))
 
 
 # --- explanations ---------------------------------------------------------------------
@@ -343,6 +356,41 @@ def _empty_day(day: date, pairing: Pairing) -> DayAnalysis:
                 "Nothing was logged for this day.",
             ),
         ),
+    )
+
+
+#: Reading order for the insight strip. Things needing action lead, then good news, then
+#: neutral context — appending order is an implementation detail and makes a poor sort.
+_SEVERITY_ORDER = {
+    Severity.CRITICAL: 0,
+    Severity.WARNING: 1,
+    Severity.SUCCESS: 2,
+    Severity.INFO: 3,
+}
+
+#: Tiebreak within a severity band. Sorting by ``kind.value`` would order these
+#: alphabetically, which put "break headroom" above "time left to work" — a footnote above
+#: the answer. The sequence below is the order someone would actually want to read them in.
+_KIND_ORDER = (
+    InsightKind.EARLY_EXIT,
+    InsightKind.SHORT_HOURS,
+    InsightKind.SWIPE_NEEDED,
+    InsightKind.MISSING_PUNCH,
+    InsightKind.ON_TRACK,
+    InsightKind.STILL_WORKING,
+    InsightKind.OVERTIME,
+    InsightKind.LONG_BREAK,
+    InsightKind.BREAK_HEADROOM,
+    InsightKind.SWIPE_FILED,
+    InsightKind.NO_PUNCHES,
+)
+_KIND_RANK = {kind: rank for rank, kind in enumerate(_KIND_ORDER)}
+
+
+def _display_order(insight: Insight) -> tuple[int, int]:
+    return (
+        _SEVERITY_ORDER.get(insight.severity, 9),
+        _KIND_RANK.get(insight.kind, len(_KIND_RANK)),
     )
 
 

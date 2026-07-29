@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from cerepulse.intelligence.day import DayAnalysis, DayState
-from cerepulse.intelligence.insights import Insight
+from cerepulse.intelligence.insights import Insight, InsightKind
 from cerepulse.models.attendance import PunchDirection
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette
@@ -60,6 +60,14 @@ class TodayView(QWidget):
         layout.addWidget(self.banner)
 
         layout.addWidget(self._build_hero())
+
+        # Insights sit directly under the headline, before the numbers. The screen is meant
+        # to say what the day means; leading with four figures and burying the one sentence
+        # that interprets them below a chart makes it a dashboard instead.
+        self._insights = InsightStrip(palette)
+        self._insights.action_triggered.connect(self.insight_action)
+        layout.addWidget(self._insights)
+
         layout.addWidget(self._build_cards())
 
         layout.addWidget(SectionTitle("Your day"))
@@ -68,10 +76,6 @@ class TodayView(QWidget):
         self._legend = QLabel()
         self._legend.setObjectName("CardCaption")
         layout.addWidget(self._legend)
-
-        self._insights = InsightStrip(palette)
-        self._insights.action_triggered.connect(self.insight_action)
-        layout.addWidget(self._insights)
 
         layout.addWidget(SectionTitle("Punches"))
         self._timeline = QVBoxLayout()
@@ -213,7 +217,7 @@ class TodayView(QWidget):
 
         self._segments.set_segments(analysis.segments)
         self._legend.setText(self._legend_text(analysis))
-        self._insights.set_insights(list(analysis.insights))
+        self._insights.set_insights(self._strip_insights(analysis, is_today=is_today))
         self._render_timeline(analysis)
         self._render_hero(analysis, is_today=is_today)
 
@@ -253,6 +257,21 @@ class TodayView(QWidget):
             self._hero_caption.setText(
                 f"{remaining} to go · in at {fmt.clock(self._analysis.first_in)}"
             )
+
+    def _strip_insights(self, analysis: DayAnalysis, *, is_today: bool) -> list[Insight]:
+        """Drop the one insight the hero has already said.
+
+        On a live day the hero *is* "you can leave at 6:14 PM", in sixty-point type. Repeating
+        it as the first card two inches below makes the screen look like it is padding. The
+        insight stays in the analysis, because the tray summary and the clipboard have no hero
+        to lean on.
+        """
+        redundant = is_today and analysis.state is DayState.INCOMPLETE
+        return [
+            insight
+            for insight in analysis.insights
+            if not (redundant and insight.kind is InsightKind.STILL_WORKING)
+        ]
 
     def _legend_text(self, analysis: DayAnalysis) -> str:
         parts = [

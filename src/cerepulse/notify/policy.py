@@ -41,6 +41,8 @@ SILENT = {
     InsightKind.MISSING_PUNCH,
     InsightKind.ANOMALY,
     InsightKind.HOURS_BANK_DEFICIT,
+    # Useful on screen while deciding about lunch; not worth a toast.
+    InsightKind.BREAK_HEADROOM,
 }
 
 

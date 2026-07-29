@@ -259,3 +259,58 @@ def test_a_custom_policy_is_honoured() -> None:
 def test_nonsensical_policies_are_rejected(kwargs: dict[str, Duration]) -> None:
     with pytest.raises(ValueError):
         ShiftPolicy(**kwargs)
+
+
+# --- break headroom -------------------------------------------------------------------
+
+
+def test_an_in_progress_day_reports_free_break_headroom() -> None:
+    """The shift span already prices in the full allowance, so break up to it is free."""
+    analysis = analyze_day(
+        punches(("09:00", "in"), ("12:00", "out"), ("12:20", "in")),
+        day=DAY,
+        now=at("14:00"),
+    )
+    headroom = next(i for i in analysis.insights if i.kind is InsightKind.BREAK_HEADROOM)
+
+    assert "0:40" in headroom.title
+    assert "6:00 PM" in headroom.detail
+
+
+def test_headroom_is_replaced_by_the_overrun_message_once_exceeded() -> None:
+    analysis = analyze_day(
+        punches(("09:00", "in"), ("12:00", "out"), ("13:30", "in")),
+        day=DAY,
+        now=at("15:00"),
+    )
+    kinds = {i.kind for i in analysis.insights}
+
+    assert InsightKind.LONG_BREAK in kinds
+    assert InsightKind.BREAK_HEADROOM not in kinds
+
+
+def test_a_finished_day_does_not_offer_headroom() -> None:
+    """It is advice about a decision that is no longer open."""
+    analysis = analyze_day(
+        punches(("09:00", "in"), ("13:00", "out"), ("13:20", "in"), ("18:00", "out")), day=DAY
+    )
+    assert InsightKind.BREAK_HEADROOM not in {i.kind for i in analysis.insights}
+
+
+def test_insights_lead_with_what_needs_attention() -> None:
+    """Append order is an implementation detail; the strip should read by importance."""
+    analysis = analyze_day(punches(("09:00", "in"), ("12:00", "in"), ("15:00", "out")), day=DAY)
+    severities = [i.severity for i in analysis.insights]
+
+    assert severities == sorted(
+        severities, key=lambda s: {"CRITICAL": 0, "WARNING": 1, "SUCCESS": 2, "INFO": 3}[s.name]
+    )
+    assert analysis.insights[0].severity is Severity.WARNING
+
+
+def test_the_answer_outranks_the_footnote_within_a_severity() -> None:
+    """Sorting the tie by kind name alphabetically put break headroom above time left."""
+    analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=at("14:00"))
+    order = [i.kind for i in analysis.insights]
+
+    assert order.index(InsightKind.STILL_WORKING) < order.index(InsightKind.BREAK_HEADROOM)
