@@ -62,6 +62,7 @@ class UiConfig:
     theme: str = "dark"  # dark | light | system
     background_mode: str = "tray"  # tray | foreground
     start_with_windows: bool = False
+    tone: str = "playful"  # playful | plain
 
 
 @dataclass(frozen=True, slots=True)

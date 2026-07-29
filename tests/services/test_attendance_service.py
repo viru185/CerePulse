@@ -7,6 +7,7 @@ from datetime import date, datetime, time
 import pytest
 
 from cerepulse.core.errors import TransportError
+from cerepulse.intelligence.insights import InsightKind
 from cerepulse.models.attendance import (
     AttendanceDay,
     AttendanceMonth,
@@ -263,6 +264,49 @@ def test_the_shift_policy_comes_from_config(gateway: FakeGateway, repos: dict[st
         config=tweaked,
     )
     assert service.policy.work_target.as_clock() == "7:30"
+
+
+def test_load_day_speaks_in_the_configured_tone(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """Voiced in the service so the window, the tray and the toasts agree."""
+    from dataclasses import replace
+
+    target = date(2026, 7, 1)
+    seed_month(gateway, day(target, total="10.00"))
+    gateway.punches[target] = [
+        Punch(at=time(9, 0), direction=PunchDirection.IN),
+        Punch(at=time(19, 30), direction=PunchDirection.OUT),
+    ]
+    attendance_service.load_month(EMPLOYEE, *JULY)
+
+    playful = attendance_service.load_day(EMPLOYEE, target)
+    config = attendance_service._config
+    attendance_service.use_config(replace(config, ui=replace(config.ui, tone="plain")))
+    plain = attendance_service.load_day(EMPLOYEE, target)
+
+    def overtime(analysis: object) -> str:
+        return next(
+            i.detail
+            for i in analysis.insights  # type: ignore[attr-defined]
+            if i.kind is InsightKind.OVERTIME
+        )
+
+    assert overtime(playful).startswith(overtime(plain))
+    assert overtime(playful) != overtime(plain)
+
+
+def test_a_saved_config_applies_without_a_restart(
+    attendance_service: AttendanceService,
+) -> None:
+    """The service holds its own reference, so reassigning the context's alone is not enough."""
+    from dataclasses import replace
+
+    config = attendance_service._config
+    attendance_service.use_config(
+        replace(config, shift=replace(config.shift, work_target_hours=6.0))
+    )
+    assert attendance_service.policy.work_target.as_clock() == "6:00"
 
 
 def test_the_grid_employee_code_wins_over_the_login_name(

@@ -114,6 +114,16 @@ class AppContext:
         """The username to try on launch, preferring config over a live session."""
         return self.config.portal.username or self.auth.username
 
+    def apply_config(self, config: AppConfig) -> None:
+        """Push a saved configuration through the object graph.
+
+        The services hold their own reference, so reassigning ``self.config`` alone would
+        leave the shift policy and the tone reading stale values until the next launch.
+        """
+        self.config = config
+        self.attendance.use_config(config)
+        self.leave.use_config(config)
+
     def sign_out(self, *, forget: bool = False) -> None:
         self.auth.logout()
         if forget:

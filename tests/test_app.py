@@ -43,6 +43,17 @@ def test_services_share_one_database(app_context) -> None:  # type: ignore[no-un
     assert app_context.employee_code == "CIPL00364"
 
 
+def test_a_saved_config_reaches_the_services(app_context) -> None:  # type: ignore[no-untyped-def]
+    """Reassigning the context's own config left the services on the launch snapshot."""
+    from dataclasses import replace
+
+    config = app_context.config
+    app_context.apply_config(replace(config, shift=replace(config.shift, work_target_hours=6.5)))
+
+    assert app_context.config.shift.work_target_hours == 6.5
+    assert app_context.attendance.policy.work_target.as_clock() == "6:30"
+
+
 def test_the_cached_employee_wins_over_the_login_name(
     app_context,
 ) -> None:  # type: ignore[no-untyped-def]

@@ -62,6 +62,10 @@ class LeaveService:
         self._config = config
         self._policy = policy or LeavePolicy()
 
+    def use_config(self, config: AppConfig) -> None:
+        """Adopt a newly saved configuration, so Settings applies without a restart."""
+        self._config = config
+
     # --- leave ----------------------------------------------------------------------
 
     def load_leave(

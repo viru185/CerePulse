@@ -237,6 +237,27 @@ def test_break_adjusted_explanation_says_why_it_moved() -> None:
 # --- policy ---------------------------------------------------------------------------
 
 
+def test_the_target_gets_the_right_article() -> None:
+    """Writing "a 8:00 target" is the sort of thing that makes an app feel unfinished."""
+    eight = analyze_day(punches(("09:00", "in"), ("16:00", "out")), day=DAY)
+    seven = analyze_day(
+        punches(("09:00", "in"), ("14:00", "out")),
+        day=DAY,
+        policy=ShiftPolicy(
+            work_target=Duration(7 * 60), break_target=Duration(60), shift_span=Duration(480)
+        ),
+    )
+
+    assert (
+        "an 8:00 target"
+        in next(i for i in eight.insights if i.kind is InsightKind.EARLY_EXIT).detail
+    )
+    assert (
+        "a 7:00 target"
+        in next(i for i in seven.insights if i.kind is InsightKind.EARLY_EXIT).detail
+    )
+
+
 def test_a_custom_policy_is_honoured() -> None:
     policy = ShiftPolicy(
         work_target=Duration(7 * 60), break_target=Duration(30), shift_span=Duration(450)
@@ -287,6 +308,14 @@ def test_headroom_is_replaced_by_the_overrun_message_once_exceeded() -> None:
 
     assert InsightKind.LONG_BREAK in kinds
     assert InsightKind.BREAK_HEADROOM not in kinds
+
+
+def test_headroom_stops_once_the_target_is_met() -> None:
+    """The finish line is behind you; advice about moving it is advice about nothing."""
+    analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=at("18:30"))
+
+    assert InsightKind.ON_TRACK in kinds(analysis)
+    assert InsightKind.BREAK_HEADROOM not in kinds(analysis)
 
 
 def test_a_finished_day_does_not_offer_headroom() -> None:

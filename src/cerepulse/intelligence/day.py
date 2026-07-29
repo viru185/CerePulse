@@ -198,7 +198,7 @@ def _with_insights(
                     InsightKind.ON_TRACK,
                     Severity.SUCCESS,
                     "Target met — you're free to go",
-                    f"{analysis.worked} worked against a {policy.work_target} target.",
+                    f"{analysis.worked} worked against {_article(policy.work_target)} target.",
                 )
             )
 
@@ -208,7 +208,7 @@ def _with_insights(
                 InsightKind.EARLY_EXIT,
                 Severity.WARNING,
                 f"Short by {policy.work_target - analysis.worked}",
-                f"You worked {analysis.worked} against a {policy.work_target} target.",
+                f"You worked {analysis.worked} against {_article(policy.work_target)} target.",
             )
         )
 
@@ -254,10 +254,18 @@ def _with_insights(
                 f"{policy.work_target}.",
             )
         )
-    elif analysis.state is DayState.INCOMPLETE and analysis.break_remaining:
+    elif (
+        analysis.state is DayState.INCOMPLETE
+        and analysis.break_remaining
+        and analysis.work_remaining
+    ):
         # The shift span already prices in the full break allowance, so break taken up to
         # that point is free — it does not move the finish line. Past it, every minute does,
         # which is the part worth knowing before deciding on a second coffee.
+        #
+        # Only while there is work left. Once the target is met the finish line is behind
+        # you, and "taking it will not move 6:14 PM" is advice about a decision that no
+        # longer exists.
         insights.append(
             Insight(
                 InsightKind.BREAK_HEADROOM,
@@ -408,6 +416,20 @@ def _status_text(status: SwipeStatus) -> str:
         SwipeStatus.REJECTED: "rejected",
         SwipeStatus.CANCELLED: "cancelled",
     }.get(status, "filed")
+
+
+#: Hour counts read aloud with a leading vowel — eight, eleven, eighteen.
+_VOWEL_HOURS = {8, 11, 18}
+
+
+def _article(duration: Duration) -> str:
+    """Prefix a duration with the right indefinite article.
+
+    An eight-hour target takes "an", not "a" — the vowel is in how the number is said, not
+    in how it is written, so this cannot be decided from the first character.
+    """
+    article = "an" if duration.minutes // 60 in _VOWEL_HOURS else "a"
+    return f"{article} {duration}"
 
 
 def _clamp(duration: Duration) -> Duration:

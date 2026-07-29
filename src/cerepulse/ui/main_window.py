@@ -582,10 +582,16 @@ class MainWindow(QMainWindow):
             self.settings.banner.show_message(str(exc), Severity.CRITICAL)
             return
 
+        # The services keep their own reference to the config, so pushing it through the
+        # graph is what makes a changed shift policy or tone take effect now rather than
+        # at the next launch.
+        self._context.apply_config(config)  # type: ignore[arg-type]
         self._auto.setInterval(config.sync.refresh_interval_minutes * 60_000)  # type: ignore[attr-defined]
         self._apply_theme(config.ui.theme)  # type: ignore[attr-defined]
         if self._tray is not None:
             self._tray.update_config(config.notifications)  # type: ignore[attr-defined]
+        if self._month_view is not None:
+            self._render_today(self._month_view)
 
         note = ""
         if not set_registered(config.ui.start_with_windows):  # type: ignore[attr-defined]

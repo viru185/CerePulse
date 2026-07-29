@@ -23,6 +23,7 @@ from cerepulse.core.errors import CerePulseError, TransportError
 from cerepulse.intelligence.day import DayAnalysis, analyze_day
 from cerepulse.intelligence.month import MonthAnalysis, analyze_month
 from cerepulse.intelligence.policy import ShiftPolicy
+from cerepulse.intelligence.voice import Tone, voice_day
 from cerepulse.models.attendance import AttendanceMonth
 from cerepulse.models.values import Duration
 from cerepulse.repository.attendance import AttendanceRepository
@@ -102,6 +103,15 @@ class AttendanceService:
         self._employees = employees
         self._config = config
 
+    def use_config(self, config: AppConfig) -> None:
+        """Adopt a newly saved configuration.
+
+        Everything derived from config — the shift policy, the cache TTL, the tone — is read
+        through ``self._config`` at call time rather than snapshotted, so this is all it
+        takes for Settings to apply without a restart.
+        """
+        self._config = config
+
     # --- policy ---------------------------------------------------------------------
 
     @property
@@ -159,13 +169,16 @@ class AttendanceService:
             cached = self._attendance.find_day(employee_code, day)
 
         punches = list(cached.punches) if cached else []
-        return analyze_day(
+        analysis = analyze_day(
             punches,
             day=day,
             policy=self.policy,
             now=now,
             swipe_requests=self._swipes.find_all(employee_code),
         )
+        # Voiced here rather than in the views, so the window, the tray tooltip and the
+        # notifications all say the same thing about the same day.
+        return voice_day(analysis, tone=Tone.parse(self._config.ui.tone))
 
     def cached_months(self, employee_code: str) -> list[tuple[int, int]]:
         """Months holding at least one day, newest first."""

@@ -107,6 +107,14 @@ authentication storm against the employer's HR system. A second expiry is surfac
 **Parsers raise `ParserError` rather than returning empty.** A vendor UI change must surface
 as a diagnostic, not as a silently blank screen.
 
+**Voice appends, never substitutes.** `intelligence/voice.py` may only add a sentence to an
+insight's detail. It cannot change a number, reword a warning, or drop a line, so no tone
+setting can alter what the app actually reported. Warnings, expiring leave and anomalies get
+no quip at any setting, and a day whose figures were repaired from a missing punch goes
+entirely plain — congratulating someone on inferred overtime is worse than silence. Line
+choice is seeded from the date via `crc32`, not `hash`: string hashing is salted per process,
+so the built-in would reword the same day on every launch.
+
 ## Testing
 
 Tests mirror the source tree. The intelligence layer has the deepest coverage because it is

@@ -210,9 +210,14 @@ class SettingsView(QWidget):
             ]
         )
         self._startup = QCheckBox("Start when I sign in to Windows")
+        self._tone = _choice([("Playful", "playful"), ("Plain", "plain")])
+        self._tone.setToolTip(
+            "Playful adds a light remark to good news. Warnings stay plain either way."
+        )
 
         card.add("Theme", self._theme)
         card.add("On window close", self._background)
+        card.add("Wording", self._tone)
         card.add_full(self._startup)
         return card.finish()
 
@@ -323,6 +328,7 @@ class SettingsView(QWidget):
             max(0, self._background.findData(config.ui.background_mode))
         )
         self._startup.setChecked(config.ui.start_with_windows)
+        self._tone.setCurrentIndex(max(0, self._tone.findData(config.ui.tone)))
 
         notifications = config.notifications
         self._notify.setChecked(notifications.enabled)
@@ -354,6 +360,7 @@ class SettingsView(QWidget):
                 theme=self._theme.currentData(),
                 background_mode=self._background.currentData(),
                 start_with_windows=self._startup.isChecked(),
+                tone=self._tone.currentData(),
             ),
             notifications=replace(
                 config.notifications,
