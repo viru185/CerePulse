@@ -181,6 +181,15 @@ def test_each_weekday_gets_its_own_shape() -> None:
     assert by_weekday[4].typical_in == time(8, 30)
 
 
+def test_a_single_sunday_is_not_a_normal_sunday() -> None:
+    """Six months of real data turned up exactly one; it is that day, not a pattern."""
+    days = [workday(d) for d in weekdays_from(MONDAY, 10)]
+    days.append(workday(date(2026, 6, 7), first_in="14:45"))  # a Sunday
+
+    habits = analyze_habits(build_facts(days, policy=POLICY))
+    assert 6 not in {habit.weekday for habit in habits.weekdays}
+
+
 def test_drift_compares_lately_against_the_long_run() -> None:
     dates = weekdays_from(MONDAY, 30)
     days = [workday(d, first_in="09:00") for d in dates[:20]]

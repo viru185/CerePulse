@@ -37,6 +37,10 @@ from cerepulse.models.values import Duration
 #: Below this many measured days, no habit or record is reported at all.
 MIN_SAMPLE = 5
 
+#: Per-weekday floor. Six months of real data turned up exactly one Sunday, and "your
+#: normal Sunday starts at 2:45 PM" from a single day is not a pattern, it is that day.
+MIN_WEEKDAY_SAMPLE = 3
+
 #: How many recent working days count as "lately" when comparing against the norm.
 RECENT_WINDOW = 10
 
@@ -310,6 +314,8 @@ def _weekday_habits(facts: Sequence[DayFact]) -> list[WeekdayHabit]:
     habits = []
     for weekday in sorted(grouped):
         same = grouped[weekday]
+        if len(same) < MIN_WEEKDAY_SAMPLE:
+            continue
         habits.append(
             WeekdayHabit(
                 weekday=weekday,

@@ -49,7 +49,19 @@ from cerepulse.ui.widgets import Banner, Card, SectionTitle, card_row
 #: The trailing blank is a spacer. Every real column here is a short number, so without one
 #: to absorb the leftover width either the last column is stranded against the far edge of
 #: the window or the row stripes run on past where the data stops.
-MONTH_COLUMNS = ("Month", "Worked", "vs target", "Daily avg", "Overtime", "Short", "Typical in", "")
+MONTH_COLUMNS = (
+    "Month",
+    # Without this, a month of twelve worked days sits beside one of twenty-two and the
+    # Worked totals invite a comparison that means nothing.
+    "Days",
+    "Worked",
+    "vs target",
+    "Daily avg",
+    "Overtime",
+    "Short",
+    "Typical in",
+    "",
+)
 ANOMALY_COLUMNS = ("Date", "What", "Detail")
 
 
@@ -347,6 +359,7 @@ class InsightsView(QWidget):
             partial = (summary.year, summary.month) == (self._today.year, self._today.month)
             cells = (
                 f"{summary.label} (so far)" if partial else summary.label,
+                str(summary.working_days),
                 fmt.duration(summary.worked),
                 fmt.duration(summary.delta, signed=True),
                 fmt.duration(summary.daily_average),
@@ -360,7 +373,7 @@ class InsightsView(QWidget):
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
-                if column == 2:
+                if column == 3:
                     item.setForeground(QColor(self._palette.good if ahead else self._palette.bad))
                 if summary.estimated_days:
                     item.setToolTip(
