@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from cerepulse.core.errors import TransportError
@@ -23,6 +24,12 @@ from cerepulse.ui.widgets import Banner, Card, InsightStrip, SegmentBar
 from cerepulse.ui.workers import TaskRunner
 
 DAY = date(2026, 7, 28)
+
+
+def _rgb(hex_colour: str) -> str:
+    """``"#34D399"`` -> ``"rgba(52, 211, 153"`` — the prefix a heatmap fill starts with."""
+    red, green, blue = (int(hex_colour[index : index + 2], 16) for index in (1, 3, 5))
+    return f"rgba({red}, {green}, {blue}"
 
 
 def punches(*pairs: tuple[str, str]) -> list[Punch]:
@@ -181,6 +188,177 @@ def test_a_past_day_still_shows_it_because_there_is_no_countdown(qapp: QApplicat
     view.show_analysis(analysis, is_today=False)
 
     assert view._insights._layout.count() == len(analysis.insights)
+
+
+# --- attendance view --------------------------------------------------------------------
+
+
+def _month_view(*, attention_on: set[date] | None = None):  # type: ignore[no-untyped-def]
+    """A short July with one flagged day."""
+    from datetime import timedelta
+
+    from cerepulse.intelligence.attention import Attention, AttentionKind
+    from cerepulse.intelligence.month import analyze_month
+    from cerepulse.models.attendance import AttendanceDay, AttendanceMonth, DayStatus
+    from cerepulse.models.swipe import SwipeRequest, SwipeStatus
+    from cerepulse.services.attendance import MonthView
+
+    days = []
+    for offset in range(10):
+        when = date(2026, 7, 1) + timedelta(days=offset)
+        off = when.weekday() >= 5
+        days.append(
+            AttendanceDay(
+                day=when,
+                weekday=when.strftime("%a"),
+                status=DayStatus.WEEKLY_OFF if off else DayStatus.PRESENT,
+                first_in=None if off else time(9, 0),
+                last_out=None if off else time(18, 0),
+                total_hours=Duration(0 if off else 9 * 60),
+            )
+        )
+
+    flagged = attention_on if attention_on is not None else {date(2026, 7, 2)}
+    month = AttendanceMonth(employee_code="X", year=2026, month=7, days=tuple(days))
+    return MonthView(
+        month=month,
+        analysis=analyze_month(days, year=2026, month=7, today=date(2026, 7, 31)),
+        last_synced=None,
+        from_cache=True,
+        pending_detail=0,
+        swipes={
+            date(2026, 7, 3): [
+                SwipeRequest(
+                    for_date=date(2026, 7, 3),
+                    direction="In",
+                    in_time=None,
+                    out_time=None,
+                    remark="Forgot to swipe",
+                    status=SwipeStatus.APPROVED,
+                )
+            ]
+        },
+        attention={
+            day: Attention(day, AttentionKind.SHORT_NO_REQUEST, "Short by 1:00.") for day in flagged
+        },
+    )
+
+
+def test_the_swipe_column_reports_a_filed_request(qapp: QApplication) -> None:
+    from cerepulse.ui.views.attendance import AttendanceView
+
+    view = AttendanceView(DARK)
+    view.show_month(_month_view())
+
+    row = next(
+        r
+        for r in range(view.table.rowCount())
+        if view.table.item(r, 0).data(Qt.ItemDataRole.UserRole) == date(2026, 7, 3)
+    )
+    assert view.table.item(row, 7).text() == "Approved"
+    assert "Forgot to swipe" in view.table.item(row, 7).toolTip()
+
+
+def test_days_with_nothing_filed_leave_the_swipe_column_blank(qapp: QApplication) -> None:
+    """A column of dashes reads as thirty missing values, not an ordinary month."""
+    from cerepulse.ui.views.attendance import AttendanceView
+
+    view = AttendanceView(DARK)
+    view.show_month(_month_view())
+    assert view.table.item(0, 7).text() == ""
+
+
+def test_the_filter_hides_settled_rows(qapp: QApplication) -> None:
+    from cerepulse.ui.views.attendance import AttendanceView
+
+    view = AttendanceView(DARK)
+    view.show_month(_month_view())
+    view._only_attention.setChecked(True)
+
+    visible = [r for r in range(view.table.rowCount()) if not view.table.isRowHidden(r)]
+    assert len(visible) == 1
+    assert view.table.item(visible[0], 0).data(Qt.ItemDataRole.UserRole) == date(2026, 7, 2)
+
+
+def test_an_empty_filter_result_says_so_rather_than_showing_a_blank_table(
+    qapp: QApplication,
+) -> None:
+    from cerepulse.ui.views.attendance import AttendanceView
+
+    view = AttendanceView(DARK)
+    view.show_month(_month_view(attention_on=set()))
+    view._only_attention.setChecked(True)
+
+    assert "Nothing outstanding" in view.banner.text()
+
+
+def test_unticking_the_filter_brings_every_row_back(qapp: QApplication) -> None:
+    from cerepulse.ui.views.attendance import AttendanceView
+
+    view = AttendanceView(DARK)
+    view.show_month(_month_view())
+    view._only_attention.setChecked(True)
+    view._only_attention.setChecked(False)
+
+    assert not any(view.table.isRowHidden(r) for r in range(view.table.rowCount()))
+
+
+def test_the_heatmap_measures_worked_time_not_the_gross_span(qapp: QApplication) -> None:
+    """Tinting a nine-hour span against an eight-hour target turned the calendar green."""
+    from cerepulse.intelligence.month import DayRollup
+    from cerepulse.models.attendance import DayStatus
+    from cerepulse.ui.widgets import _heat_colours
+
+    def rollup(minutes: int) -> DayRollup:
+        return DayRollup(
+            day=date(2026, 7, 1),
+            worked=Duration(minutes),
+            status=DayStatus.PRESENT,
+            estimated=False,
+            is_working_day=True,
+        )
+
+    target = Duration(8 * 60)
+    met, _ = _heat_colours(rollup(8 * 60), target, DARK)
+    short, _ = _heat_colours(rollup(7 * 60), target, DARK)
+
+    assert met.startswith(_rgb(DARK.good))
+    assert short.startswith(_rgb(DARK.work))
+
+
+def test_a_worked_weekend_is_not_greyed_out(qapp: QApplication) -> None:
+    """It is one of the more interesting cells in the month, not one to hide."""
+    from cerepulse.intelligence.month import DayRollup
+    from cerepulse.models.attendance import DayStatus
+    from cerepulse.ui.widgets import _heat_colours
+
+    saturday = DayRollup(
+        day=date(2026, 7, 18),
+        worked=Duration(7 * 60),
+        status=DayStatus.WEEKLY_OFF,
+        estimated=True,
+        is_working_day=False,
+    )
+    fill, _ = _heat_colours(saturday, Duration(8 * 60), DARK)
+    assert fill != DARK.overlay
+
+
+def test_the_heatmap_lays_the_month_out_as_a_calendar(qapp: QApplication) -> None:
+    """1 July 2026 is a Wednesday, so the first cell belongs in the third column."""
+    from cerepulse.ui.views.attendance import AttendanceView
+
+    view = AttendanceView(DARK)
+    view.show_month(_month_view())
+
+    positions = {}
+    grid = view.heatmap._grid
+    for index in range(grid.count()):
+        row, column, _, _ = grid.getItemPosition(index)
+        widget = grid.itemAt(index).widget()
+        positions[widget.text()] = (row, column)
+
+    assert positions["1"] == (1, 2)  # row 0 is the weekday headings
+    assert positions["6"] == (2, 0)  # the following Monday
 
 
 # --- insights view ----------------------------------------------------------------------

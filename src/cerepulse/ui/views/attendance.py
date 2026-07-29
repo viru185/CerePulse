@@ -1,9 +1,16 @@
-"""Attendance — month rollup, hours bank, and the day table.
+"""Attendance — month rollup, hours bank, heatmap, and the day table.
 
 The hours-bank banner is careful about honesty. Most days in a month have no cached punch
 log, so their worked time is estimated from the grid's gross span minus the break
 allowance. The banner says how many days are estimates rather than presenting a precise
 figure it cannot support.
+
+The heatmap and the table answer different questions and both are worth having. A table of
+thirty rows answers "what happened on the 14th"; the calendar answers "what does this month
+look like" — whether the short days cluster in one bad week or are spread across all four.
+
+Whether a day needs attention is decided in ``intelligence/attention.py``, not here, so the
+row highlight, the filter and the heatmap ring cannot drift apart.
 """
 
 from __future__ import annotations
@@ -14,9 +21,11 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -24,18 +33,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from cerepulse.intelligence.attention import swipe_state
+from cerepulse.intelligence.insights import Severity
 from cerepulse.intelligence.month import MonthAnalysis
-from cerepulse.models.attendance import AttendanceMonth, DayStatus
+from cerepulse.models.attendance import DayStatus
+from cerepulse.models.swipe import SwipeRequest, SwipeStatus
 from cerepulse.services.attendance import MonthView
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette
-from cerepulse.ui.widgets import Banner, Card, SectionTitle, card_row
+from cerepulse.ui.widgets import Banner, Card, MonthHeatmap, SectionTitle, card_row
 
-COLUMNS = ("Date", "Day", "Status", "In", "Out", "Worked", "Late", "Remarks")
+COLUMNS = ("Date", "Day", "Status", "In", "Out", "Worked", "Late", "Swipe", "Remarks")
 
 
 class AttendanceView(QWidget):
-    """A month of attendance, with a row per day."""
+    """A month of attendance, as a calendar and as a row per day."""
 
     day_selected = Signal(date)
     month_changed = Signal(int, int)
@@ -44,6 +56,7 @@ class AttendanceView(QWidget):
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._palette = palette
+        self._view: MonthView | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 24)
@@ -63,6 +76,15 @@ class AttendanceView(QWidget):
         self.average_in = Card("Average in")
         layout.addWidget(card_row(self.worked, self.overtime, self.short_days, self.average_in))
 
+        shape = QHBoxLayout()
+        shape.setSpacing(18)
+        self.heatmap = MonthHeatmap(palette)
+        self.heatmap.day_selected.connect(self.day_selected)
+        shape.addWidget(self.heatmap)
+        shape.addWidget(self._build_legend())
+        shape.addStretch(1)
+        layout.addLayout(shape)
+
         layout.addWidget(SectionTitle("Days"))
         self.table = self._build_table()
         layout.addWidget(self.table, 1)
@@ -73,12 +95,32 @@ class AttendanceView(QWidget):
         self._period.setMinimumWidth(160)
         self._period.currentIndexChanged.connect(self._emit_month)
         row.addWidget(self._period)
+
+        self._only_attention = QCheckBox("Needs attention only")
+        self._only_attention.toggled.connect(self._apply_filter)
+        row.addWidget(self._only_attention)
         row.addStretch(1)
 
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self.refresh_requested)
         row.addWidget(refresh)
         return row
+
+    def _build_legend(self) -> QWidget:
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        layout.setContentsMargins(0, 14, 0, 0)
+        layout.setSpacing(3)
+        for text in (
+            "Deeper fill = more hours",
+            "Green = target met",
+            "Red outline = needs attention",
+        ):
+            label = QLabel(text)
+            label.setObjectName("CardCaption")
+            layout.addWidget(label)
+        layout.addStretch(1)
+        return host
 
     def _build_table(self) -> QTableWidget:
         table = QTableWidget(0, len(COLUMNS))
@@ -88,8 +130,12 @@ class AttendanceView(QWidget):
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header = table.horizontalHeader()
+        # Sized to content with Remarks taking the slack. Stretching every column equally
+        # gave a clock time the same width as a sentence, so Remarks truncated to
+        # "Attendance ..." while In and Out sat in a sea of padding.
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(True)
         table.cellDoubleClicked.connect(self._emit_day)
         return table
 
@@ -137,8 +183,15 @@ class AttendanceView(QWidget):
             if analysis.average_in_time
             else fmt.EMPTY
         )
+        self._view = view
         self._render_bank(analysis)
-        self._render_table(view.month)
+        self.heatmap.set_days(
+            list(analysis.days),
+            target=analysis.policy.work_target,
+            attention=set(view.attention),
+        )
+        self._render_table(view)
+        self._apply_filter(self._only_attention.isChecked())
 
     def _render_bank(self, analysis: MonthAnalysis) -> None:
         from cerepulse.intelligence.insights import Severity
@@ -177,9 +230,12 @@ class AttendanceView(QWidget):
             Severity.WARNING,
         )
 
-    def _render_table(self, month: AttendanceMonth) -> None:
+    def _render_table(self, view: MonthView) -> None:
+        month = view.month
         self.table.setRowCount(len(month.days))
         for row, day in enumerate(month.days):
+            attention = view.attention.get(day.day)
+            requests = view.swipes.get(day.day, [])
             values = (
                 day.day.strftime("%d %b").lstrip("0"),
                 day.weekday,
@@ -188,6 +244,7 @@ class AttendanceView(QWidget):
                 fmt.clock_time(day.last_out),
                 day.total_hours.as_clock() if day.total_hours else fmt.EMPTY,
                 day.late_mark.as_clock() if day.late_mark else "",
+                _swipe_text(requests),
                 day.remarks,
             )
             for column, text in enumerate(values):
@@ -195,12 +252,22 @@ class AttendanceView(QWidget):
                 if column == 0:
                     # Carries the real date, so double-click can open that day.
                     item.setData(Qt.ItemDataRole.UserRole, day.day)
-                if column >= 3:
+                    # And whether the row is outstanding, so the filter needs no second pass.
+                    item.setData(Qt.ItemDataRole.UserRole + 1, attention is not None)
+                if column in (3, 4, 5, 6):
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
                 if column == 2:
                     item.setForeground(_status_colour(day.status, self._palette))
+                if column == 7:
+                    item.setForeground(_swipe_colour(requests, self._palette))
+                    item.setToolTip(_swipe_tooltip(requests))
+                if attention is not None and column == 0:
+                    # The date cell alone. Colouring the whole row would fight the status
+                    # and swipe columns, which already carry meaning in the same channel.
+                    item.setForeground(QColor(self._palette.bad))
+                    item.setToolTip(attention.reason)
                 self.table.setItem(row, column, item)
 
             if not day.detail_loaded and day.status.counts_as_worked:
@@ -210,6 +277,25 @@ class AttendanceView(QWidget):
                     worked_cell.setToolTip("Punch detail not synced yet")
 
     # --- interaction ----------------------------------------------------------------
+
+    def _apply_filter(self, only_attention: bool) -> None:
+        """Hide settled rows. Filtering by row rather than rebuilding keeps the selection."""
+        outstanding = 0
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            flagged = bool(item and item.data(Qt.ItemDataRole.UserRole + 1))
+            outstanding += int(flagged)
+            self.table.setRowHidden(row, only_attention and not flagged)
+
+        if only_attention and not outstanding and self._view is not None:
+            # An empty table under a checkbox reads as a bug. This is good news, so say it.
+            self.banner.show_message("Nothing outstanding this month.", Severity.SUCCESS)
+        elif only_attention:
+            self.banner.show_message(
+                f"Showing {outstanding} day(s) that need something doing.", Severity.INFO
+            )
+        else:
+            self.banner.clear_message()
 
     def _emit_day(self, row: int, _column: int) -> None:
         item = self.table.item(row, 0)
@@ -245,3 +331,41 @@ def _status_colour(status: DayStatus, palette: Palette) -> QColor:
             DayStatus.ON_DUTY: palette.work,
         }.get(status, palette.text_muted)
     )
+
+
+def _swipe_text(requests: list[SwipeRequest]) -> str:
+    """What the Swipe column says. Blank, not a dash, when nothing was ever filed.
+
+    Most days have no request and never needed one; a column of dashes would read as
+    thirty missing values rather than as an ordinary month.
+    """
+    state = swipe_state(requests)
+    if state is None:
+        return ""
+    label = {
+        SwipeStatus.IN_PROCESS: "Pending",
+        SwipeStatus.APPROVED: "Approved",
+        SwipeStatus.REJECTED: "Rejected",
+        SwipeStatus.CANCELLED: "Cancelled",
+        SwipeStatus.UNKNOWN: "Filed",
+    }[state]
+    return f"{label} ×{len(requests)}" if len(requests) > 1 else label
+
+
+def _swipe_colour(requests: list[SwipeRequest], palette: Palette) -> QColor:
+    state = swipe_state(requests)
+    return QColor(
+        {
+            SwipeStatus.APPROVED: palette.good,
+            SwipeStatus.IN_PROCESS: palette.rest,
+            SwipeStatus.REJECTED: palette.bad,
+        }.get(state, palette.text_muted)  # type: ignore[arg-type]
+    )
+
+
+def _swipe_tooltip(requests: list[SwipeRequest]) -> str:
+    lines = []
+    for request in requests:
+        remark = f" — {request.remark}" if request.remark else ""
+        lines.append(f"{request.direction}: {request.status.value.replace('_', ' ')}{remark}")
+    return "\n".join(lines)

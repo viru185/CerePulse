@@ -7,13 +7,14 @@ where work happened, where breaks fell, which stretches were inferred from a mis
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import datetime
+from collections.abc import Callable, Sequence
+from datetime import date, datetime, timedelta
 
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -23,7 +24,9 @@ from PySide6.QtWidgets import (
 )
 
 from cerepulse.intelligence.insights import Insight, Severity
+from cerepulse.intelligence.month import DayRollup
 from cerepulse.intelligence.segments import WorkSegment
+from cerepulse.models.values import Duration
 from cerepulse.ui.theme import Palette
 
 
@@ -271,6 +274,153 @@ class SegmentBar(QWidget):
             painter.drawLine(int(x), int(band.bottom()), int(x + band.height()), int(band.top()))
             x += step
         painter.restore()
+
+
+class MonthHeatmap(QWidget):
+    """The month as a calendar, each day tinted by how much of the target it made.
+
+    A table of thirty rows answers "what happened on the 14th". This answers "what does the
+    month look like" — where the short days cluster, whether a bad week was one bad week or
+    a slide. The two are complementary, so both are on the screen.
+
+    Days needing attention carry a ring rather than a different fill. Fill is already
+    spoken for by hours worked, and overloading it would make a short day and an outstanding
+    one indistinguishable.
+    """
+
+    day_selected = Signal(object)  # date
+
+    #: Weekday initials, Monday first, matching the grid's column order.
+    HEADINGS = ("M", "T", "W", "T", "F", "S", "S")
+    CELL = 30
+
+    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(4)
+        self._grid.setColumnStretch(7, 1)
+
+    def set_days(
+        self,
+        days: Sequence[DayRollup],
+        *,
+        target: Duration,
+        attention: set[date] | None = None,
+    ) -> None:
+        """Render one month.
+
+        Rollups rather than raw grid rows, because a rollup's ``worked`` is comparable with
+        the work target. Tinting by ``Tot. Hrs.`` instead compares a gross span against a
+        net target, which made an ordinary nine-hour day render as 112% of an eight-hour one
+        and turned the whole calendar green.
+        """
+        self._clear()
+        flagged = attention or set()
+
+        for column, initial in enumerate(self.HEADINGS):
+            heading = QLabel(initial)
+            heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            heading.setFixedWidth(self.CELL)
+            heading.setStyleSheet(f"color: {self._palette.text_faint}; font-size: 10px;")
+            self._grid.addWidget(heading, 0, column)
+
+        if not days:
+            return
+
+        # Row 0 is the weekday headings, so the calendar starts at row 1. Weeks are indexed
+        # from the first day's own Monday, which is what keeps columns aligned when a month
+        # does not begin on one.
+        first = min(day.day for day in days)
+        origin = first - timedelta(days=first.weekday())
+
+        for entry in sorted(days, key=lambda item: item.day):
+            when = entry.day
+            week = (when - origin).days // 7
+            cell = _HeatCell(entry, target, self._palette, flagged=when in flagged)
+            cell.clicked.connect(lambda day=when: self.day_selected.emit(day))
+            self._grid.addWidget(cell, week + 1, when.weekday())
+
+    def _clear(self) -> None:
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
+
+
+class _HeatCell(QLabel):
+    """One day of the heatmap."""
+
+    clicked = Signal()
+
+    def __init__(
+        self,
+        entry: DayRollup,
+        target: Duration,
+        palette: Palette,
+        *,
+        flagged: bool,
+        parent: QWidget | None = None,
+    ) -> None:
+        when = entry.day
+        super().__init__(str(when.day), parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedSize(MonthHeatmap.CELL, MonthHeatmap.CELL)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        fill, ink = _heat_colours(entry, target, palette)
+        border = f"1px solid {palette.bad}" if flagged else "1px solid transparent"
+        self.setStyleSheet(
+            f"background-color: {fill}; color: {ink}; border: {border};"
+            f" border-radius: 6px; font-size: 11px;"
+        )
+        self.setToolTip(_heat_tooltip(entry, flagged))
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 — Qt override
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+
+def _heat_colours(entry: DayRollup, target: Duration, palette: Palette) -> tuple[str, str]:
+    """Fill and text colour for one cell.
+
+    Keyed on hours worked, not on status: a Saturday someone actually came in for is one of
+    the more interesting cells in the month, and greying it out because the portal calls it
+    a weekly off would hide the very thing worth seeing.
+    """
+    if entry.worked.minutes <= 0:
+        return palette.overlay, palette.text_faint
+
+    fraction = min(1.0, entry.worked.minutes / target.minutes) if target.minutes else 0.0
+    base = palette.good if entry.worked >= target else palette.work
+    # Alpha, not a lighter hue: the surface shows through, so the same colour reads as one
+    # scale rather than a set of unrelated shades.
+    alpha = int(60 + 195 * fraction)
+    return _rgba(base, alpha), palette.text
+
+
+def _heat_tooltip(entry: DayRollup, flagged: bool) -> str:
+    label = entry.day.strftime("%A, %d %B").replace(" 0", " ")
+    if entry.worked.minutes <= 0:
+        state = entry.status.value.replace("_", " ")
+        return f"{label} — {state}"
+
+    body = f"{label} — {entry.worked.as_clock()} worked"
+    if not entry.is_working_day:
+        body += f" ({entry.status.value.replace('_', ' ')})"
+    if entry.estimated:
+        body += "\nEstimated from the grid; punch detail not synced"
+    if entry.in_progress:
+        body += "\nStill in progress"
+    return f"{body}\nNeeds attention" if flagged else body
+
+
+def _rgba(hex_colour: str, alpha: int) -> str:
+    colour = QColor(hex_colour)
+    return f"rgba({colour.red()}, {colour.green()}, {colour.blue()}, {alpha})"
 
 
 class SectionTitle(QLabel):

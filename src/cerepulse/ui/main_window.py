@@ -34,6 +34,7 @@ from cerepulse.core.errors import (
     SessionExpiredError,
     TransportError,
 )
+from cerepulse.intelligence.attention import AttentionKind
 from cerepulse.intelligence.day import DayAnalysis
 from cerepulse.intelligence.insights import ActionKind, Insight, InsightKind, Severity
 from cerepulse.intelligence.month import analyze_week, week_start_for
@@ -533,16 +534,14 @@ class MainWindow(QMainWindow):
         )
 
     def _apply_swipes(self, requests: list[object]) -> None:
+        # Taken from the month view rather than recomputed. This screen used to carry its
+        # own third definition of "needs a request", which disagreed with both the others.
         needing: list[date] = []
         if self._month_view is not None:
-            filed = {request.for_date for request in requests}  # type: ignore[attr-defined]
             needing = [
-                day.day
-                for day in self._month_view.month.days
-                if day.status.counts_as_worked
-                and day.total_hours.minutes > 0
-                and day.day not in filed
-                and day.total_hours < self._context.attendance.policy.shift_span
+                day
+                for day, attention in sorted(self._month_view.attention.items())
+                if attention.kind is AttentionKind.SHORT_NO_REQUEST
             ]
         self.requests.show_requests(requests, needing=needing)  # type: ignore[arg-type]
 

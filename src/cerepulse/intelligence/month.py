@@ -85,6 +85,10 @@ class MonthAnalysis:
     month_target: Duration
     bank_delta: Duration
     required_daily_average: Duration | None
+    #: The policy every figure above was measured against. Carried on the result so a view
+    #: can scale a chart against the same target the numbers beside it used, rather than
+    #: reaching for a default of its own.
+    policy: ShiftPolicy = ShiftPolicy()
 
     @property
     def is_ahead(self) -> bool:
@@ -154,6 +158,7 @@ def analyze_month(
         month_target=month_target,
         bank_delta=bank_delta,
         required_daily_average=required,
+        policy=policy,
     )
 
 

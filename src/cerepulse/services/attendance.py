@@ -21,6 +21,7 @@ from loguru import logger
 from cerepulse.core.config import AppConfig
 from cerepulse.core.errors import CerePulseError, TransportError
 from cerepulse.intelligence.anomalies import Anomaly, detect_anomalies
+from cerepulse.intelligence.attention import Attention, find_attention, swipe_index
 from cerepulse.intelligence.day import DayAnalysis, analyze_day
 from cerepulse.intelligence.month import MonthAnalysis, analyze_month
 from cerepulse.intelligence.policy import ShiftPolicy
@@ -32,6 +33,7 @@ from cerepulse.intelligence.trends import (
 )
 from cerepulse.intelligence.voice import Tone, voice_day
 from cerepulse.models.attendance import AttendanceDay, AttendanceMonth, DayStatus
+from cerepulse.models.swipe import SwipeRequest
 from cerepulse.models.values import Duration
 from cerepulse.repository.attendance import AttendanceRepository
 from cerepulse.repository.employee import EmployeeRepository
@@ -101,6 +103,10 @@ class MonthView:
     from_cache: bool
     #: Worked days whose punch log has not been fetched yet.
     pending_detail: int
+    #: Filed swipe requests for this month, grouped by the day they are for.
+    swipes: dict[date, list[SwipeRequest]] = field(default_factory=dict)
+    #: Days with something outstanding, keyed by date.
+    attention: dict[date, Attention] = field(default_factory=dict)
 
     @property
     def is_stale(self) -> bool:
@@ -418,12 +424,15 @@ class AttendanceService:
         today: date | None,
     ) -> MonthView:
         code = month.employee_code
+        # Fetched once. Reading it per day put one query per day of punch detail behind a
+        # dict comprehension, which is a lot of round trips for a value that never changes.
+        requests = self._swipes.find_all(code)
         analyses = {
             day.day: analyze_day(
                 list(day.punches),
                 day=day.day,
                 policy=self.policy,
-                swipe_requests=self._swipes.find_all(code),
+                swipe_requests=requests,
             )
             for day in month.days
             if day.detail_loaded and day.punches
@@ -438,12 +447,21 @@ class AttendanceService:
             holidays=self._holidays.find_all(),
             today=today,
         )
+        swipes = swipe_index(requests)
         return MonthView(
             month=month,
             analysis=analysis,
             last_synced=self._sync_meta.last_synced(attendance_scope(year, period_month)),
             from_cache=from_cache,
             pending_detail=len(self._attendance.days_missing_detail(code, year, period_month)),
+            swipes=swipes,
+            attention=find_attention(
+                list(month.days),
+                policy=self.policy,
+                analyses=analyses,
+                swipes=swipes,
+                today=today or date.today(),
+            ),
         )
 
 
