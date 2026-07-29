@@ -1,12 +1,22 @@
-"""Leave — balances with expiry countdowns, and the ledger behind them."""
+"""Leave — balances with expiry countdowns, the breaks they can buy, and the ledger.
+
+The break planner exists because everyone does this arithmetic by hand once a year, badly,
+staring at a wall calendar. A holiday on a Thursday makes the Friday worth four days off;
+the same holiday on a Wednesday is worth almost nothing, and telling those apart at a glance
+is exactly what software is for.
+
+CerePulse still books nothing. It says which days are worth asking for.
+"""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -15,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from cerepulse.intelligence.leave import LeaveOutlook
+from cerepulse.intelligence.optimizer import BreakPlan
 from cerepulse.models.leave import LeaveCategory, LeaveTransaction
 from cerepulse.services.leave import LeaveView as LeaveData
 from cerepulse.ui import formatting as fmt
@@ -34,10 +45,14 @@ CARD_ORDER = (
 )
 
 
+BREAK_COLUMNS = ("When", "Days off", "Leave used", "Value", "Book these days")
+
+
 class LeaveViewWidget(QWidget):
-    """Balance cards, expiry insights, and the transaction ledger."""
+    """Balance cards, expiry insights, break suggestions, and the transaction ledger."""
 
     refresh_requested = Signal()
+    export_requested = Signal()
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -50,8 +65,11 @@ class LeaveViewWidget(QWidget):
         header = QHBoxLayout()
         header.addWidget(SectionTitle("Leave balances"))
         header.addStretch(1)
+        export = QPushButton("Export to calendar…")
+        export.clicked.connect(self.export_requested)
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self.refresh_requested)
+        header.addWidget(export)
         header.addWidget(refresh)
         layout.addLayout(header)
 
@@ -67,9 +85,34 @@ class LeaveViewWidget(QWidget):
         self._insights = InsightStrip(palette)
         layout.addWidget(self._insights)
 
+        layout.addWidget(SectionTitle("Best breaks you can book"))
+        self.breaks = self._build_breaks()
+        layout.addWidget(self.breaks)
+        self._breaks_note = QLabel()
+        self._breaks_note.setObjectName("CardCaption")
+        self._breaks_note.setWordWrap(True)
+        layout.addWidget(self._breaks_note)
+
         layout.addWidget(SectionTitle("Ledger"))
         self.table = self._build_table()
         layout.addWidget(self.table, 1)
+
+    def _build_breaks(self) -> QTableWidget:
+        table = QTableWidget(0, len(BREAK_COLUMNS))
+        table.setHorizontalHeaderLabels(BREAK_COLUMNS)
+        table.verticalHeader().setVisible(False)
+        table.setAlternatingRowColors(True)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setShowGrid(False)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(True)
+        # Short by design — six suggestions at most — so it shows every row rather than
+        # scrolling inside a screen that already scrolls.
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.setSizeAdjustPolicy(QAbstractItemView.SizeAdjustPolicy.AdjustToContents)
+        return table
 
     def _build_table(self) -> QTableWidget:
         table = QTableWidget(0, len(LEDGER_COLUMNS))
@@ -87,6 +130,46 @@ class LeaveViewWidget(QWidget):
     def show_leave(self, data: LeaveData) -> None:
         self._render_cards(data.outlooks)
         self._insights.set_insights(data.insights)
+        self._render_breaks(data.breaks)
+
+    def _render_breaks(self, plans: list[BreakPlan]) -> None:
+        self.breaks.setRowCount(len(plans))
+        self.breaks.setVisible(bool(plans))
+
+        if not plans:
+            # Distinguish the two reasons the table can be empty; "no suggestions" with no
+            # explanation reads as the feature being broken.
+            self._breaks_note.setText(
+                "No bookable breaks in the next six months — either the balance is spent "
+                "or the holiday calendar has not synced yet."
+            )
+            return
+
+        for row, plan in enumerate(plans):
+            values = (
+                plan.label,
+                str(plan.total_days),
+                str(plan.cost),
+                f"{plan.efficiency:.1f}×",
+                _booking_text(plan),
+            )
+            for column, text in enumerate(values):
+                item = QTableWidgetItem(text)
+                if 1 <= column <= 3:
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                if column == 3:
+                    item.setForeground(QColor(self._palette.good))
+                item.setToolTip(_plan_tooltip(plan))
+                self.breaks.setItem(row, column, item)
+
+        best = max(plans, key=lambda plan: plan.efficiency)
+        self._breaks_note.setText(
+            f"Value is days off per day of leave spent. The best here turns "
+            f"{_days(best.cost)} into {best.total_days}. Nothing is booked — "
+            f"apply in SpineHR."
+        )
 
     def _render_cards(self, outlooks: list[LeaveOutlook]) -> None:
         while self._cards.count():
@@ -134,6 +217,33 @@ class LeaveViewWidget(QWidget):
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
                 self.table.setItem(row, column, item)
+
+
+#: Beyond this, the dates stop being a list to act on and become a wall of text that
+#: doubles the width of the table. The full list stays available on hover.
+INLINE_DATES = 4
+
+
+def _days(count: int) -> str:
+    return f"{count} day" if count == 1 else f"{count} days"
+
+
+def _booking_text(plan: BreakPlan) -> str:
+    labels = [day.strftime("%a %d %b").replace(" 0", " ") for day in plan.leave_days]
+    if len(labels) <= INLINE_DATES:
+        return ", ".join(labels)
+    return f"{labels[0]} – {labels[-1]}  ({_days(len(labels))})"
+
+
+def _plan_tooltip(plan: BreakPlan) -> str:
+    lines = [
+        "Book: " + ", ".join(day.strftime("%a %d %b").replace(" 0", " ") for day in plan.leave_days)
+    ]
+    if plan.holidays:
+        lines.append(
+            "Covers " + ", ".join(day.strftime("%d %b").lstrip("0") for day in plan.holidays)
+        )
+    return "\n".join(lines)
 
 
 def _expiry_caption(outlook: LeaveOutlook) -> str:

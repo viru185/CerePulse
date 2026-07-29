@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 
 from loguru import logger
 
 from cerepulse.core.config import AppConfig
 from cerepulse.core.errors import TransportError
+from cerepulse.export.ics import CalendarEvent
 from cerepulse.intelligence.insights import Insight
 from cerepulse.intelligence.leave import LeaveOutlook, LeavePolicy, analyze_leave, leave_insights
-from cerepulse.models.leave import Holiday, LeaveBalance
+from cerepulse.intelligence.optimizer import BreakPlan, suggest_breaks
+from cerepulse.models.leave import Holiday, LeaveBalance, LeaveCategory
 from cerepulse.models.swipe import SwipeRequest
 from cerepulse.repository.leave import (
     HolidayRepository,
@@ -28,6 +31,14 @@ HOLIDAY_SCOPE = "holidays"
 #: Holidays are published once a year, so re-fetching them hourly is waste.
 HOLIDAY_TTL_MINUTES = 24 * 60
 
+#: How far ahead the optimizer looks. Six months covers the rest of any leave year without
+#: suggesting a bridge over holidays the company has not published yet.
+PLANNING_HORIZON_DAYS = 183
+
+#: Leave that can actually be spent on a planned break. Medical leave is not a planning
+#: instrument, and suggesting someone bridge a long weekend with it would be a poor joke.
+SPENDABLE = frozenset({LeaveCategory.PLANNED, LeaveCategory.CARRY_FORWARD, LeaveCategory.CASUAL})
+
 
 @dataclass(frozen=True, slots=True)
 class LeaveView:
@@ -38,6 +49,8 @@ class LeaveView:
     insights: list[Insight]
     last_synced: datetime | None
     from_cache: bool
+    #: The cheapest breaks the current balance can buy, in date order.
+    breaks: list[BreakPlan] = field(default_factory=list)
 
 
 class LeaveService:
@@ -91,14 +104,88 @@ class LeaveService:
                     raise
                 logger.warning("Leave refresh failed, serving cached balances: {}", exc)
 
-        outlooks = analyze_leave(balances, today=today or date.today(), policy=self._policy)
+        now = today or date.today()
+        outlooks = analyze_leave(balances, today=now, policy=self._policy)
         return LeaveView(
             balances=balances,
             outlooks=outlooks,
             insights=leave_insights(outlooks),
             last_synced=self._sync_meta.last_synced(LEAVE_SCOPE),
             from_cache=from_cache,
+            breaks=self.suggest_breaks(outlooks, today=now),
         )
+
+    def suggest_breaks(
+        self,
+        outlooks: list[LeaveOutlook],
+        *,
+        today: date | None = None,
+        horizon_days: int = PLANNING_HORIZON_DAYS,
+    ) -> list[BreakPlan]:
+        """The best breaks bookable from the balance the user actually holds.
+
+        Only whole days of *planned* leave are spendable on a holiday: medical leave is not
+        a planning instrument, and a half day cannot bridge anything.
+        """
+        now = today or date.today()
+        budget = int(
+            sum(
+                outlook.balance.available_balance
+                for outlook in outlooks
+                if outlook.balance.category in SPENDABLE and outlook.balance.available_balance > 0
+            )
+        )
+        return suggest_breaks(
+            start=now,
+            end=now + timedelta(days=horizon_days),
+            holidays={holiday.day for holiday in self._holidays.find_all() if holiday.day >= now},
+            max_leave=budget,
+        )
+
+    def calendar_events(
+        self,
+        employee_code: str,
+        *,
+        leave_taken: Iterable[date] = (),
+        today: date | None = None,
+    ) -> list[CalendarEvent]:
+        """Everything worth having in a personal calendar, as all-day events.
+
+        Holidays and leave already taken are facts the portal holds. Expiry deadlines are
+        included because they are the one thing it never tells anyone, and a date in a
+        calendar is the only form of that warning that survives closing this app.
+
+        ``leave_taken`` is passed in rather than read here: those dates come from the
+        attendance grid, which is not this service's to reach into.
+        """
+        now = today or date.today()
+        events = [
+            CalendarEvent(
+                day=holiday.day,
+                summary=holiday.name or "Company holiday",
+                category="HOLIDAY",
+            )
+            for holiday in self._holidays.find_all()
+        ]
+        events += [CalendarEvent(day=day, summary="Leave", category="LEAVE") for day in leave_taken]
+
+        outlooks = analyze_leave(
+            self._leave.find_balances(employee_code), today=now, policy=self._policy
+        )
+        events += [
+            CalendarEvent(
+                day=outlook.expires_on,
+                summary=f"{outlook.balance.leave_type} expires",
+                description=(
+                    f"{outlook.balance.available_balance:g} day(s) of "
+                    f"{outlook.balance.leave_type} lapse on this date."
+                ),
+                category="DEADLINE",
+            )
+            for outlook in outlooks
+            if outlook.expires_on is not None and outlook.has_balance
+        ]
+        return events
 
     def refresh_leave(self, employee_code: str) -> None:
         logger.info("Refreshing leave balances")

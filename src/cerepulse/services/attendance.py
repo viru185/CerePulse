@@ -264,6 +264,14 @@ class AttendanceService:
             today=now,
         )
 
+    def leave_days(self, employee_code: str, *, start: date, end: date) -> list[date]:
+        """Dates the portal recorded as leave, for the calendar export."""
+        return [
+            day.day
+            for day in self._attendance.find_days_between(employee_code, start, end)
+            if day.status is DayStatus.LEAVE
+        ]
+
     def cached_months(self, employee_code: str) -> list[tuple[int, int]]:
         """Months holding at least one day, newest first."""
         return self._attendance.cached_months(employee_code)
