@@ -43,6 +43,8 @@ SILENT = {
     InsightKind.HOURS_BANK_DEFICIT,
     # Useful on screen while deciding about lunch; not worth a toast.
     InsightKind.BREAK_HEADROOM,
+    # A caveat about where the numbers came from, not news.
+    InsightKind.GRID_ONLY,
 }
 
 

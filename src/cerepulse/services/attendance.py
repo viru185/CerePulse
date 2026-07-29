@@ -32,7 +32,13 @@ from cerepulse.intelligence.trends import (
     working_days_left,
 )
 from cerepulse.intelligence.voice import Tone, voice_day
-from cerepulse.models.attendance import AttendanceDay, AttendanceMonth, DayStatus
+from cerepulse.models.attendance import (
+    AttendanceDay,
+    AttendanceMonth,
+    DayStatus,
+    Punch,
+    PunchDirection,
+)
 from cerepulse.models.swipe import SwipeRequest
 from cerepulse.models.values import Duration
 from cerepulse.repository.attendance import AttendanceRepository
@@ -201,12 +207,18 @@ class AttendanceService:
             cached = self._attendance.find_day(employee_code, day)
 
         punches = list(cached.punches) if cached else []
+        grid_only = False
+        if not punches and cached is not None:
+            punches = _punches_from_grid(cached)
+            grid_only = bool(punches)
+
         analysis = analyze_day(
             punches,
             day=day,
             policy=self.policy,
             now=now,
             swipe_requests=self._swipes.find_all(employee_code),
+            grid_only=grid_only,
         )
         # Voiced here rather than in the views, so the window, the tray tooltip and the
         # notifications all say the same thing about the same day.
@@ -471,6 +483,25 @@ class AttendanceService:
                 today=today or date.today(),
             ),
         )
+
+
+def _punches_from_grid(day: AttendanceDay) -> list[Punch]:
+    """Rebuild a minimal punch log from the monthly grid's own first-in and last-out.
+
+    The portal's day-detail panel comes back empty for the day currently in progress, and an
+    empty result is legitimately recorded as "fetched, nothing there". The grid row, though,
+    already carries first-in and last-out — so without this, Today reports "Nothing logged"
+    for a day it plainly has hours for. That is exactly how a clock-in appears to go missing.
+
+    Only the in and out are real. Any break taken inside that span is invisible here, which
+    is why the caller marks the analysis ``grid_only`` and the screen says so.
+    """
+    if day.first_in is None:
+        return []
+    punches = [Punch(at=day.first_in, direction=PunchDirection.IN)]
+    if day.last_out is not None and day.last_out != day.first_in:
+        punches.append(Punch(at=day.last_out, direction=PunchDirection.OUT))
+    return punches
 
 
 def _months_before(anchor: date, count: int) -> date:

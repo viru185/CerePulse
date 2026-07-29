@@ -3,8 +3,9 @@
 **Knows when you can leave, before you ask.**
 
 A smart attendance and leave companion for Windows. It shows your full day breakdown —
-worked, break, expected out, overtime, early exit — plus leave balances, expiry warnings and
-offline history, without opening the HR portal in a browser.
+worked, break, expected out, overtime, early exit — plus what your history says about your
+habits, which days need a swipe request, and the cheapest leave to book for the longest
+break, without opening the HR portal in a browser.
 
 CerePulse is the desktop successor to [NineToFive](https://github.com/viru185/ninetofive).
 NineToFive did the math but you had to feed it: sign in, open attendance, copy the punch
@@ -20,22 +21,34 @@ at all.
 
 ## What it does
 
-**Attendance intelligence** — for any day: in time, out time, expected out, break taken,
-break remaining, total worked, hours remaining, extra hours, and early-exit detection with a
-swipe-request prompt (plus the status of a request you already filed).
+**Answers the question first** — Today opens with when you can leave, then what that means:
+how much break you can still take without moving it, whether the target is met, whether a
+punch is missing. The numbers come after the sentence that interprets them.
 
-**Leave intelligence** — planned, comp-off and carry-forward balances, expiry countdowns,
-and upcoming approved leave.
+**Reads your history** — typical start and finish per weekday, real median lunch length,
+whether you have been drifting later lately, on-target streaks, longest day, earliest start,
+and how this month compares with the last six. Every figure carries the sample behind it.
 
-**Smart, not just visual** — it tells you what the numbers mean and what to do next: short
-of hours, overtime earned, swipe request needed, unusual patterns, and a monthly hours bank
-with the daily average you need to finish the month even.
+**Says where the month lands** — a projection to month end from your recent pace, what each
+remaining day has to be to finish level, and whether a short day is affordable this week.
 
-**Works offline** — full attendance history is cached locally, so past records are readable
-with no connection.
+**Shows what needs doing** — a swipe column per day (filed, pending, approved, rejected), a
+needs-attention filter, and a month heatmap tinted by hours worked. A day already covered by
+a request is handled, not outstanding.
+
+**Plans your leave** — the cheapest days to book for the longest break, using the company
+holiday calendar and the balance you actually hold. Exports holidays, leave and expiry
+deadlines to `.ics` for any calendar app.
+
+**Talks like a person** — a light remark when you have earned one, and never when you have
+not. Warnings, expiring leave and missing punches stay plain at every setting.
+
+**Works offline** — attendance history is cached locally, so past records and every trend
+above are readable with no connection.
 
 **Explains itself** — every metric on the Today screen expands to show the exact punches and
-arithmetic behind it, including any punch that was inferred or discarded, and why.
+arithmetic behind it, including any punch that was inferred or discarded, and why. Estimated
+days are always counted and named rather than blended into a figure that looks exact.
 
 ---
 

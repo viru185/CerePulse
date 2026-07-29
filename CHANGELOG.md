@@ -2,10 +2,28 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.2.0] - 2026-07-29
+
+### Bug Fixes
+- Repair month selection, sign-in persistence, and day accounting
+- Stop charging today for hours it does not owe yet
+- Two things six months of real data made obvious
+
+### Features
+- Fetch past months and make them reachable
+- Lead with what the day means, not what it measures
+- Give the app a voice that cannot lie
+- Show what the history says, and how much history there is
+- Swipe status per day, a needs-attention filter, and a heatmap
+- Plan the cheapest breaks, and export the calendar
+
 ## [0.1.1] - 2026-07-28
 
 ### Bug Fixes
 - Survive having no console in a windowed build
+
+### Documentation
+- Regenerate changelog for 0.1.1
 
 ## [0.1.0] - 2026-07-28
 

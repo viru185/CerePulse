@@ -7,14 +7,15 @@ so there is exactly one place to bump a release.
 
 from __future__ import annotations
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 NAME = "CerePulse"
 TAGLINE = "Knows when you can leave, before you ask."
 SUMMARY = (
     "A smart attendance and leave companion for Windows. Shows your full day breakdown — "
-    "worked, break, expected out, overtime, early exit — plus leave balances, expiry "
-    "warnings and offline history, without opening the HR portal."
+    "worked, break, expected out, overtime, early exit — plus what your history says about "
+    "your habits, which days need a swipe request, and the cheapest leave to book for the "
+    "longest break, without opening the HR portal."
 )
 VERSION = __version__
 AUTHOR = "Viren Hirpara"

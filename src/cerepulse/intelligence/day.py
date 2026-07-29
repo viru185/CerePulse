@@ -102,10 +102,28 @@ def analyze_day(
     policy: ShiftPolicy | None = None,
     now: datetime | None = None,
     swipe_requests: list[SwipeRequest] | None = None,
+    grid_only: bool = False,
 ) -> DayAnalysis:
-    """Analyze one day. ``swipe_requests`` lets an existing request suppress the suggestion."""
+    """Analyze one day. ``swipe_requests`` lets an existing request suppress the suggestion.
+
+    ``grid_only`` marks a day whose times were reconstructed from the monthly grid because
+    no punch log was available. The in and out are real; everything between them is not, so
+    the break figure is a floor rather than a measurement and the day says so.
+    """
     policy = policy or ShiftPolicy.default()
     pairing = pair_punches(punches, day=day, now=now)
+    if grid_only and pairing.segments:
+        pairing = replace(
+            pairing,
+            issues=(
+                *pairing.issues,
+                PunchIssue(
+                    IssueKind.GRID_ONLY,
+                    "Times are from the attendance summary; the punch log is not available, "
+                    "so any break within the day is not counted.",
+                ),
+            ),
+        )
 
     if not pairing.segments:
         return _empty_day(day, pairing)
@@ -127,6 +145,11 @@ def analyze_day(
     expected_out_break_adjusted = first_in + _to_delta(policy.work_target + effective_break)
 
     state = DayState.INCOMPLETE if pairing.ongoing else DayState.COMPLETE
+    if grid_only and now is not None and now.date() == day:
+        # The grid's last-out is only the latest swipe so far, not a clock-off. Reading it
+        # as the end of the day declares an early exit and asks for a swipe request at
+        # lunchtime, which is the same mistake as scoring today against a full target.
+        state = DayState.INCOMPLETE
     early_exit = state is DayState.COMPLETE and worked < policy.work_target
 
     filed = _matching_request(swipe_requests, day)
@@ -178,6 +201,15 @@ def _with_insights(
                     InsightKind.MISSING_PUNCH,
                     Severity.WARNING,
                     "Unmatched punch",
+                    issue.message,
+                )
+            )
+        elif issue.kind is IssueKind.GRID_ONLY:
+            insights.append(
+                Insight(
+                    InsightKind.GRID_ONLY,
+                    Severity.INFO,
+                    "Times from the summary, not the punch log",
                     issue.message,
                 )
             )
@@ -390,6 +422,7 @@ _KIND_ORDER = (
     InsightKind.LONG_BREAK,
     InsightKind.BREAK_HEADROOM,
     InsightKind.SWIPE_FILED,
+    InsightKind.GRID_ONLY,
     InsightKind.NO_PUNCHES,
 )
 _KIND_RANK = {kind: rank for rank, kind in enumerate(_KIND_ORDER)}

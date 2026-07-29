@@ -65,8 +65,9 @@ NEVER_PLAYFUL = frozenset(
 
 #: Issues meaning a headline figure was inferred rather than measured. A whole day goes
 #: plain when one of these is present: congratulating someone on an hour of overtime the app
-#: invented from a missing punch is worse than saying nothing.
-_REPAIRED = frozenset({IssueKind.INFERRED_OUT, IssueKind.ORPHAN_OUT})
+#: invented from a missing punch is worse than saying nothing. A grid-only day counts —
+#: its break is unknown, so a remark about lunch would be about a number nobody has.
+_REPAIRED = frozenset({IssueKind.INFERRED_OUT, IssueKind.ORPHAN_OUT, IssueKind.GRID_ONLY})
 
 
 def voice_day(analysis: DayAnalysis, *, tone: Tone = Tone.PLAYFUL) -> DayAnalysis:

@@ -33,6 +33,8 @@ class IssueKind(Enum):
     ORPHAN_OUT = "orphan_out"
     ONGOING = "ongoing"
     NO_PUNCHES = "no_punches"
+    #: The times came from the monthly grid, not from a punch log.
+    GRID_ONLY = "grid_only"
 
 
 @dataclass(frozen=True, slots=True)

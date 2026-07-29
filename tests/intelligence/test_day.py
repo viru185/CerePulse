@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, datetime, time, timedelta
 
 import pytest
 
@@ -185,6 +185,50 @@ def test_missing_punch_surfaces_as_a_warning_insight() -> None:
     analysis = analyze_day(punches(("09:00", "in"), ("12:00", "in"), ("18:00", "out")), day=DAY)
     warning = next(i for i in analysis.insights if i.kind is InsightKind.MISSING_PUNCH)
     assert warning.severity is Severity.WARNING
+
+
+# --- grid-only days ---------------------------------------------------------------------
+
+
+def test_a_grid_only_day_says_where_its_numbers_came_from() -> None:
+    analysis = analyze_day(punches(("09:20", "in"), ("18:30", "out")), day=DAY, grid_only=True)
+    note = next(i for i in analysis.insights if i.kind is InsightKind.GRID_ONLY)
+
+    assert "not counted" in note.detail
+    assert analysis.worked.as_clock() == "9:10"
+
+
+def test_a_grid_only_today_is_unfinished_not_short() -> None:
+    """The grid's last-out is the latest swipe so far, not a clock-off."""
+    analysis = analyze_day(
+        punches(("09:20", "in"), ("11:30", "out")),
+        day=DAY,
+        now=at("12:20"),
+        grid_only=True,
+    )
+
+    assert analysis.state is DayState.INCOMPLETE
+    assert not analysis.early_exit
+    assert not analysis.swipe_request_needed
+
+
+def test_a_grid_only_day_in_the_past_is_read_as_finished() -> None:
+    """Yesterday's last-out really was the end of the day."""
+    analysis = analyze_day(
+        punches(("09:20", "in"), ("11:30", "out")),
+        day=DAY,
+        now=datetime.combine(DAY + timedelta(days=1), time(9, 0)),
+        grid_only=True,
+    )
+
+    assert analysis.state is DayState.COMPLETE
+    assert analysis.early_exit
+
+
+def test_grid_only_on_an_empty_day_adds_nothing() -> None:
+    """There is nothing to caveat when there are no times at all."""
+    analysis = analyze_day([], day=DAY, grid_only=True)
+    assert kinds(analysis) == {InsightKind.NO_PUNCHES}
 
 
 # --- empty days -----------------------------------------------------------------------

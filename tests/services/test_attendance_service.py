@@ -7,6 +7,7 @@ from datetime import date, datetime, time, timedelta
 import pytest
 
 from cerepulse.core.errors import TransportError
+from cerepulse.intelligence.day import DayState
 from cerepulse.intelligence.insights import InsightKind
 from cerepulse.models.attendance import (
     AttendanceDay,
@@ -264,6 +265,84 @@ def test_the_shift_policy_comes_from_config(gateway: FakeGateway, repos: dict[st
         config=tweaked,
     )
     assert service.policy.work_target.as_clock() == "7:30"
+
+
+def test_a_day_with_no_punch_log_falls_back_to_the_grid(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """The detail panel is empty for the day in progress; the grid row is not.
+
+    Without this, Today reported "Nothing logged" for a day the portal plainly had hours
+    for — which is exactly how a clock-in appears to go missing.
+    """
+    target = date(2026, 7, 1)
+    seed_month(gateway, day(target, total="2.10"))
+    gateway.punches[target] = []  # fetched, genuinely nothing there
+    attendance_service.load_month(EMPLOYEE, *JULY)
+
+    analysis = attendance_service.load_day(EMPLOYEE, target)
+
+    assert analysis.state is not DayState.EMPTY
+    assert analysis.first_in == datetime.combine(target, time(9, 0))
+    assert analysis.last_out == datetime.combine(target, time(18, 0))
+    assert InsightKind.GRID_ONLY in {i.kind for i in analysis.insights}
+
+
+def test_the_grid_fallback_says_the_break_is_unknown(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """Only the in and out are real; a break inside that span is invisible."""
+    target = date(2026, 7, 1)
+    seed_month(gateway, day(target))
+    gateway.punches[target] = []
+    attendance_service.load_month(EMPLOYEE, *JULY)
+
+    analysis = attendance_service.load_day(EMPLOYEE, target)
+    note = next(i for i in analysis.insights if i.kind is InsightKind.GRID_ONLY)
+    assert "not counted" in note.detail
+
+
+def test_a_genuinely_empty_day_stays_empty(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """A weekend has no first-in to rebuild from, and must not gain one."""
+    target = date(2026, 7, 4)
+    gateway.months[JULY] = AttendanceMonth(
+        employee_code=EMPLOYEE,
+        year=2026,
+        month=7,
+        days=(
+            AttendanceDay(
+                day=target,
+                weekday="Sat",
+                status=DayStatus.WEEKLY_OFF,
+                total_hours=Duration(0),
+            ),
+        ),
+    )
+    attendance_service.load_month(EMPLOYEE, *JULY)
+
+    analysis = attendance_service.load_day(EMPLOYEE, target)
+    assert analysis.state is DayState.EMPTY
+
+
+def test_a_real_punch_log_is_never_replaced_by_the_grid(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """The fallback is for absence only. Real punches carry the breaks."""
+    target = date(2026, 7, 1)
+    seed_month(gateway, day(target))
+    gateway.punches[target] = [
+        Punch(at=time(9, 0), direction=PunchDirection.IN),
+        Punch(at=time(13, 0), direction=PunchDirection.OUT),
+        Punch(at=time(14, 0), direction=PunchDirection.IN),
+        Punch(at=time(18, 0), direction=PunchDirection.OUT),
+    ]
+    attendance_service.load_month(EMPLOYEE, *JULY)
+
+    analysis = attendance_service.load_day(EMPLOYEE, target)
+    assert analysis.break_taken.as_clock() == "1:00"
+    assert InsightKind.GRID_ONLY not in {i.kind for i in analysis.insights}
 
 
 def test_load_day_speaks_in_the_configured_tone(

@@ -43,6 +43,7 @@ class InsightKind(Enum):
     HOURS_BANK_DEFICIT = "hours_bank_deficit"
     ANOMALY = "anomaly"
     BREAK_HEADROOM = "break_headroom"
+    GRID_ONLY = "grid_only"
 
 
 class ActionKind(Enum):
