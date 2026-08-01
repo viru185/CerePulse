@@ -37,6 +37,7 @@ class TodayView(QWidget):
     insight_action = Signal(object)
     refresh_requested = Signal()
     back_to_today = Signal()
+    sync_day_requested = Signal(object)  # date
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -108,8 +109,13 @@ class TodayView(QWidget):
         self._viewing.setObjectName("CardCaption")
         self._back = QPushButton("Back to today")
         self._back.clicked.connect(self.back_to_today)
+        # The punch log for a given day arrives one portal request at a time, so a date
+        # opened from Attendance may have none yet. This asks for that day and no other.
+        self._sync_day = QPushButton("Sync this day")
+        self._sync_day.clicked.connect(self._request_day_sync)
         context.addWidget(self._viewing)
         context.addWidget(self._back)
+        context.addWidget(self._sync_day)
         context.addStretch(1)
         self._context_bar = QWidget()
         self._context_bar.setLayout(context)
@@ -153,6 +159,10 @@ class TodayView(QWidget):
         return card_row(self.worked, self.break_taken, self.remaining, self.extra)
 
     # --- rendering ------------------------------------------------------------------
+
+    def _request_day_sync(self) -> None:
+        if self._analysis is not None:
+            self.sync_day_requested.emit(self._analysis.day)
 
     def set_back_target(self, origin: str | None) -> None:
         """Name where the exit leads. ``None`` means the only way out is back to today."""

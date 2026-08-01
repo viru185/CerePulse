@@ -22,6 +22,7 @@ from loguru import logger
 from PySide6.QtCore import QObject, Signal
 
 from cerepulse.app import AppContext
+from cerepulse.services.scopes import Scope
 from cerepulse.ui.workers import TaskRunner
 
 #: Callbacks the window hands in for the few flows it has to finish itself — a dialog to
@@ -46,6 +47,11 @@ class SyncController(QObject):
     #: Today's row is not in the portal's data yet — distinct from a failure.
     today_missing = Signal(object, object)  # date, datetime | None
 
+    #: Per-scope freshness for the sync panel.
+    scopes_ready = Signal(object)  # list[ScopeStatus]
+    scope_started = Signal(object)  # Scope
+    scope_finished = Signal(object, int)  # Scope, count where meaningful
+
     #: A sync finished but some scopes failed. Empty list means everything succeeded.
     sync_finished = Signal(object)  # list[str]
     history_finished = Signal(str)
@@ -68,6 +74,7 @@ class SyncController(QObject):
         self.employee_code = employee_code
         self.period = (date.today().year, date.today().month)
         self._history_cancelled = False
+        self._detail_cancelled = False
 
     # --- months -----------------------------------------------------------------------
 
@@ -84,21 +91,88 @@ class SyncController(QObject):
         )
 
     def refresh(self, *, force: bool = False) -> None:
-        """Sync every scope, then reload the month behind it."""
+        """Sync every scope, then reload the month behind it.
+
+        ``force`` reaches the services now. It used to stop at this method, so pressing
+        Refresh respected every cache TTL and could legitimately fetch nothing at all.
+        """
         year, month = self.period
         self._runner.submit(
             "sync",
             lambda: self._context.sync.sync_all(
-                self.employee_code, year=year, month=month, today=date.today()
+                self.employee_code, year=year, month=month, today=date.today(), force=force
             ),
-            on_success=lambda report: self._after_sync(report, force=force),
+            on_success=self._after_sync,
             on_error=self.failed.emit,
         )
 
-    def _after_sync(self, report: object, *, force: bool) -> None:
+    def _after_sync(self, report: object) -> None:
         self.sync_finished.emit(list(getattr(report, "failures", [])))
         self.reload_month()
         self.refresh_leave()
+        self.report_scopes()
+
+    # --- one scope at a time ------------------------------------------------------------
+
+    def report_scopes(self) -> None:
+        """Publish per-scope freshness for the sync panel."""
+        year, month = self.period
+        self._runner.submit(
+            "scopes",
+            lambda: self._context.attendance.scope_statuses(
+                self.employee_code, year=year, month=month
+            ),
+            on_success=self.scopes_ready.emit,
+            on_error=lambda exc: logger.debug("Could not read sync state: {}", exc),
+        )
+
+    def sync_scope(self, scope: Scope) -> None:
+        """Refresh exactly one thing. Ignores its TTL — asking implies it looks wrong."""
+        year, month = self.period
+        self.scope_started.emit(scope)
+
+        def run() -> int:
+            return self._context.sync.sync_scope(
+                scope,
+                self.employee_code,
+                year=year,
+                month=month,
+                on_progress=self._detail_progress,
+            )
+
+        def done(count: int) -> None:
+            self.scope_finished.emit(scope, count)
+            self.reload_month()
+            if scope in (Scope.LEAVE, Scope.SWIPE_REQUESTS):
+                self.refresh_leave()
+            self.report_scopes()
+
+        self._detail_cancelled = False
+        self._runner.submit(f"scope-{scope.value}", run, on_success=done, on_error=self.failed.emit)
+
+    def sync_day(self, day: date) -> None:
+        """Re-fetch one day's punches, for when a past date never filled in."""
+        self.scope_started.emit(Scope.DAY_DETAIL)
+
+        def done(_result: object) -> None:
+            self.scope_finished.emit(Scope.DAY_DETAIL, 1)
+            self.load_day(day)
+            self.report_scopes()
+
+        self._runner.submit(
+            "sync-day",
+            lambda: self._context.sync.sync_day(self.employee_code, day),
+            on_success=done,
+            on_error=self.failed.emit,
+        )
+
+    def cancel_detail(self) -> None:
+        self._detail_cancelled = True
+
+    def _detail_progress(self, done: int, total: int) -> bool:
+        # Worker thread: reads a flag, writes no widgets.
+        logger.info("Punch detail {}/{}", done, total)
+        return not self._detail_cancelled
 
     def reload_month(self) -> None:
         year, month = self.period

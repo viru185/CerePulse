@@ -45,6 +45,7 @@ from cerepulse.notify.startup import set_registered
 from cerepulse.notify.tray import Tray
 from cerepulse.services.attendance import MonthView
 from cerepulse.services.leave import LeaveView as LeaveData
+from cerepulse.services.scopes import Scope
 from cerepulse.transport import pages
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.assets import app_icon
@@ -57,6 +58,7 @@ from cerepulse.ui.views.insights import InsightsView
 from cerepulse.ui.views.leave import LeaveViewWidget
 from cerepulse.ui.views.requests import RequestsView, open_url
 from cerepulse.ui.views.settings import SettingsView
+from cerepulse.ui.views.sync_panel import SyncPanel
 from cerepulse.ui.views.today import TodayView
 from cerepulse.ui.views.week import WeekView
 from cerepulse.ui.workers import TaskRunner
@@ -80,6 +82,9 @@ class MainWindow(QMainWindow):
         self._month_view: MonthView | None = None
         #: Populated in the background; empty until the portal has been asked once.
         self._fetchable_months: list[tuple[int, int]] = []
+        self._sync_panel: SyncPanel | None = None
+        self._scopes: list[object] = []
+        self._busy_scope: Scope | None = None
 
         self.setWindowTitle(about.NAME)
         self.setWindowIcon(app_icon())
@@ -138,6 +143,10 @@ class MainWindow(QMainWindow):
         self.attendance.refresh_requested.connect(lambda: self.refresh(force=True))
         self.attendance.month_changed.connect(self._change_month)
         self.attendance.day_selected.connect(self._open_day)
+        self.attendance.fetch_detail_requested.connect(
+            lambda: self._sync.sync_scope(Scope.DAY_DETAIL)
+        )
+        self.today.sync_day_requested.connect(self._sync_day)
         self.leave.refresh_requested.connect(lambda: self._sync.refresh_leave())
         self.leave.export_requested.connect(self._export_calendar)
         self.requests.refresh_requested.connect(lambda: self._sync.refresh_leave())
@@ -185,9 +194,13 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
 
-        self._status = QLabel("Starting…")
-        self._status.setObjectName("SidebarTagline")
-        self._status.setWordWrap(True)
+        # The status is the way in to per-scope sync, so it is a button rather than a
+        # label: the one place that says how fresh things are should also be where you go
+        # to do something about it.
+        self._status = QPushButton("Starting…")
+        self._status.setObjectName("SidebarButton")
+        self._status.setToolTip("What has been synced, and when")
+        self._status.clicked.connect(self._open_sync_panel)
         layout.addWidget(self._status)
         return sidebar
 
@@ -217,6 +230,9 @@ class MainWindow(QMainWindow):
         self._sync.trends_ready.connect(self.insights.show_trends)
         self._sync.periods_ready.connect(self._adopt_periods)
         self._sync.sync_finished.connect(self._on_sync_finished)
+        self._sync.scopes_ready.connect(self._on_scopes_ready)
+        self._sync.scope_started.connect(self._on_scope_started)
+        self._sync.scope_finished.connect(self._on_scope_finished)
         self._sync.history_finished.connect(
             lambda summary: self.settings.banner.show_message(summary, Severity.SUCCESS)
         )
@@ -367,6 +383,38 @@ class MainWindow(QMainWindow):
 
     def cancel_history(self) -> None:
         self._sync.cancel_history()
+
+    def _open_sync_panel(self) -> None:
+        """Show what is fresh and what is not, with a button per thing."""
+        if self._sync_panel is None:
+            self._sync_panel = SyncPanel(self._palette, self)
+            self._sync_panel.scope_requested.connect(self._sync.sync_scope)
+            self._sync_panel.refresh_all_requested.connect(lambda: self.refresh(force=True))
+        self._sync.report_scopes()
+        self._sync_panel.show()
+        self._sync_panel.raise_()
+
+    def _sync_day(self, day: date) -> None:
+        self._status.setText(f"Fetching {fmt.day_label(day)}…")
+        self._sync.sync_day(day)
+
+    def _on_scopes_ready(self, statuses: list[object]) -> None:
+        self._scopes = statuses
+        if self._sync_panel is not None and self._sync_panel.isVisible():
+            self._sync_panel.show_statuses(statuses, busy=self._busy_scope)  # type: ignore[arg-type]
+
+    def _on_scope_started(self, scope: Scope) -> None:
+        self._busy_scope = scope
+        self._status.setText(f"Fetching {scope.label.lower()}…")
+        if self._sync_panel is not None and self._sync_panel.isVisible():
+            self._sync_panel.show_statuses(self._scopes, busy=scope)  # type: ignore[arg-type]
+
+    def _on_scope_finished(self, scope: Scope, count: int) -> None:
+        self._busy_scope = None
+        if scope is Scope.DAY_DETAIL and count:
+            self.attendance.banner.show_message(
+                f"Fetched punch detail for {count} day(s).", Severity.SUCCESS
+            )
 
     def _export_calendar(self) -> None:
         """Ask where to write the .ics, then gather and write it off-thread.

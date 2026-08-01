@@ -50,6 +50,7 @@ from cerepulse.repository.leave import (
     attendance_scope,
 )
 from cerepulse.services.portal import PortalGateway
+from cerepulse.services.scopes import Scope, ScopeStatus
 
 #: Days of detail fetched per backfill call. Each costs a postback, so this bounds how long
 #: a single refresh can occupy the connection.
@@ -276,6 +277,29 @@ class AttendanceService:
             today=now,
         )
 
+    def scope_statuses(self, employee_code: str, *, year: int, month: int) -> list[ScopeStatus]:
+        """Freshness for every syncable thing, for the sync panel.
+
+        Read from the same metadata rows the TTL checks use, so what the panel shows and
+        what the app believes can never disagree.
+        """
+        return [
+            ScopeStatus(
+                Scope.ATTENDANCE,
+                self._sync_meta.last_synced(attendance_scope(year, month)),
+            ),
+            ScopeStatus(
+                Scope.DAY_DETAIL,
+                self._sync_meta.last_synced(attendance_scope(year, month)),
+                pending=len(self._attendance.days_missing_detail(employee_code, year, month)),
+            ),
+            ScopeStatus(Scope.LEAVE, self._sync_meta.last_synced(Scope.LEAVE.value)),
+            ScopeStatus(
+                Scope.SWIPE_REQUESTS, self._sync_meta.last_synced(Scope.SWIPE_REQUESTS.value)
+            ),
+            ScopeStatus(Scope.HOLIDAYS, self._sync_meta.last_synced(Scope.HOLIDAYS.value)),
+        ]
+
     def leave_days(self, employee_code: str, *, start: date, end: date) -> list[date]:
         """Dates the portal recorded as leave, for the calendar export."""
         return [
@@ -430,6 +454,38 @@ class AttendanceService:
             fetched += 1
 
         logger.info("Backfilled detail for {} of {} pending days", fetched, len(pending))
+        return fetched
+
+    def drain_detail(
+        self,
+        employee_code: str,
+        year: int,
+        month: int,
+        *,
+        on_progress: Callable[[int, int], bool] | None = None,
+    ) -> int:
+        """Fetch every day still missing punch detail, in paced batches.
+
+        :meth:`backfill_detail` is bounded so a routine refresh cannot stall on twenty
+        postbacks. That leaves a fresh month needing four or five refreshes to fill, with
+        nothing in the UI to say so and no way to ask for the rest — this is that way.
+
+        ``on_progress`` receives (done, total) and returns False to stop, so the user can
+        abandon a long drain without waiting it out.
+        """
+        total = len(self._attendance.days_missing_detail(employee_code, year, month))
+        if not total:
+            return 0
+
+        fetched = 0
+        while True:
+            batch = self.backfill_detail(employee_code, year, month)
+            if not batch:
+                break
+            fetched += batch
+            if on_progress is not None and not on_progress(fetched, total):
+                logger.info("Detail drain cancelled after {} of {} days", fetched, total)
+                break
         return fetched
 
     # --- assembly -------------------------------------------------------------------

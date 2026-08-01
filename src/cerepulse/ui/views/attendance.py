@@ -50,6 +50,7 @@ class AttendanceView(QWidget):
     day_selected = Signal(date)
     month_changed = Signal(int, int)
     refresh_requested = Signal()
+    fetch_detail_requested = Signal()
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -98,6 +99,12 @@ class AttendanceView(QWidget):
         self._only_attention.toggled.connect(self._apply_filter)
         row.addWidget(self._only_attention)
         row.addStretch(1)
+
+        # Punch detail arrives five days per refresh, so a fresh month needs four or five
+        # of them. This asks for the rest in one go rather than leaving the user to guess.
+        self._fetch_detail = QPushButton("Fetch punch detail")
+        self._fetch_detail.clicked.connect(self.fetch_detail_requested)
+        row.addWidget(self._fetch_detail)
 
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self.refresh_requested)
@@ -173,6 +180,13 @@ class AttendanceView(QWidget):
             else fmt.EMPTY
         )
         self._view = view
+        # Nothing to fetch is worth saying with the button rather than in a banner.
+        self._fetch_detail.setEnabled(view.pending_detail > 0)
+        self._fetch_detail.setText(
+            f"Fetch punch detail ({view.pending_detail})"
+            if view.pending_detail
+            else "Punch detail complete"
+        )
         self._render_bank(analysis)
         self.heatmap.set_days(
             list(analysis.days),
