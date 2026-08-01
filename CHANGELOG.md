@@ -2,10 +2,25 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.4.0] - 2026-08-02
+
+### Features
+- Download in the background, install on request, roll back if wrong
+- Choose between stable and beta releases
+- Rebuild About around version, channel, data size and diagnostics
+
+### Bug Fixes
+- Package a version that carries a pre-release label
+- Show the real release notes instead of "no release notes were published"
+- Order pre-release labels numerically, so beta.10 outranks beta.9
+
 ## [0.3.0] - 2026-08-01
 
 ### Bug Fixes
 - Make notifications actually arrive, and say so when they cannot
+
+### Documentation
+- Regenerate changelog for 0.3.0
 
 ### Features
 - Make the explanatory text readable, and the tables consistent
