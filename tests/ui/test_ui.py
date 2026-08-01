@@ -490,6 +490,50 @@ def test_a_crashing_task_does_not_kill_the_app(qapp: QApplication) -> None:
     assert isinstance(errors[0], ZeroDivisionError)
 
 
+def test_activity_names_the_running_task(qapp: QApplication) -> None:
+    """Ten task names used to collapse into "Syncing…", so a cache read and a two-minute
+    history backfill looked identical."""
+    runner = TaskRunner()
+    seen: list[tuple[str, int]] = []
+    runner.activity_changed.connect(lambda label, queued: seen.append((label, queued)))
+
+    runner.submit("history", lambda: None)
+    runner.wait(5000)
+    qapp.processEvents()
+
+    assert seen[0] == ("Fetching history", 0)
+
+
+def test_activity_reports_the_queue_depth(qapp: QApplication) -> None:
+    """The pool is single-slot, so work behind a backfill genuinely waits — say so."""
+    runner = TaskRunner()
+    depths: list[int] = []
+    runner.activity_changed.connect(lambda _label, queued: depths.append(queued))
+
+    for name in ("history", "trends", "leave"):
+        runner.submit(name, lambda: None)
+    runner.wait(5000)
+    qapp.processEvents()
+
+    assert max(depths) >= 2
+
+
+def test_an_unknown_task_still_gets_a_label(qapp: QApplication) -> None:
+    from cerepulse.ui.workers import describe
+
+    assert describe("something-new") == "Working"
+    assert describe("scope-swipe_requests") == "Fetching swipe requests"
+
+
+def test_activity_clears_when_the_queue_drains(qapp: QApplication) -> None:
+    runner = TaskRunner()
+    runner.submit("leave", lambda: None)
+    runner.wait(5000)
+    qapp.processEvents()
+
+    assert runner.activity == ""
+
+
 def test_tasks_run_one_at_a_time(qapp: QApplication) -> None:
     """Concurrent postbacks would invalidate each other's page state."""
     runner = TaskRunner()

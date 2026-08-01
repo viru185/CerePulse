@@ -95,6 +95,7 @@ class MainWindow(QMainWindow):
         self._tray = self._build_tray()
         self._build_controllers()
         self._runner.busy_changed.connect(self._on_busy_changed)
+        self._runner.activity_changed.connect(self._on_activity)
 
         # Background refresh, on the interval from settings.
         self._auto = QTimer(self)
@@ -634,14 +635,35 @@ class MainWindow(QMainWindow):
             self.today.banner.clear_message()
 
     def _on_busy_changed(self, busy: bool) -> None:
-        if busy:
-            self._status.setText("Syncing…")
-        elif self._month_view is not None:
+        self.today.set_loading(busy)
+        if not busy and self._month_view is not None:
             self._render_status(self._month_view)
 
+    def _on_activity(self, label: str, queued: int) -> None:
+        """Say what is running, not merely that something is.
+
+        Ten task names used to collapse into "Syncing…", so a two-minute history backfill
+        and a cache read looked identical. The queue depth matters too: the pool is
+        single-slot by design, so work behind a backfill genuinely waits.
+        """
+        if not label:
+            return
+        waiting = f" · {queued} waiting" if queued else ""
+        self._status.setText(f"{label}…{waiting}")
+
     def _on_degraded(self, scope: str, exc: BaseException) -> None:
-        """A part of a screen is missing, but the screen still works."""
+        """A part of a screen is missing, but the screen still works.
+
+        These used to be debug lines and nothing else, so a leave ledger that never loaded
+        looked exactly like a leave ledger with no rows.
+        """
         logger.warning("Could not load {}: {}", scope, exc)
+        banner = {
+            "insights": self.insights.banner,
+            "leave ledger": self.leave.banner,
+            "swipe requests": self.requests.banner,
+        }.get(scope, self.today.banner)
+        banner.show_message(f"Could not load {scope}: {_message_for(exc)}", Severity.WARNING)
 
     def _on_error(self, exc: BaseException) -> None:
         if isinstance(exc, SessionExpiredError | AuthenticationError):

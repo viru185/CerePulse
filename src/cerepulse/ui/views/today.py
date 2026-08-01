@@ -28,7 +28,15 @@ from cerepulse.intelligence.insights import Insight, InsightKind
 from cerepulse.models.attendance import PunchDirection
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette
-from cerepulse.ui.widgets import Banner, Card, InsightStrip, SectionTitle, SegmentBar, card_row
+from cerepulse.ui.widgets import (
+    Banner,
+    Card,
+    InsightStrip,
+    SectionTitle,
+    SegmentBar,
+    Skeleton,
+    card_row,
+)
 
 
 class TodayView(QWidget):
@@ -62,28 +70,41 @@ class TodayView(QWidget):
 
         layout.addWidget(self._build_hero())
 
+        # Shown until the first analysis arrives, so a cold start reads as "loading"
+        # rather than as a day with nothing logged in it.
+        self._skeleton = Skeleton(palette, rows=4)
+        layout.addWidget(self._skeleton)
+
+        # Everything below the hero swaps out for the skeleton in one move, rather than
+        # each card having to know how to look absent.
+        self._content = QWidget()
+        body = QVBoxLayout(self._content)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(16)
+        layout.addWidget(self._content)
+
         # Insights sit directly under the headline, before the numbers. The screen is meant
         # to say what the day means; leading with four figures and burying the one sentence
         # that interprets them below a chart makes it a dashboard instead.
         self._insights = InsightStrip(palette)
         self._insights.action_triggered.connect(self.insight_action)
-        layout.addWidget(self._insights)
+        body.addWidget(self._insights)
 
-        layout.addWidget(self._build_cards())
+        body.addWidget(self._build_cards())
 
-        layout.addWidget(SectionTitle("Your day"))
+        body.addWidget(SectionTitle("Your day"))
         self._segments = SegmentBar(palette)
-        layout.addWidget(self._segments)
+        body.addWidget(self._segments)
         self._legend = QLabel()
         self._legend.setObjectName("CardCaption")
-        layout.addWidget(self._legend)
+        body.addWidget(self._legend)
 
-        layout.addWidget(SectionTitle("Punches"))
+        body.addWidget(SectionTitle("Punches"))
         self._timeline = QVBoxLayout()
         self._timeline.setSpacing(4)
         timeline_host = QWidget()
         timeline_host.setLayout(self._timeline)
-        layout.addWidget(timeline_host)
+        body.addWidget(timeline_host)
 
         layout.addStretch(1)
 
@@ -159,6 +180,15 @@ class TodayView(QWidget):
         return card_row(self.worked, self.break_taken, self.remaining, self.extra)
 
     # --- rendering ------------------------------------------------------------------
+
+    def set_loading(self, loading: bool) -> None:
+        """Show placeholders instead of empty cards while the first day is being read."""
+        if loading and self._analysis is None:
+            self._skeleton.start()
+            self._content.setVisible(False)
+        else:
+            self._skeleton.stop()
+            self._content.setVisible(True)
 
     def _request_day_sync(self) -> None:
         if self._analysis is not None:
