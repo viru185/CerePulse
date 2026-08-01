@@ -308,10 +308,18 @@ class MainWindow(QMainWindow):
         self.signed_in.emit(employee_code)
         self.refresh(force=True, quiet=True)
 
-    def _restore_window(self) -> None:
+    def come_forward(self) -> None:
+        """Show and focus, whether hidden in the tray or merely buried.
+
+        Called when a second launch hands over rather than starting its own copy: the user
+        asked for CerePulse, so the answer has to be a window, not silence.
+        """
         self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    def _restore_window(self) -> None:
+        self.come_forward()
 
     def _quit(self) -> None:
         """Leave for good, rather than back to the tray."""

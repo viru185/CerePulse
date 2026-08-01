@@ -14,6 +14,7 @@ from cerepulse.core.config import AppConfig
 from cerepulse.core.errors import CerePulseError
 from cerepulse.ui.assets import app_icon
 from cerepulse.ui.main_window import MainWindow
+from cerepulse.ui.single_instance import SingleInstance
 from cerepulse.ui.theme import palette_for, stylesheet
 
 #: Identifies the app to the Windows shell. Toast notifications are attributed to the
@@ -60,15 +61,27 @@ def run_app(config: AppConfig) -> int:
     # In tray mode the window closing must not end the process.
     application.setQuitOnLastWindowClosed(config.ui.background_mode != "tray")
 
+    # Before the database is opened: a second copy must not take a second connection to
+    # the same file, nor start a second session against a stateful portal.
+    guard = SingleInstance()
+    if not guard.try_claim():
+        logger.info("Handed over to the copy already running")
+        return 0
+
     try:
         context = build_app(config=config)
     except CerePulseError as exc:
         logger.error("Could not start: {}", exc)
         QMessageBox.critical(None, f"{about.NAME} could not start", str(exc))
+        guard.release()
         return 1
 
-    with context:
-        window = MainWindow(context)
-        window.show()
-        window.start()
-        return application.exec()
+    try:
+        with context:
+            window = MainWindow(context)
+            guard.wake_requested.connect(window.come_forward)
+            window.show()
+            window.start()
+            return application.exec()
+    finally:
+        guard.release()
