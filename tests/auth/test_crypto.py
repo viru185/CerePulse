@@ -8,7 +8,9 @@ import pytest
 
 from cerepulse.auth.crypto import decrypt_password, encrypt_password
 
-# The hEnSa value observed in the captured login page.
+# Synthetic. hEnSa is a 16-digit value the portal renders fresh on every page load, so any
+# 16 digits exercise the scheme; using a captured one bought nothing and leaked the key that
+# decrypts a captured password.
 H_EN_SA = "1234567890123456"
 
 
@@ -44,7 +46,8 @@ def test_is_deterministic() -> None:
 
 
 def test_different_salt_gives_different_ciphertext() -> None:
-    assert encrypt_password("hunter2", H_EN_SA) != encrypt_password("hunter2", "1234567890123456")
+    """hEnSa is rendered fresh on every page load, so it must change the output."""
+    assert encrypt_password("hunter2", H_EN_SA) != encrypt_password("hunter2", "6543210987654321")
 
 
 def test_unicode_password_survives_round_trip() -> None:
