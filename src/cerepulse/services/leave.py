@@ -14,7 +14,7 @@ from cerepulse.export.ics import CalendarEvent
 from cerepulse.intelligence.insights import Insight
 from cerepulse.intelligence.leave import LeaveOutlook, LeavePolicy, analyze_leave, leave_insights
 from cerepulse.intelligence.optimizer import BreakPlan, suggest_breaks
-from cerepulse.models.leave import Holiday, LeaveBalance, LeaveCategory
+from cerepulse.models.leave import Holiday, LeaveBalance, LeaveCategory, LeaveTransaction
 from cerepulse.models.swipe import SwipeRequest
 from cerepulse.repository.leave import (
     HolidayRepository,
@@ -186,6 +186,15 @@ class LeaveService:
             if outlook.expires_on is not None and outlook.has_balance
         ]
         return events
+
+    def leave_ledger(self, employee_code: str) -> list[LeaveTransaction]:
+        """Every stored ledger movement, newest first.
+
+        Exists so the UI has a public way to read it. The Leave screen previously reached
+        through this service into its repository, which meant the one screen that shows the
+        ledger was also the one place that knew where it was stored.
+        """
+        return self._leave.find_transactions(employee_code)
 
     def refresh_leave(self, employee_code: str) -> None:
         logger.info("Refreshing leave balances")

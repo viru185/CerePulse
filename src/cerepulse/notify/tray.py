@@ -150,17 +150,22 @@ class Tray(QObject):
                 shown += 1
         return shown
 
-    def notify(self, insight: Insight) -> None:
-        """Show one toast, bypassing the policy. Used for explicit user-facing events."""
+    def notify(self, insight: Insight) -> bool:
+        """Show one toast, bypassing the policy. Returns whether it was actually delivered.
+
+        Callers need the answer: an update notice that was silently dropped should fall
+        back to a dialog rather than vanishing.
+        """
         if not self._tray.isVisible():
             logger.debug("Tray hidden; skipping notification {!r}", insight.title)
-            return
+            return False
         self._tray.showMessage(
             notification_title(insight),
             insight.detail or insight.title,
             _ICONS.get(insight.severity, QSystemTrayIcon.MessageIcon.Information),
             8000,
         )
+        return True
 
     def update_config(self, config: NotificationConfig) -> None:
         """Adopt changed settings and forget what was already sent."""
