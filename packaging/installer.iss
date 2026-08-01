@@ -6,6 +6,9 @@
 ; Values marked with a default are overridden on the command line by tools/build_all.py, so
 ; the version lives in __about__.py and nowhere else.
 
+#ifndef NumericVersion
+  #define NumericVersion "0.1.0"
+#endif
 #ifndef AppVersion
   #define AppVersion "0.1.0"
 #endif
@@ -30,7 +33,9 @@ AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}/issues
 AppUpdatesURL={#AppURL}/releases
-VersionInfoVersion={#AppVersion}
+; Numeric only — this is a fixed struct of four 16-bit fields and cannot hold "beta".
+; AppVersion above keeps the full string, label and all, for everything user-facing.
+VersionInfoVersion={#NumericVersion}
 
 ; Per-user: no UAC prompt, and the install lands in the user's own AppData.
 PrivilegesRequired=lowest
