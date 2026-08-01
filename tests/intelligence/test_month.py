@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, datetime, time
 
 from cerepulse.intelligence.day import analyze_day
 from cerepulse.intelligence.month import analyze_month, analyze_week, week_start_for
@@ -28,6 +28,11 @@ def day(
         last_out=time(18, 0) if first_in else None,
         total_hours=Duration.from_hhmm(gross),
     )
+
+
+def time_on(when: date, hour: int) -> datetime:
+    """A ``now`` on a given day, for analysing a shift that is still running."""
+    return datetime.combine(when, time(hour, 0))
 
 
 # --- estimation -----------------------------------------------------------------------
@@ -179,6 +184,109 @@ def test_week_excludes_days_outside_the_range() -> None:
 def test_week_deficit_is_negative() -> None:
     week = analyze_week([day(date(2026, 7, 27), gross="7.00")], week_start=date(2026, 7, 27))
     assert week.delta.as_clock() == "-2:00"
+
+
+def test_todays_partial_hours_are_not_scored_against_a_full_day() -> None:
+    """At 11 AM Wednesday, two hours in, the week is not four hours behind."""
+    monday = date(2026, 7, 27)
+    days = [
+        day(date(2026, 7, 27), gross="9.00"),
+        AttendanceDay(
+            day=date(2026, 7, 28),
+            weekday="Tue",
+            status=DayStatus.PRESENT,
+            first_in=time(9, 0),
+            last_out=None,
+            total_hours=Duration(0),
+        ),
+    ]
+    week = analyze_week(days, week_start=monday, today=date(2026, 7, 28))
+
+    assert week.total_worked.as_clock() == "8:00"
+    assert week.target.as_clock() == "8:00"
+    assert week.delta.minutes == 0
+
+
+def test_the_projection_counts_the_days_the_grid_has_no_rows_for() -> None:
+    """Thursday and Friday have no rows on a Wednesday, and the forecast needs them."""
+    monday = date(2026, 7, 27)
+    days = [
+        day(date(2026, 7, 25), status=DayStatus.WEEKLY_OFF, gross="0.00", first_in=None),
+        day(date(2026, 7, 26), status=DayStatus.WEEKLY_OFF, gross="0.00", first_in=None),
+        day(date(2026, 7, 27), gross="9.00"),
+        day(date(2026, 7, 28), gross="9.00"),
+    ]
+    week = analyze_week(days, week_start=monday, today=date(2026, 7, 29))
+
+    # Wed, Thu, Fri ahead; Sat and Sun are inferred off from the weekend rows above.
+    assert week.days_ahead == 3
+    assert week.full_target.as_clock() == "40:00"
+    assert week.projected_total.as_clock() == "40:00"
+
+
+def test_a_holiday_is_not_a_day_you_have_to_make_up() -> None:
+    monday = date(2026, 7, 27)
+    days = [
+        day(date(2026, 7, 25), status=DayStatus.WEEKLY_OFF, gross="0.00", first_in=None),
+        day(date(2026, 7, 26), status=DayStatus.WEEKLY_OFF, gross="0.00", first_in=None),
+        day(date(2026, 7, 27), gross="9.00"),
+    ]
+    week = analyze_week(
+        days,
+        week_start=monday,
+        today=date(2026, 7, 28),
+        holidays=[Holiday(day=date(2026, 7, 29), weekday="Wed", name="Founders Day")],
+    )
+    assert week.days_ahead == 3  # Tue, Thu, Fri — Wednesday is the holiday
+
+
+def test_a_finished_week_projects_nothing_further() -> None:
+    days = [day(date(2026, 7, d), gross="9.00") for d in (27, 28, 29, 30, 31)]
+    week = analyze_week(days, week_start=date(2026, 7, 27), today=date(2026, 8, 5))
+
+    assert week.days_ahead == 0
+    assert week.projected_total == week.total_worked
+
+
+def test_the_best_and_worst_day_need_something_to_compare() -> None:
+    one = analyze_week([day(date(2026, 7, 27), gross="9.00")], week_start=date(2026, 7, 27))
+    assert one.best_day is None and one.worst_day is None
+
+    two = analyze_week(
+        [day(date(2026, 7, 27), gross="9.00"), day(date(2026, 7, 28), gross="7.00")],
+        week_start=date(2026, 7, 27),
+    )
+    assert two.best_day is not None and two.best_day.day == date(2026, 7, 27)
+    assert two.worst_day is not None and two.worst_day.day == date(2026, 7, 28)
+
+
+def test_progress_counts_todays_hours_even_though_the_delta_does_not() -> None:
+    """Different questions: "am I behind" excludes today, "how far through" includes it."""
+    monday = date(2026, 7, 27)
+    detail = analyze_day(
+        punches(("09:00", "in")), day=date(2026, 7, 28), now=time_on(date(2026, 7, 28), 13)
+    )
+    days = [
+        day(date(2026, 7, 27), gross="9.00"),
+        AttendanceDay(
+            day=date(2026, 7, 28),
+            weekday="Tue",
+            status=DayStatus.PRESENT,
+            first_in=time(9, 0),
+            last_out=None,
+            total_hours=Duration(0),
+        ),
+    ]
+    week = analyze_week(
+        days,
+        week_start=monday,
+        today=date(2026, 7, 28),
+        analyses={date(2026, 7, 28): detail},
+    )
+
+    assert week.in_progress.as_clock() == "4:00"
+    assert week.delta.minutes == 0
+    assert week.progress > 0.0
 
 
 def test_week_start_helper() -> None:

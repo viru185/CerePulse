@@ -27,6 +27,7 @@ from cerepulse.intelligence.insights import (
     InsightKind,
     Severity,
 )
+from cerepulse.intelligence.next_action import NextAction, next_action
 from cerepulse.intelligence.policy import ShiftPolicy
 from cerepulse.intelligence.segments import (
     IssueKind,
@@ -80,10 +81,25 @@ class DayAnalysis:
     issues: tuple[PunchIssue, ...] = ()
     insights: tuple[Insight, ...] = ()
     explanations: dict[str, Explanation] = field(default_factory=dict)
+    #: Whether the last punch was an In. Distinct from :attr:`state`, which also calls a
+    #: day incomplete when it is today and clocked out — that is a break, not a shift.
+    clocked_in: bool = False
+    #: The policy every figure here was measured against, carried so a view can scale a
+    #: progress bar against the same target the numbers beside it used.
+    policy: ShiftPolicy = ShiftPolicy()
+    #: The single thing worth doing about this day.
+    next_action: NextAction | None = None
 
     @property
     def is_ongoing(self) -> bool:
         return self.state is DayState.INCOMPLETE
+
+    @property
+    def completion(self) -> float:
+        """Fraction of the work target met. Exceeds 1.0 on an overtime day, deliberately."""
+        if self.policy.work_target.minutes <= 0:
+            return 0.0
+        return self.worked.minutes / self.policy.work_target.minutes
 
     @property
     def target_met(self) -> bool:
@@ -126,7 +142,7 @@ def analyze_day(
         )
 
     if not pairing.segments:
-        return _empty_day(day, pairing)
+        return _empty_day(day, pairing, policy, is_today=now is not None and now.date() == day)
 
     worked = pairing.worked
     break_taken = pairing.break_taken
@@ -145,11 +161,18 @@ def analyze_day(
     expected_out_break_adjusted = first_in + _to_delta(policy.work_target + effective_break)
 
     state = DayState.INCOMPLETE if pairing.ongoing else DayState.COMPLETE
-    if grid_only and now is not None and now.date() == day:
-        # The grid's last-out is only the latest swipe so far, not a clock-off. Reading it
-        # as the end of the day declares an early exit and asks for a swipe request at
-        # lunchtime, which is the same mistake as scoring today against a full target.
-        state = DayState.INCOMPLETE
+    if state is DayState.COMPLETE and now is not None and now.date() == day:
+        # Today, clocked out. Two reasons that is not a finished day.
+        #
+        # With work still owed it is far more likely a lunch break than a departure, and
+        # the punches cannot tell the two apart until the day is over. Calling it complete
+        # declared an early exit at one o'clock and asked the user to file a swipe request
+        # for a day they were still in the middle of working.
+        #
+        # And on a grid-only day the last-out is merely the latest swipe so far rather than
+        # a clock-off, so it is never evidence the day has ended.
+        if grid_only or work_remaining:
+            state = DayState.INCOMPLETE
     early_exit = state is DayState.COMPLETE and worked < policy.work_target
 
     filed = _matching_request(swipe_requests, day)
@@ -173,8 +196,12 @@ def analyze_day(
         segments=pairing.segments,
         issues=pairing.issues,
         explanations=_explain(pairing, policy, worked, break_taken, first_in),
+        clocked_in=pairing.ongoing,
+        policy=policy,
     )
-    return _with_insights(analysis, policy, filed)
+    analysis = _with_insights(analysis, policy, filed)
+    is_today = now is not None and now.date() == day
+    return replace(analysis, next_action=next_action(analysis, is_today=is_today))
 
 
 # --- insights -------------------------------------------------------------------------
@@ -371,8 +398,8 @@ def _explain(
 # --- helpers --------------------------------------------------------------------------
 
 
-def _empty_day(day: date, pairing: Pairing) -> DayAnalysis:
-    return DayAnalysis(
+def _empty_day(day: date, pairing: Pairing, policy: ShiftPolicy, *, is_today: bool) -> DayAnalysis:
+    analysis = DayAnalysis(
         day=day,
         state=DayState.EMPTY,
         first_in=None,
@@ -396,7 +423,9 @@ def _empty_day(day: date, pairing: Pairing) -> DayAnalysis:
                 "Nothing was logged for this day.",
             ),
         ),
+        policy=policy,
     )
+    return replace(analysis, next_action=next_action(analysis, is_today=is_today))
 
 
 #: Reading order for the insight strip. Things needing action lead, then good news, then

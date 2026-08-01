@@ -4,6 +4,11 @@ Everything here is rendered from a :class:`DayAnalysis`; the view holds no busin
 of its own. Each metric card is clickable and opens the explanation the intelligence layer
 produced, so any number on screen can show the punches and arithmetic behind it.
 
+The screen reads top to bottom as instruction, then progress, then evidence: what to do
+now, how far through the day is, and only then the four durations and the punch log that
+justify both. It used to open with the durations, which meant the answer to "so what do I
+do" had to be assembled by the reader from four numbers and a chart.
+
 The countdown ticks on a one-second timer but only re-renders the hero label. Re-running
 the analysis every second would be wasteful and would make the numbers flicker.
 """
@@ -12,40 +17,60 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QDate, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QDateEdit,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from cerepulse.intelligence.day import DayAnalysis, DayState
 from cerepulse.intelligence.insights import Insight, InsightKind
+from cerepulse.intelligence.next_action import NextActionKind, Presence, presence_of
 from cerepulse.models.attendance import PunchDirection
 from cerepulse.ui import formatting as fmt
-from cerepulse.ui.theme import Palette
+from cerepulse.ui.theme import Palette, Space
 from cerepulse.ui.widgets import (
     Banner,
     Card,
+    DayTimeline,
     InsightStrip,
+    NextActionCard,
     SectionTitle,
-    SegmentBar,
     Skeleton,
+    StatusChip,
+    TargetBar,
     card_row,
+    data_table,
 )
+
+#: Insight kinds each next action has already said, so repeating them as a chip directly
+#: below the instruction is padding. Kept as data rather than branching in the render path,
+#: so adding a next action is one entry rather than an extra condition.
+_COVERED_BY: dict[NextActionKind, set[InsightKind]] = {
+    NextActionKind.CLOCK_IN: {InsightKind.NO_PUNCHES},
+    NextActionKind.FILE_SWIPE_REQUEST: {InsightKind.SWIPE_NEEDED, InsightKind.NO_PUNCHES},
+    NextActionKind.CHECK_PUNCHES: {InsightKind.MISSING_PUNCH},
+    NextActionKind.RETURN_FROM_BREAK: {InsightKind.BREAK_HEADROOM},
+    NextActionKind.FREE_TO_GO: {InsightKind.ON_TRACK},
+}
 
 
 class TodayView(QWidget):
-    """Hero, metric cards, day shape, punch timeline, and insights."""
+    """Instruction, progress, metric cards, timeline, and the punch log."""
 
-    insight_action = Signal(object)
+    insight_action = Signal(object)  # Insight
+    action_triggered = Signal(object)  # Action, from the next-action card
     refresh_requested = Signal()
     back_to_today = Signal()
     sync_day_requested = Signal(object)  # date
+    date_selected = Signal(object)  # date
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -62,8 +87,8 @@ class TodayView(QWidget):
         content = QWidget()
         scroll.setWidget(content)
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(24, 20, 24, 24)
-        layout.setSpacing(16)
+        layout.setContentsMargins(Space.SECTION, 20, Space.SECTION, Space.SECTION)
+        layout.setSpacing(Space.GAP)
 
         self.banner = Banner()
         layout.addWidget(self.banner)
@@ -80,12 +105,16 @@ class TodayView(QWidget):
         self._content = QWidget()
         body = QVBoxLayout(self._content)
         body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(16)
+        body.setSpacing(Space.GAP)
         layout.addWidget(self._content)
 
-        # Insights sit directly under the headline, before the numbers. The screen is meant
-        # to say what the day means; leading with four figures and burying the one sentence
-        # that interprets them below a chart makes it a dashboard instead.
+        self._next_action = NextActionCard(palette)
+        self._next_action.action_triggered.connect(self._on_next_action)
+        body.addWidget(self._next_action)
+
+        # Insights sit under the instruction, before the numbers. The screen is meant to say
+        # what the day means; leading with four figures and burying the sentences that
+        # interpret them below a chart makes it a dashboard instead.
         self._insights = InsightStrip(palette)
         self._insights.action_triggered.connect(self.insight_action)
         body.addWidget(self._insights)
@@ -93,18 +122,18 @@ class TodayView(QWidget):
         body.addWidget(self._build_cards())
 
         body.addWidget(SectionTitle("Your day"))
-        self._segments = SegmentBar(palette)
-        body.addWidget(self._segments)
+        self._timeline = DayTimeline(palette)
+        body.addWidget(self._timeline)
         self._legend = QLabel()
         self._legend.setObjectName("CardCaption")
         body.addWidget(self._legend)
 
         body.addWidget(SectionTitle("Punches"))
-        self._timeline = QVBoxLayout()
-        self._timeline.setSpacing(4)
-        timeline_host = QWidget()
-        timeline_host.setLayout(self._timeline)
-        body.addWidget(timeline_host)
+        self._punches = data_table(("In", "Out", "Duration", "Note"), fit_rows=True)
+        body.addWidget(self._punches)
+        self._no_punches = QLabel("No punches recorded for this day.")
+        self._no_punches.setObjectName("CardCaption")
+        body.addWidget(self._no_punches)
 
         layout.addStretch(1)
 
@@ -118,14 +147,14 @@ class TodayView(QWidget):
         host = QWidget()
         layout = QVBoxLayout(host)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setSpacing(Space.TIGHT // 2)
 
         # Viewing a past day is a distinct mode and has to look like one, with an obvious
         # way out. The button names its actual destination: arriving here by double-clicking
         # a date in Attendance and being offered only "Back to today" is a dead end, because
         # the thing the user wants back is the month they were reading.
         context = QHBoxLayout()
-        context.setSpacing(8)
+        context.setSpacing(Space.SNUG)
         self._viewing = QLabel()
         self._viewing.setObjectName("CardCaption")
         self._back = QPushButton("Back to today")
@@ -144,10 +173,22 @@ class TodayView(QWidget):
         layout.addWidget(self._context_bar)
 
         top = QHBoxLayout()
+        top.setSpacing(Space.SNUG)
         self._hero_label = QLabel("You can leave at")
         self._hero_label.setObjectName("HeroLabel")
         top.addWidget(self._hero_label)
         top.addStretch(1)
+
+        # Any date, without going via Attendance first. The upper bound is today: the
+        # portal has nothing for tomorrow, and offering it invites an empty screen that
+        # looks like a failure.
+        self._picker = QDateEdit()
+        self._picker.setCalendarPopup(True)
+        self._picker.setDisplayFormat("d MMM yyyy")
+        self._picker.setMaximumDate(QDate.currentDate())
+        self._picker.setToolTip("Jump to another date")
+        self._picker.dateChanged.connect(self._on_date_picked)
+        top.addWidget(self._picker)
 
         self._copy = QPushButton("Copy summary")
         self._copy.clicked.connect(self._copy_summary)
@@ -157,27 +198,40 @@ class TodayView(QWidget):
         top.addWidget(self._refresh)
         layout.addLayout(top)
 
+        value_row = QHBoxLayout()
+        value_row.setSpacing(Space.ROW)
         self._hero_value = QLabel(fmt.EMPTY)
         self._hero_value.setObjectName("HeroValue")
-        layout.addWidget(self._hero_value)
+        value_row.addWidget(self._hero_value)
+        self._presence = StatusChip("", self._palette.text_muted)
+        self._presence.setVisible(False)
+        value_row.addWidget(self._presence, 0, Qt.AlignmentFlag.AlignVCenter)
+        value_row.addStretch(1)
+        layout.addLayout(value_row)
 
         self._hero_caption = QLabel()
         self._hero_caption.setObjectName("HeroCaption")
         layout.addWidget(self._hero_caption)
+
+        self._progress = TargetBar(self._palette)
+        layout.addWidget(self._progress)
         return host
 
     def _build_cards(self) -> QWidget:
+        # Named for what is left rather than what is done. "Break 42m" reads as an
+        # achievement; the question anyone actually has at 3 PM is how much of the
+        # allowance is still theirs to spend.
         self.worked = Card("Worked", clickable=True)
-        self.break_taken = Card("Break", clickable=True)
-        self.remaining = Card("Remaining", clickable=True)
-        self.extra = Card("Extra", clickable=True)
+        self.break_left = Card("Break Remaining", clickable=True)
+        self.work_left = Card("Work Remaining", clickable=True)
+        self.overtime = Card("Overtime", clickable=True)
 
         self.worked.clicked.connect(lambda: self._explain("worked"))
-        self.break_taken.clicked.connect(lambda: self._explain("break_taken"))
-        self.remaining.clicked.connect(lambda: self._explain("expected_out_break_adjusted"))
-        self.extra.clicked.connect(lambda: self._explain("worked"))
+        self.break_left.clicked.connect(lambda: self._explain("break_taken"))
+        self.work_left.clicked.connect(lambda: self._explain("expected_out_break_adjusted"))
+        self.overtime.clicked.connect(lambda: self._explain("worked"))
 
-        return card_row(self.worked, self.break_taken, self.remaining, self.extra)
+        return card_row(self.worked, self.break_left, self.work_left, self.overtime)
 
     # --- rendering ------------------------------------------------------------------
 
@@ -194,6 +248,22 @@ class TodayView(QWidget):
         if self._analysis is not None:
             self.sync_day_requested.emit(self._analysis.day)
 
+    def _on_date_picked(self, chosen: QDate) -> None:
+        picked = chosen.toPython()
+        if self._analysis is not None and picked == self._analysis.day:
+            return
+        self.date_selected.emit(picked)
+
+    def _show_date(self, day: date) -> None:
+        """Point the picker at the day on screen without asking to load it again."""
+        self._picker.blockSignals(True)
+        self._picker.setDate(QDate(day.year, day.month, day.day))
+        self._picker.blockSignals(False)
+
+    def _on_next_action(self, action: object) -> None:
+        if action is not None:
+            self.action_triggered.emit(action)
+
     def set_back_target(self, origin: str | None) -> None:
         """Name where the exit leads. ``None`` means the only way out is back to today."""
         self._back.setText(f"← Back to {origin}" if origin else "Back to today")
@@ -207,27 +277,31 @@ class TodayView(QWidget):
         self._analysis = None
         self._clock.stop()
         self._context_bar.setVisible(False)
+        self._show_date(day)
 
         self._hero_label.setText("Waiting for today")
         self._hero_value.setText(fmt.EMPTY)
+        self._presence.setVisible(False)
+        self._progress.set_progress(0.0, "")
         synced = f" Last synced {fmt.relative_time(last_synced)}." if last_synced else ""
         self._hero_caption.setText(
             f"{fmt.long_day_label(day)} is not in the portal's data yet.{synced} "
             f"It appears once your first punch of the day is recorded."
         )
 
-        for card in (self.worked, self.break_taken, self.remaining, self.extra):
+        for card in (self.worked, self.break_left, self.work_left, self.overtime):
             card.set_value(fmt.EMPTY)
             card.set_caption("")
-        self._segments.set_segments(())
+        self._next_action.setVisible(False)
+        self._timeline.set_day(())
         self._legend.setText("")
         self._insights.set_insights([])
-        self._render_timeline_empty("Nothing recorded for today yet.")
+        self._render_punches(None)
 
     def show_analysis(self, analysis: DayAnalysis, *, is_today: bool = True) -> None:
         """Render a day. ``is_today`` drives whether the live countdown runs."""
         self._analysis = analysis
-        palette = self._palette
+        self._show_date(analysis.day)
 
         # The bar is also the way back when the user drilled in from another screen, so it
         # stays up for today's own date when there is somewhere to return to.
@@ -235,44 +309,93 @@ class TodayView(QWidget):
         self._context_bar.setVisible(not is_today or drilled_in)
         self._viewing.setText("" if is_today else f"Viewing {fmt.long_day_label(analysis.day)}")
 
-        self.worked.set_value(fmt.duration(analysis.worked), accent=palette.work)
-        self.break_taken.set_value(fmt.duration(analysis.break_taken), accent=palette.rest)
-        if analysis.state is DayState.EMPTY:
-            self.break_taken.set_caption("")
-        elif analysis.break_remaining:
-            self.break_taken.set_caption(
-                f"{fmt.duration(analysis.break_remaining)} of allowance left"
-            )
-        else:
-            self.break_taken.set_caption("allowance used")
+        self._render_presence(analysis, is_today=is_today)
+        self._render_progress(analysis, is_today=is_today)
+        self._render_cards(analysis)
 
-        if analysis.state is DayState.EMPTY:
-            # Nothing was worked, so "target met" would be actively wrong.
-            self.remaining.set_value(fmt.EMPTY)
-            self.remaining.set_caption("nothing logged")
-        elif analysis.work_remaining:
-            self.remaining.set_value(fmt.duration(analysis.work_remaining), accent=palette.bad)
-            self.remaining.set_caption("still to work")
-        else:
-            self.remaining.set_value("Done", accent=palette.good)
-            self.remaining.set_caption("target met")
-
-        self.extra.set_value(
-            fmt.duration(analysis.extra_worked),
-            accent=palette.good if analysis.extra_worked else None,
-        )
-        self.extra.set_caption("beyond target" if analysis.extra_worked else "")
-
-        self._segments.set_segments(analysis.segments)
-        self._legend.setText(self._legend_text(analysis))
+        self._next_action.set_action(analysis.next_action)
         self._insights.set_insights(self._strip_insights(analysis, is_today=is_today))
-        self._render_timeline(analysis)
+
+        self._timeline.set_day(
+            analysis.segments,
+            leave_at=analysis.leave_at if analysis.segments else None,
+            now=datetime.now() if is_today and analysis.is_ongoing else None,
+        )
+        self._legend.setText(self._legend_text(analysis))
+        self._render_punches(analysis)
         self._render_hero(analysis, is_today=is_today)
 
         if is_today and analysis.state is DayState.INCOMPLETE:
             self._clock.start()
         else:
             self._clock.stop()
+
+    def _render_cards(self, analysis: DayAnalysis) -> None:
+        palette = self._palette
+        empty = analysis.state is DayState.EMPTY
+
+        self.worked.set_value(fmt.duration(analysis.worked), accent=palette.work)
+        self.worked.set_caption("" if empty else f"of {analysis.policy.work_target} target")
+
+        if empty:
+            self.break_left.set_value(fmt.EMPTY)
+            self.break_left.set_caption("")
+        elif analysis.break_remaining:
+            self.break_left.set_value(fmt.duration(analysis.break_remaining), accent=palette.rest)
+            self.break_left.set_caption(f"{fmt.duration(analysis.break_taken)} taken")
+        else:
+            self.break_left.set_value("None", accent=palette.text_muted)
+            self.break_left.set_caption(f"{fmt.duration(analysis.break_taken)} taken — over")
+
+        if empty:
+            # Nothing was worked, so "target met" would be actively wrong.
+            self.work_left.set_value(fmt.EMPTY)
+            self.work_left.set_caption("nothing logged")
+        elif analysis.work_remaining:
+            self.work_left.set_value(fmt.duration(analysis.work_remaining), accent=palette.bad)
+            self.work_left.set_caption(f"free at {fmt.clock(analysis.leave_at)}")
+        else:
+            self.work_left.set_value("Done", accent=palette.good)
+            self.work_left.set_caption("target met")
+
+        self.overtime.set_value(
+            fmt.duration(analysis.extra_worked),
+            accent=palette.good if analysis.extra_worked else None,
+        )
+        self.overtime.set_caption("beyond target" if analysis.extra_worked else "")
+
+    def _render_presence(self, analysis: DayAnalysis, *, is_today: bool) -> None:
+        """Say where you are now, which the four durations between them never did."""
+        presence = presence_of(analysis, is_today=is_today)
+        if presence is Presence.NOT_STARTED and not is_today:
+            self._presence.setVisible(False)
+            return
+
+        colour = {
+            Presence.NOT_STARTED: self._palette.text_muted,
+            Presence.WORKING: self._palette.work,
+            Presence.ON_BREAK: self._palette.rest,
+            Presence.FINISHED: self._palette.good,
+        }[presence]
+        self._presence.set_state(presence.label, colour)
+        self._presence.setVisible(True)
+
+    def _render_progress(self, analysis: DayAnalysis, *, is_today: bool) -> None:
+        if analysis.state is DayState.EMPTY:
+            self._progress.set_progress(0.0, "")
+            return
+
+        percent = round(analysis.completion * 100)
+        caption = f"{percent}% of the {analysis.policy.work_target} target"
+
+        # The counterfactual the hero cannot state: it says when you *can* leave, and this
+        # says what walking out this minute would actually cost.
+        if is_today and analysis.is_ongoing:
+            if analysis.work_remaining:
+                caption += f"  ·  leave now and the day is {analysis.work_remaining} short"
+            else:
+                caption += f"  ·  leave now and the day is {analysis.extra_worked} over"
+        self._progress.set_progress(analysis.completion, caption)
 
     def _render_hero(self, analysis: DayAnalysis, *, is_today: bool) -> None:
         if analysis.state is DayState.EMPTY:
@@ -307,19 +430,18 @@ class TodayView(QWidget):
             )
 
     def _strip_insights(self, analysis: DayAnalysis, *, is_today: bool) -> list[Insight]:
-        """Drop the one insight the hero has already said.
+        """Drop what the hero and the next-action card have already said.
 
-        On a live day the hero *is* "you can leave at 6:14 PM", in sixty-point type. Repeating
-        it as the first card two inches below makes the screen look like it is padding. The
-        insight stays in the analysis, because the tray summary and the clipboard have no hero
-        to lean on.
+        On a live day the hero *is* "you can leave at 6:14 PM", in sixty-point type, and the
+        next-action card has just repeated the reasoning. Saying it a third time as the first
+        chip makes the screen look like it is padding. The insights stay in the analysis,
+        because the tray summary and the clipboard have no hero to lean on.
         """
-        redundant = is_today and analysis.state is DayState.INCOMPLETE
-        return [
-            insight
-            for insight in analysis.insights
-            if not (redundant and insight.kind is InsightKind.STILL_WORKING)
-        ]
+        drop = {InsightKind.STILL_WORKING, InsightKind.ON_TRACK} if is_today else set()
+        if analysis.next_action is not None:
+            # Whatever the instruction is about is not also a finding to report below it.
+            drop |= _COVERED_BY.get(analysis.next_action.kind, set())
+        return [insight for insight in analysis.insights if insight.kind not in drop]
 
     def _legend_text(self, analysis: DayAnalysis) -> str:
         parts = [
@@ -327,41 +449,33 @@ class TodayView(QWidget):
             f"Break {fmt.duration(analysis.break_taken)}",
             f"Span {fmt.duration(analysis.gross_span)}",
         ]
+        if analysis.leave_at is not None and analysis.segments:
+            parts.append(f"dashed = free at {fmt.clock(analysis.leave_at)}")
         if any(segment.end_inferred for segment in analysis.segments):
             parts.append("hatched = inferred from a missing punch")
         return "  ·  ".join(parts)
 
-    def _render_timeline_empty(self, message: str) -> None:
-        while self._timeline.count():
-            item = self._timeline.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.deleteLater()
-        empty = QLabel(message)
-        empty.setObjectName("CardCaption")
-        self._timeline.addWidget(empty)
+    def _render_punches(self, analysis: DayAnalysis | None) -> None:
+        segments = analysis.segments if analysis is not None else ()
+        self._punches.setRowCount(0)
+        self._punches.setVisible(bool(segments))
+        self._no_punches.setVisible(not segments)
 
-    def _render_timeline(self, analysis: DayAnalysis) -> None:
-        if not analysis.segments:
-            self._render_timeline_empty("No punches recorded for this day.")
-            return
-
-        while self._timeline.count():
-            item = self._timeline.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.deleteLater()
-
-        for index, segment in enumerate(analysis.segments, start=1):
-            row = QLabel(
-                f"{index}.  {fmt.clock(segment.start)}  →  {fmt.clock(segment.end)}"
-                f"    ({fmt.duration(segment.duration)})"
-                + ("   · end inferred" if segment.end_inferred else "")
-            )
-            row.setStyleSheet(
-                f"color: {self._palette.text_muted}; font-variant-numeric: tabular-nums;"
-            )
-            self._timeline.addWidget(row)
+        for row, segment in enumerate(segments):
+            self._punches.insertRow(row)
+            note = "end inferred" if segment.end_inferred else ""
+            for column, text in enumerate(
+                (
+                    fmt.clock(segment.start),
+                    fmt.clock(segment.end),
+                    fmt.duration(segment.duration),
+                    note,
+                )
+            ):
+                item = QTableWidgetItem(text)
+                if column == 3 and note:
+                    item.setToolTip("No Out punch was recorded, so this end was reconstructed.")
+                self._punches.setItem(row, column, item)
 
     # --- interaction ----------------------------------------------------------------
 

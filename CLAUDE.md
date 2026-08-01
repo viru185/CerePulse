@@ -98,6 +98,20 @@ the most expensive data in the cache on every sync. `save_month` preserves it an
 **Injected time, never `datetime.now()` inside the intelligence layer.** Every entry point
 takes `now` or `today`, which is what makes in-progress days testable.
 
+**Today is never "complete" while it still owes work.** A day whose last punch is an Out
+means "at lunch" at one o'clock and "went home early" at seven, and the punches cannot tell
+the two apart. Treating them the same made the app declare an early exit and demand a swipe
+request in the middle of the working day. `analyze_day` therefore holds today at
+`INCOMPLETE` while `work_remaining` is non-zero — and `clocked_in` is the separate flag for
+"the last punch was an In", which is what `Presence` uses to tell working from on-break.
+`find_attention` skips today for the same reason, so the two agree.
+
+**Week and month totals compare completed days only.** Today's four hours against a full
+eight-hour target reports a deficit that exists solely because it is lunchtime and shrinks
+by itself as the afternoon passes. `WeekAnalysis.in_progress` carries today separately;
+`progress` includes it, because "how far through the week am I" is a different question
+from "am I behind".
+
 **An empty punch log is "loaded", not "unfetched".** Those two states drive different
 decisions and the sync backlog depends on telling them apart.
 

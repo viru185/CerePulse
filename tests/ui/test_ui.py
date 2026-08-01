@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QApplication
 
 from cerepulse.core.errors import TransportError
@@ -20,7 +20,7 @@ from cerepulse.models.values import Duration
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import DARK, LIGHT, MIN_CONTRAST, contrast_ratio, palette_for, stylesheet
 from cerepulse.ui.views.today import TodayView, summary_text
-from cerepulse.ui.widgets import Banner, Card, InsightStrip, SegmentBar
+from cerepulse.ui.widgets import Banner, Card, DayTimeline, InsightStrip, SegmentBar
 from cerepulse.ui.workers import TaskRunner
 
 DAY = date(2026, 7, 28)
@@ -156,6 +156,37 @@ def test_banner_shows_and_clears(qapp: QApplication) -> None:
     assert not banner.isVisible()
 
 
+def test_the_banner_leads_with_the_worst_of_several_problems(qapp: QApplication) -> None:
+    banner = Banner()
+    banner.show_message("Leave ledger unavailable", Severity.WARNING, key="leave")
+    banner.show_message("Could not sign in", Severity.CRITICAL, key="error")
+
+    assert banner.text().startswith("Could not sign in")
+    assert "+1 more" in banner.text()
+    # The one it did not lead with is still reachable rather than merely counted.
+    assert "Leave ledger unavailable" in banner.toolTip()
+
+
+def test_one_source_clearing_does_not_erase_another(qapp: QApplication) -> None:
+    """A clean sync used to wipe the sign-in error sitting above it."""
+    banner = Banner()
+    banner.show_message("Could not sign in", Severity.CRITICAL, key="error")
+    banner.show_message("Some data could not be refreshed", Severity.WARNING, key="sync")
+
+    banner.clear_message("sync")
+
+    assert banner.isVisible()
+    assert banner.text() == "Could not sign in"
+
+
+def test_clearing_everything_still_works(qapp: QApplication) -> None:
+    banner = Banner()
+    banner.show_message("One", Severity.INFO, key="a")
+    banner.show_message("Two", Severity.INFO, key="b")
+    banner.clear_message()
+    assert not banner.isVisible()
+
+
 def test_insight_strip_rebuilds(qapp: QApplication) -> None:
     strip = InsightStrip(DARK)
     strip.set_insights([Insight(InsightKind.OVERTIME, Severity.SUCCESS, "1:03 extra worked")])
@@ -217,6 +248,84 @@ def test_a_past_day_still_shows_it_because_there_is_no_countdown(qapp: QApplicat
     view.show_analysis(analysis, is_today=False)
 
     assert view._insights._layout.count() == len(analysis.insights)
+
+
+def test_today_leads_with_the_instruction(qapp: QApplication) -> None:
+    analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=datetime(2026, 7, 28, 14, 0))
+    view = TodayView(DARK)
+    view.show_analysis(analysis, is_today=True)
+
+    assert view._next_action._headline.text() == analysis.next_action.headline
+
+
+def test_the_cards_report_what_is_left_not_what_is_spent(qapp: QApplication) -> None:
+    """Break 42m reads as an achievement; the question at 3 PM is what is still yours."""
+    analysis = analyze_day(
+        punches(("09:00", "in"), ("12:30", "out"), ("13:00", "in")),
+        day=DAY,
+        now=datetime(2026, 7, 28, 15, 0),
+    )
+    view = TodayView(DARK)
+    view.show_analysis(analysis, is_today=True)
+
+    assert view.break_left._value.text() == fmt.duration(analysis.break_remaining)
+    assert view.work_left._value.text() == fmt.duration(analysis.work_remaining)
+    assert "taken" in view.break_left._caption.text()
+
+
+def test_the_progress_bar_says_what_leaving_now_would_cost(qapp: QApplication) -> None:
+    analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=datetime(2026, 7, 28, 14, 0))
+    view = TodayView(DARK)
+    view.show_analysis(analysis, is_today=True)
+
+    caption = view._progress._caption.text()
+    assert "% of the" in caption
+    assert "leave now" in caption
+
+
+def test_picking_a_date_asks_for_it_once(qapp: QApplication) -> None:
+    """Rendering a day points the picker at it, which must not re-request the same day."""
+    analysis = analyze_day(punches(("09:00", "in"), ("18:00", "out")), day=DAY)
+    view = TodayView(DARK)
+    asked: list[date] = []
+    view.date_selected.connect(asked.append)
+
+    view.show_analysis(analysis, is_today=False)
+    assert asked == []
+
+    view._picker.setDate(QDate(2026, 7, 20))
+    assert asked == [date(2026, 7, 20)]
+
+
+def test_the_timeline_places_the_day_on_a_clock(qapp: QApplication) -> None:
+    analysis = analyze_day(punches(("09:21", "in"), ("18:31", "out")), day=DAY)
+    timeline = DayTimeline(DARK)
+    timeline.set_day(analysis.segments, leave_at=analysis.leave_at)
+
+    # The axis starts at the hour containing the first punch, not at the punch itself.
+    assert timeline._start == datetime(2026, 7, 28, 9, 0)
+    assert "9:21a" in timeline.toolTip()
+
+
+def test_the_timeline_leaves_room_for_a_finish_line_not_yet_reached(
+    qapp: QApplication,
+) -> None:
+    """A bar that ends at the last punch cannot show a time still in the future."""
+    analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=datetime(2026, 7, 28, 10, 0))
+    timeline = DayTimeline(DARK)
+    timeline.set_day(
+        analysis.segments, leave_at=analysis.leave_at, now=datetime(2026, 7, 28, 10, 0)
+    )
+
+    assert timeline._end is not None
+    assert analysis.leave_at is not None
+    assert timeline._end > analysis.leave_at
+
+
+def test_the_timeline_accepts_an_empty_day(qapp: QApplication) -> None:
+    timeline = DayTimeline(DARK)
+    timeline.set_day(())
+    assert "No punches" in timeline.toolTip()
 
 
 # --- attendance view --------------------------------------------------------------------

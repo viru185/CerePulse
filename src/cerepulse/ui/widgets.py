@@ -26,8 +26,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cerepulse.intelligence.insights import Insight, Severity
+from cerepulse.intelligence.insights import Action, Insight, Severity
 from cerepulse.intelligence.month import DayRollup
+from cerepulse.intelligence.next_action import NextAction
 from cerepulse.intelligence.segments import WorkSegment
 from cerepulse.models.values import Duration
 from cerepulse.ui.theme import Palette, Space
@@ -95,13 +96,22 @@ class Card(QFrame):
 
 
 class Banner(QLabel):
-    """A one-line status strip: offline, syncing, stale data, errors."""
+    """A one-line status strip: offline, syncing, stale data, errors.
 
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("Banner")
-        self.setWordWrap(True)
-        self.setVisible(False)
+    Messages are keyed, and the strip shows the most severe one that is still current. A
+    single slot meant the last writer won: a sync that finished cleanly cleared the sign-in
+    failure above it, and a leave-ledger warning erased the error that explained why. Under
+    keys, each source clears only its own message, and a second concurrent problem is
+    counted rather than silently dropped.
+    """
+
+    #: Most severe first. Ties keep insertion order, so the oldest unresolved problem wins.
+    _RANK = {
+        Severity.CRITICAL: 0,
+        Severity.WARNING: 1,
+        Severity.INFO: 2,
+        Severity.SUCCESS: 3,
+    }
 
     #: Object names matching the #Banner* rules in the stylesheet.
     _STYLES = {
@@ -111,17 +121,44 @@ class Banner(QLabel):
         Severity.CRITICAL: "BannerError",
     }
 
-    def show_message(self, text: str, severity: Severity = Severity.INFO) -> None:
-        self.setText(text)
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("Banner")
+        self.setWordWrap(True)
+        self.setVisible(False)
+        self._messages: dict[str, tuple[str, Severity]] = {}
+
+    def show_message(
+        self, text: str, severity: Severity = Severity.INFO, *, key: str = "general"
+    ) -> None:
+        self._messages[key] = (text, severity)
+        self._render()
+
+    def clear_message(self, key: str | None = None) -> None:
+        """Drop one source's message, or all of them when ``key`` is omitted."""
+        if key is None:
+            self._messages.clear()
+        else:
+            self._messages.pop(key, None)
+        self._render()
+
+    def _render(self) -> None:
+        if not self._messages:
+            self.setVisible(False)
+            return
+
+        text, severity = min(self._messages.values(), key=lambda entry: self._RANK.get(entry[1], 9))
+        others = len(self._messages) - 1
+        self.setText(f"{text}  ·  +{others} more" if others else text)
+        # Everything current is on the tooltip, so a hidden second problem is still
+        # reachable rather than merely counted.
+        self.setToolTip("\n".join(message for message, _ in self._messages.values()))
         self.setObjectName(self._STYLES[severity])
         # Qt caches the resolved style per object name, so it must be re-resolved by hand
         # when the name changes on a live widget.
         self.style().unpolish(self)
         self.style().polish(self)
         self.setVisible(True)
-
-    def clear_message(self) -> None:
-        self.setVisible(False)
 
 
 class InsightChip(QFrame):
@@ -277,6 +314,336 @@ class SegmentBar(QWidget):
             painter.drawLine(int(x), int(band.bottom()), int(x + band.height()), int(band.top()))
             x += step
         painter.restore()
+
+
+class DayTimeline(QWidget):
+    """The day on a clock axis: work, breaks, every punch, and where the finish line is.
+
+    :class:`SegmentBar` draws the day to scale but anchored to itself — the bar starts at
+    the first punch and ends at the last, so it shows the day's *shape* and cannot show its
+    *position*. Two identical-looking bars can be a 7 AM start and a 2 PM one, and neither
+    can show a finish time that has not been reached.
+
+    Here the axis is wall-clock hours, so the bands sit where they happened, the punches are
+    labelled with the times they actually were, and the moment you can leave is a marker on
+    the same scale rather than a number somewhere else on the screen.
+    """
+
+    HEIGHT = 74
+    PUNCH_ROW = 15  # baseline for punch labels, above the bar
+    BAR_TOP = 22
+    BAR_HEIGHT = 24
+    AXIS_TOP = 54
+    #: Minimum axis span. A day two hours old would otherwise be drawn at absurd magnification.
+    MIN_HOURS = 5
+
+    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self._segments: tuple[WorkSegment, ...] = ()
+        self._leave_at: datetime | None = None
+        self._now: datetime | None = None
+        self._start: datetime | None = None
+        self._end: datetime | None = None
+        self.setMinimumHeight(self.HEIGHT)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_day(
+        self,
+        segments: tuple[WorkSegment, ...],
+        *,
+        leave_at: datetime | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        self._segments = segments
+        self._leave_at = leave_at
+        self._now = now
+
+        if not segments:
+            self._start = self._end = None
+            self.setToolTip("No punches recorded")
+            self.update()
+            return
+
+        latest = max(
+            [segments[-1].end] + [moment for moment in (leave_at, now) if moment is not None]
+        )
+        start = segments[0].start.replace(minute=0, second=0, microsecond=0)
+        end = (latest + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+        if (end - start) < timedelta(hours=self.MIN_HOURS):
+            end = start + timedelta(hours=self.MIN_HOURS)
+
+        self._start, self._end = start, end
+        self.setToolTip(
+            "\n".join(
+                f"{_clock_short(segment.start)} – {_clock_short(segment.end)}"
+                f"  ({segment.duration})" + ("  · end inferred" if segment.end_inferred else "")
+                for segment in segments
+            )
+        )
+        self.update()
+
+    # --- painting ---------------------------------------------------------------------
+
+    def paintEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        bar = QRectF(0, self.BAR_TOP, self.width(), self.BAR_HEIGHT)
+        radius = self.BAR_HEIGHT / 2
+        track = QPainterPath()
+        track.addRoundedRect(bar, radius, radius)
+        painter.fillPath(track, QColor(self._palette.border))
+
+        if self._start is None or self._end is None:
+            painter.setPen(QColor(self._palette.text_faint))
+            painter.drawText(bar, Qt.AlignmentFlag.AlignCenter, "No punches recorded")
+            return
+
+        self._paint_hours(painter, bar)
+        self._paint_bands(painter, bar, track)
+        self._paint_markers(painter, bar)
+        self._paint_punches(painter)
+
+    def _x_for(self, moment: datetime) -> float:
+        assert self._start is not None and self._end is not None
+        total = (self._end - self._start).total_seconds()
+        fraction = (moment - self._start).total_seconds() / total
+        return min(max(fraction, 0.0), 1.0) * self.width()
+
+    def _paint_hours(self, painter: QPainter, bar: QRectF) -> None:
+        """Hour gridlines and labels — the thing that makes it a clock rather than a bar."""
+        assert self._start is not None and self._end is not None
+        hours = int((self._end - self._start).total_seconds() // 3600)
+        # Label every hour only while they fit; past that, every second or third one.
+        step = max(1, -(-hours // 8))
+
+        painter.setPen(QPen(QColor(self._palette.border), 1))
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+
+        for index in range(0, hours + 1, step):
+            moment = self._start + timedelta(hours=index)
+            x = self._x_for(moment)
+            painter.setPen(QPen(QColor(self._palette.border), 1))
+            painter.drawLine(int(x), int(bar.top()), int(x), int(bar.bottom()))
+            painter.setPen(QColor(self._palette.text_faint))
+            painter.drawText(
+                QRectF(x - 24, self.AXIS_TOP, 48, 14),
+                Qt.AlignmentFlag.AlignCenter,
+                _hour_label(moment),
+            )
+
+    def _paint_bands(self, painter: QPainter, bar: QRectF, track: QPainterPath) -> None:
+        painter.save()
+        painter.setClipPath(track)
+        # Breaks are the gaps between segments, so painting the span amber and the work over
+        # it in aqua draws both without computing the gaps separately.
+        first, last = self._segments[0].start, self._segments[-1].end
+        painter.fillRect(
+            QRectF(
+                self._x_for(first), bar.top(), self._x_for(last) - self._x_for(first), bar.height()
+            ),
+            QColor(self._palette.rest),
+        )
+
+        for segment in self._segments:
+            left = self._x_for(segment.start)
+            band = QRectF(left, bar.top(), max(1.0, self._x_for(segment.end) - left), bar.height())
+            painter.fillRect(band, QColor(self._palette.work))
+            if segment.end_inferred:
+                _hatch(painter, band, self._palette.surface)
+        painter.restore()
+
+        painter.setPen(QPen(QColor(self._palette.border), 1))
+        painter.drawPath(track)
+
+    def _paint_markers(self, painter: QPainter, bar: QRectF) -> None:
+        """The finish line, and where the day has got to."""
+        if self._leave_at is not None:
+            pen = QPen(QColor(self._palette.good), 2)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            x = self._x_for(self._leave_at)
+            painter.drawLine(int(x), int(bar.top() - 4), int(x), int(bar.bottom() + 4))
+
+        if self._now is not None:
+            painter.setPen(QPen(QColor(self._palette.text), 1))
+            x = self._x_for(self._now)
+            painter.drawLine(int(x), int(bar.top() - 4), int(x), int(bar.bottom() + 4))
+
+    def _paint_punches(self, painter: QPainter) -> None:
+        """A dot and a time at every real punch.
+
+        Labels are dropped, not squeezed, when they would collide: an unreadable overlap of
+        two times is worse than one time and a dot that says a punch is there.
+        """
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+        occupied = -1000.0
+
+        for segment in self._segments:
+            for moment, inferred in (
+                (segment.start, False),
+                (segment.end, segment.end_inferred),
+            ):
+                x = self._x_for(moment)
+                colour = QColor(self._palette.text_faint if inferred else self._palette.text)
+                painter.setBrush(colour)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(QRectF(x - 2.5, self.BAR_TOP - 6, 5, 5))
+
+                if inferred or x - 22 < occupied:
+                    continue
+                painter.setPen(colour)
+                painter.drawText(
+                    QRectF(x - 24, self.PUNCH_ROW - 11, 48, 12),
+                    Qt.AlignmentFlag.AlignCenter,
+                    _clock_short(moment),
+                )
+                occupied = x + 22
+
+
+def _hatch(painter: QPainter, band: QRectF, colour: str) -> None:
+    """Diagonal hatching marks a stretch whose end was inferred, not punched."""
+    painter.save()
+    painter.setClipRect(band)
+    pen = QPen(QColor(colour))
+    pen.setWidth(1)
+    painter.setPen(pen)
+    x = band.left() - band.height()
+    while x < band.right():
+        painter.drawLine(int(x), int(band.bottom()), int(x + band.height()), int(band.top()))
+        x += 6
+    painter.restore()
+
+
+def _clock_short(moment: datetime) -> str:
+    """9:05a — the time in as few characters as still reads unambiguously."""
+    return moment.strftime("%I:%M%p").lstrip("0").replace("AM", "a").replace("PM", "p")
+
+
+def _hour_label(moment: datetime) -> str:
+    return moment.strftime("%I%p").lstrip("0").replace("AM", "am").replace("PM", "pm")
+
+
+class NextActionCard(QFrame):
+    """The instruction, above everything that merely describes.
+
+    Today reports a dozen true things and instructs on none of them. This is the one line
+    that says what to do, so it sits above the numbers and is the only element on the screen
+    allowed to be an imperative.
+    """
+
+    action_triggered = Signal(object)  # the Action
+
+    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("Card")
+        self._palette = palette
+        self._action: Action | None = None
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(Space.GAP, Space.ROW, Space.GAP, Space.ROW)
+        layout.setSpacing(Space.ROW)
+
+        self._stripe = QFrame()
+        self._stripe.setFixedWidth(4)
+        layout.addWidget(self._stripe)
+
+        text = QVBoxLayout()
+        text.setSpacing(Space.TIGHT // 2)
+        self._headline = QLabel()
+        self._headline.setWordWrap(True)
+        self._detail = QLabel()
+        self._detail.setObjectName("CardCaption")
+        self._detail.setWordWrap(True)
+        text.addWidget(self._headline)
+        text.addWidget(self._detail)
+        layout.addLayout(text, 1)
+
+        self._button = QPushButton()
+        self._button.setVisible(False)
+        self._button.clicked.connect(lambda: self.action_triggered.emit(self._action))
+        layout.addWidget(self._button)
+
+    def set_action(self, action: NextAction | None) -> None:
+        if action is None:
+            self.setVisible(False)
+            return
+
+        colour = {
+            Severity.SUCCESS: self._palette.good,
+            Severity.INFO: self._palette.work,
+            Severity.WARNING: self._palette.rest,
+            Severity.CRITICAL: self._palette.bad,
+        }[action.severity]
+
+        self._stripe.setStyleSheet(f"background-color: {colour}; border-radius: 2px;")
+        self._headline.setText(action.headline)
+        self._headline.setStyleSheet(f"color: {colour}; font-size: 17px; font-weight: 600;")
+        self._detail.setText(action.detail)
+
+        self._action = action.action
+        self._button.setVisible(self._action is not None)
+        if self._action is not None:
+            self._button.setText(self._action.label)
+        self.setVisible(True)
+
+
+class TargetBar(QWidget):
+    """How much of the day's target is done, as one bar and one percentage.
+
+    Four durations state the same fact between them and none of them answers "how far
+    through am I" without arithmetic. Overtime is drawn past the target in its own colour
+    rather than clamped at full, because a bar pinned at 100% cannot distinguish a day that
+    finished on time from one that ran three hours over.
+    """
+
+    HEIGHT = 8
+
+    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self._fraction = 0.0
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Space.TIGHT)
+
+        self._bar = QWidget()
+        self._bar.setFixedHeight(self.HEIGHT)
+        self._caption = QLabel()
+        self._caption.setObjectName("CardCaption")
+        layout.addWidget(self._bar)
+        layout.addWidget(self._caption)
+
+    def set_progress(self, fraction: float, caption: str = "") -> None:
+        self._fraction = max(0.0, fraction)
+        self._caption.setText(caption)
+        self._caption.setVisible(bool(caption))
+        self._bar.setStyleSheet(self._style())
+
+    def _style(self) -> str:
+        radius = f"border-radius: {self.HEIGHT // 2}px;"
+        track = self._palette.border
+        if self._fraction <= 0.0:
+            return f"background: {track}; {radius}"
+        if self._fraction >= 1.0:
+            # Past the target the whole bar is met; overtime shows as the brighter fill
+            # rather than as extra length there is no room for.
+            return f"background: {self._palette.good}; {radius}"
+
+        # The two stops have to straddle the boundary; landing both on one offset makes Qt
+        # interpolate across the whole width and the bar reads as a wash.
+        stop = min(max(self._fraction, 0.0001), 0.9999)
+        return (
+            f"background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+            f" stop:0 {self._palette.work}, stop:{stop:.4f} {self._palette.work},"
+            f" stop:{min(stop + 0.0001, 1.0):.4f} {track}, stop:1 {track}); {radius}"
+        )
 
 
 class MonthHeatmap(QWidget):
@@ -529,6 +896,11 @@ class StatusChip(QLabel):
     def __init__(self, text: str, colour: str, parent: QWidget | None = None) -> None:
         super().__init__(text, parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.set_state(text, colour)
+
+    def set_state(self, text: str, colour: str) -> None:
+        """Change what the chip says. Long-lived chips outnumber throwaway ones now."""
+        self.setText(text)
         self.setStyleSheet(
             f"color: {colour}; background-color: {_tint(colour, 38)};"
             f" border-radius: 8px; padding: 2px 8px; font-size: 11px; font-weight: 600;"

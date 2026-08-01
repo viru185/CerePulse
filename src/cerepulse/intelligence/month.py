@@ -49,12 +49,24 @@ class DayRollup:
 
 @dataclass(frozen=True, slots=True)
 class WeekAnalysis:
-    """Seven days of work against target."""
+    """Seven days of work against target, and what the rest of the week would take.
+
+    ``total_worked`` and ``target`` both cover **completed** working days only, so the two
+    are always comparable. Counting today's four hours against a full eight-hour target
+    reports a deficit that exists only because it is lunchtime and shrinks by itself as the
+    afternoon passes — the same mistake :func:`analyze_month` already avoids. Today's hours
+    are reported separately as :attr:`in_progress`.
+    """
 
     week_start: date
     days: tuple[DayRollup, ...]
     total_worked: Duration
     target: Duration
+    #: Hours logged so far on a day still being worked. Not counted in the delta.
+    in_progress: Duration = Duration(0)
+    #: Working days in this week not yet finished, today included when it is still running.
+    days_ahead: int = 0
+    policy: ShiftPolicy = ShiftPolicy()
 
     @property
     def delta(self) -> Duration:
@@ -64,6 +76,51 @@ class WeekAnalysis:
     @property
     def working_days(self) -> int:
         return sum(1 for day in self.days if day.is_working_day)
+
+    @property
+    def full_target(self) -> Duration:
+        """The whole week's target, including the days still to come."""
+        return self.target + Duration(self.days_ahead * self.policy.work_target.minutes)
+
+    @property
+    def progress(self) -> float:
+        """Fraction of the whole week done. Today's partial hours count here, deliberately.
+
+        The delta answers "am I behind"; this answers "how far through the week am I", and
+        for that question the hours already worked today are exactly as real as yesterday's.
+        """
+        if self.full_target.minutes <= 0:
+            return 0.0
+        return (self.total_worked + self.in_progress).minutes / self.full_target.minutes
+
+    @property
+    def projected_total(self) -> Duration:
+        """Where the week lands if every remaining day makes its target exactly."""
+        return self.total_worked + Duration(self.days_ahead * self.policy.work_target.minutes)
+
+    @property
+    def measured(self) -> tuple[DayRollup, ...]:
+        """Completed working days carrying hours — the only ones worth comparing."""
+        return tuple(
+            day
+            for day in self.days
+            if day.is_working_day and not day.in_progress and day.worked.minutes > 0
+        )
+
+    @property
+    def best_day(self) -> DayRollup | None:
+        """The longest day, or nothing when there is not yet a comparison to make.
+
+        One day is not a best day: with a single measurement "best" and "worst" name the
+        same row, which reads as a finding and is not one.
+        """
+        days = self.measured
+        return max(days, key=lambda day: day.worked.minutes) if len(days) > 1 else None
+
+    @property
+    def worst_day(self) -> DayRollup | None:
+        days = self.measured
+        return min(days, key=lambda day: day.worked.minutes) if len(days) > 1 else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,23 +225,76 @@ def analyze_week(
     week_start: date,
     policy: ShiftPolicy | None = None,
     analyses: dict[date, DayAnalysis] | None = None,
+    today: date | None = None,
+    holidays: list[Holiday] | None = None,
 ) -> WeekAnalysis:
-    """Roll up the seven days beginning at ``week_start``."""
+    """Roll up the seven days beginning at ``week_start``.
+
+    ``days`` is the whole month rather than the week, because the days still ahead in this
+    week have no grid rows yet and the only way to tell a working Friday from a rostered
+    day off is the pattern in the rest of the month.
+    """
     policy = policy or ShiftPolicy.default()
     analyses = analyses or {}
     week_end = week_start + timedelta(days=6)
 
     rollups = tuple(
-        _rollup(day, policy, analyses) for day in days if week_start <= day.day <= week_end
+        _rollup(day, policy, analyses, today) for day in days if week_start <= day.day <= week_end
     )
     working = [r for r in rollups if r.is_working_day]
+    completed = [r for r in working if not r.in_progress]
 
     return WeekAnalysis(
         week_start=week_start,
         days=rollups,
-        total_worked=_sum(r.worked for r in working),
-        target=Duration(len(working) * policy.work_target.minutes),
+        total_worked=_sum(r.worked for r in completed),
+        target=Duration(len(completed) * policy.work_target.minutes),
+        in_progress=_sum(r.worked for r in working if r.in_progress),
+        days_ahead=_week_days_ahead(
+            days,
+            rollups,
+            week_start=week_start,
+            week_end=week_end,
+            holidays=holidays or [],
+            today=today,
+        ),
+        policy=policy,
     )
+
+
+def _week_days_ahead(
+    month: list[AttendanceDay],
+    rollups: tuple[DayRollup, ...],
+    *,
+    week_start: date,
+    week_end: date,
+    holidays: list[Holiday],
+    today: date | None,
+) -> int:
+    """Working days in this week that have not been finished yet.
+
+    A day the grid has no row for is still ahead — that is the normal state of Thursday on
+    a Tuesday, and the projection is worthless without it.
+    """
+    if today is None or today > week_end:
+        return 0
+
+    by_date = {rollup.day: rollup for rollup in rollups}
+    off_weekdays = _weekly_off_weekdays(month)
+    holiday_dates = {holiday.day for holiday in holidays}
+
+    ahead = 0
+    for offset in range(7):
+        candidate = week_start + timedelta(days=offset)
+        if candidate < today:
+            continue
+        rollup = by_date.get(candidate)
+        if rollup is not None:
+            # A day already in the grid speaks for itself; only a running one is still owed.
+            ahead += int(rollup.is_working_day and rollup.in_progress)
+        elif candidate.weekday() not in off_weekdays and candidate not in holiday_dates:
+            ahead += 1
+    return ahead
 
 
 # --- helpers --------------------------------------------------------------------------

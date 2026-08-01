@@ -39,6 +39,7 @@ from cerepulse.models.attendance import (
     Punch,
     PunchDirection,
 )
+from cerepulse.models.leave import Holiday
 from cerepulse.models.swipe import SwipeRequest
 from cerepulse.models.values import Duration
 from cerepulse.repository.attendance import AttendanceRepository
@@ -114,6 +115,9 @@ class MonthView:
     swipes: dict[date, list[SwipeRequest]] = field(default_factory=dict)
     #: Days with something outstanding, keyed by date.
     attention: dict[date, Attention] = field(default_factory=dict)
+    #: The holiday calendar this month was measured against. Carried so the Week screen can
+    #: project the days still ahead without a database read on the GUI thread.
+    holidays: list[Holiday] = field(default_factory=list)
 
     @property
     def is_stale(self) -> bool:
@@ -514,13 +518,14 @@ class AttendanceService:
             if day.detail_loaded and day.punches
         }
 
+        holidays = self._holidays.find_all()
         analysis = analyze_month(
             list(month.days),
             year=year,
             month=period_month,
             policy=self.policy,
             analyses=analyses,
-            holidays=self._holidays.find_all(),
+            holidays=holidays,
             today=today,
         )
         swipes = swipe_index(requests)
@@ -538,6 +543,7 @@ class AttendanceService:
                 swipes=swipes,
                 today=today or date.today(),
             ),
+            holidays=holidays,
         )
 
 

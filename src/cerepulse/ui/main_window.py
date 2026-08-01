@@ -81,6 +81,9 @@ class MainWindow(QMainWindow):
         self._employee_code = context.employee_code
         self._week_start = week_start_for(date.today())
         self._month_view: MonthView | None = None
+        #: A date the user explicitly asked to look at. Without it, any background refresh
+        #: reloads the month and yanks the screen back to today mid-read.
+        self._viewing_day: date | None = None
         #: Populated in the background; empty until the portal has been asked once.
         self._fetchable_months: list[tuple[int, int]] = []
         self._sync_panel: SyncPanel | None = None
@@ -141,6 +144,8 @@ class MainWindow(QMainWindow):
 
         self.today.refresh_requested.connect(lambda: self.refresh(force=True))
         self.today.insight_action.connect(self._handle_insight_action)
+        self.today.action_triggered.connect(self._handle_action)
+        self.today.date_selected.connect(self._view_day)
         self.today.back_to_today.connect(self._go_back)
         self.attendance.refresh_requested.connect(lambda: self.refresh(force=True))
         self.attendance.month_changed.connect(self._change_month)
@@ -156,6 +161,7 @@ class MainWindow(QMainWindow):
             lambda: open_url(self._context.client.url_for(pages.SWIPE_REQUESTS))
         )
         self.week.week_changed.connect(self._change_week)
+        self.week.day_selected.connect(self._open_day)
         self.insights.refresh_requested.connect(lambda: self._sync.refresh_trends())
         self.insights.sync_history_requested.connect(self.sync_history)
         self.about.update_check_requested.connect(self._check_for_update_now)
@@ -508,17 +514,31 @@ class MainWindow(QMainWindow):
         self.attendance.show_month(view)
 
         self._render_week(view)
-        self._sync.load_today(view)
+        self._show_current_day(view)
         self._render_status(view)
         # Trends read straight from the cache the month refresh has just written, so they
         # follow it rather than running on their own schedule.
         self._sync.refresh_trends()
+
+    def _show_current_day(self, view: MonthView) -> None:
+        """Re-render whichever day Today is showing — not always today's.
+
+        A refresh reloads the month, and the month reload used to always re-analyse today.
+        Someone reading Tuesday's punches would be thrown back to the current day fifteen
+        minutes later, by a timer, with no explanation.
+        """
+        if self._viewing_day is not None and self._viewing_day != date.today():
+            self._sync.load_day(self._viewing_day)
+            return
+        self._sync.load_today(view)
 
     def _render_week(self, view: MonthView) -> None:
         week = analyze_week(
             list(view.month.days),
             week_start=self._week_start,
             policy=self._context.attendance.policy,
+            today=date.today(),
+            holidays=view.holidays,
         )
         self.week.show_week(week, self._context.attendance.policy.work_target)
 
@@ -536,8 +556,10 @@ class MainWindow(QMainWindow):
 
         if view.from_cache and view.last_synced is None:
             self.today.banner.show_message(
-                "Showing cached data — not synced yet.", Severity.WARNING
+                "Showing cached data — not synced yet.", Severity.WARNING, key="cache"
             )
+        else:
+            self.today.banner.clear_message("cache")
 
     def _apply_leave(self, data: LeaveData) -> None:
         self.leave.show_leave(data)
@@ -570,7 +592,17 @@ class MainWindow(QMainWindow):
         self.refresh(force=False, quiet=True)
 
     def _change_week(self, week_start: date) -> None:
+        """Move the week, pulling in another month when the week has left this one.
+
+        Only the loaded month's rows are available, so stepping back from the first week of
+        a month used to render four blank days and totals that quietly under-reported. The
+        week's own month is loaded instead. A week that straddles two months still shows
+        only the days from one of them — the grid is fetched a month at a time.
+        """
         self._week_start = week_start
+        if (week_start.year, week_start.month) != self._sync.period:
+            self._change_month(week_start.year, week_start.month)
+            return
         if self._month_view is not None:
             self._render_week(self._month_view)
 
@@ -578,10 +610,20 @@ class MainWindow(QMainWindow):
         """Drill into a day from another screen, remembering where it was opened from."""
         self._navigation.drill_to(TODAY_SCREEN)
         self.today.set_back_target(self._navigation.origin_name)
+        self._view_day(day)
+
+    def _view_day(self, day: date) -> None:
+        """Show one date on Today, pulling in its month first when it is another month."""
+        self._viewing_day = day
+        if (day.year, day.month) != self._sync.period:
+            self._sync.period = (day.year, day.month)
+            self._sync.load_from_cache()
+            self.refresh(force=False, quiet=True)
         self._sync.load_day(day)
 
     def _go_back(self) -> None:
         """The Today context bar's exit: back to the origin screen, or back to today."""
+        self._viewing_day = None
         if self._navigation.back():
             return
         today = date.today()
@@ -595,11 +637,15 @@ class MainWindow(QMainWindow):
         self.today.set_back_target(self._navigation.origin_name)
 
     def _handle_insight_action(self, insight: Insight) -> None:
-        if insight.action is None:
-            return
-        if insight.action.kind is ActionKind.OPEN_SWIPE_REQUEST:
+        if insight.action is not None:
+            self._handle_action(insight.action)
+
+    def _handle_action(self, action: object) -> None:
+        """Where an action leads. Insight chips and the next-action card share the set."""
+        kind = getattr(action, "kind", None)
+        if kind is ActionKind.OPEN_SWIPE_REQUEST:
             open_url(self._context.client.url_for(pages.SWIPE_REQUESTS))
-        elif insight.action.kind is ActionKind.OPEN_ATTENDANCE:
+        elif kind is ActionKind.OPEN_ATTENDANCE:
             open_url(self._context.client.url_for(pages.ATTENDANCE_REPORT))
 
     def _save_config(self, config: object) -> None:
@@ -680,10 +726,14 @@ class MainWindow(QMainWindow):
     def _on_sync_finished(self, failures: list[str]) -> None:
         if failures:
             self.today.banner.show_message(
-                f"Some data could not be refreshed: {failures[0]}", Severity.WARNING
+                f"Some data could not be refreshed: {failures[0]}",
+                Severity.WARNING,
+                key="sync",
             )
         else:
-            self.today.banner.clear_message()
+            # Only its own message. Clearing the whole strip meant a successful sync
+            # silently swallowed the sign-in error sitting above it.
+            self.today.banner.clear_message("sync")
 
     def _on_busy_changed(self, busy: bool) -> None:
         self.today.set_loading(busy)
@@ -714,7 +764,9 @@ class MainWindow(QMainWindow):
             "leave ledger": self.leave.banner,
             "swipe requests": self.requests.banner,
         }.get(scope, self.today.banner)
-        banner.show_message(f"Could not load {scope}: {_message_for(exc)}", Severity.WARNING)
+        banner.show_message(
+            f"Could not load {scope}: {_message_for(exc)}", Severity.WARNING, key=scope
+        )
 
     def _on_error(self, exc: BaseException) -> None:
         if isinstance(exc, SessionExpiredError | AuthenticationError):
@@ -724,6 +776,7 @@ class MainWindow(QMainWindow):
         self.today.banner.show_message(
             _message_for(exc),
             Severity.WARNING if isinstance(exc, TransportError) else Severity.CRITICAL,
+            key="error",
         )
 
 
