@@ -20,11 +20,9 @@ from datetime import date
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QPushButton,
     QTableWidget,
@@ -41,7 +39,7 @@ from cerepulse.models.swipe import SwipeRequest, SwipeStatus
 from cerepulse.services.attendance import MonthView
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette
-from cerepulse.ui.widgets import Banner, Card, MonthHeatmap, SectionTitle, card_row
+from cerepulse.ui.widgets import Banner, Card, MonthHeatmap, SectionTitle, card_row, data_table
 
 COLUMNS = ("Date", "Day", "Status", "In", "Out", "Worked", "Late", "Swipe", "Remarks")
 
@@ -52,6 +50,7 @@ class AttendanceView(QWidget):
     day_selected = Signal(date)
     month_changed = Signal(int, int)
     refresh_requested = Signal()
+    fetch_detail_requested = Signal()
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -101,6 +100,12 @@ class AttendanceView(QWidget):
         row.addWidget(self._only_attention)
         row.addStretch(1)
 
+        # Punch detail arrives five days per refresh, so a fresh month needs four or five
+        # of them. This asks for the rest in one go rather than leaving the user to guess.
+        self._fetch_detail = QPushButton("Fetch punch detail")
+        self._fetch_detail.clicked.connect(self.fetch_detail_requested)
+        row.addWidget(self._fetch_detail)
+
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self.refresh_requested)
         row.addWidget(refresh)
@@ -123,19 +128,10 @@ class AttendanceView(QWidget):
         return host
 
     def _build_table(self) -> QTableWidget:
-        table = QTableWidget(0, len(COLUMNS))
-        table.setHorizontalHeaderLabels(COLUMNS)
-        table.verticalHeader().setVisible(False)
-        table.setAlternatingRowColors(True)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        header = table.horizontalHeader()
         # Sized to content with Remarks taking the slack. Stretching every column equally
         # gave a clock time the same width as a sentence, so Remarks truncated to
         # "Attendance ..." while In and Out sat in a sea of padding.
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setStretchLastSection(True)
+        table = data_table(COLUMNS, selectable=True)
         table.cellDoubleClicked.connect(self._emit_day)
         return table
 
@@ -184,6 +180,13 @@ class AttendanceView(QWidget):
             else fmt.EMPTY
         )
         self._view = view
+        # Nothing to fetch is worth saying with the button rather than in a banner.
+        self._fetch_detail.setEnabled(view.pending_detail > 0)
+        self._fetch_detail.setText(
+            f"Fetch punch detail ({view.pending_detail})"
+            if view.pending_detail
+            else "Punch detail complete"
+        )
         self._render_bank(analysis)
         self.heatmap.set_days(
             list(analysis.days),

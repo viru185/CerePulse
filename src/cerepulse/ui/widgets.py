@@ -10,15 +10,18 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, timedelta
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
     QSizePolicy,
+    QTableWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -27,7 +30,7 @@ from cerepulse.intelligence.insights import Insight, Severity
 from cerepulse.intelligence.month import DayRollup
 from cerepulse.intelligence.segments import WorkSegment
 from cerepulse.models.values import Duration
-from cerepulse.ui.theme import Palette
+from cerepulse.ui.theme import Palette, Space
 
 
 class Card(QFrame):
@@ -434,15 +437,194 @@ class SectionTitle(QLabel):
         self.setFont(font)
 
 
+class Skeleton(QWidget):
+    """Placeholder bars shaped like the content that is coming.
+
+    A cold start used to paint the real cards full of em-dashes, which reads as "there is
+    no data" rather than "the data has not arrived". Blocks in the shape of the answer say
+    the second thing without pretending to be the first.
+
+    The shimmer is a slow gradient sweep rather than a spinner: it says work is happening
+    without drawing the eye away from whatever the user is already reading.
+    """
+
+    #: Slow enough not to be a distraction, fast enough to read as alive.
+    TICK_MS = 40
+    PERIOD = 60
+
+    def __init__(
+        self,
+        palette: Palette,
+        *,
+        rows: int = 3,
+        height: int = 16,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self._phase = 0
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Space.SNUG)
+
+        self._bars: list[QWidget] = []
+        for index in range(rows):
+            bar = QWidget()
+            bar.setFixedHeight(height)
+            # Ragged widths read as text; equal ones read as a table that failed to load.
+            bar.setMaximumWidth(420 - (index % 3) * 90)
+            layout.addWidget(bar)
+            self._bars.append(bar)
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(self.TICK_MS)
+        self._timer.timeout.connect(self._tick)
+        self.setVisible(False)
+
+    def start(self) -> None:
+        self.setVisible(True)
+        self._timer.start()
+        self._tick()
+
+    def stop(self) -> None:
+        self._timer.stop()
+        self.setVisible(False)
+
+    def _tick(self) -> None:
+        self._phase = (self._phase + 1) % self.PERIOD
+        for index, bar in enumerate(self._bars):
+            offset = ((self._phase + index * 6) % self.PERIOD) / self.PERIOD
+            bar.setStyleSheet(_shimmer(self._palette, offset))
+
+    def hideEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        # A timer ticking behind a hidden widget is pure waste, and this one can sit on a
+        # screen the user never opens.
+        self._timer.stop()
+        super().hideEvent(event)  # type: ignore[arg-type]
+
+
+def _shimmer(palette: Palette, offset: float) -> str:
+    """A soft highlight travelling left to right across the placeholder."""
+    peak = min(max(offset, 0.001), 0.999)
+    return (
+        f"background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+        f" stop:0 {palette.border},"
+        f" stop:{max(peak - 0.18, 0.0):.3f} {palette.border},"
+        f" stop:{peak:.3f} {palette.overlay},"
+        f" stop:{min(peak + 0.18, 1.0):.3f} {palette.border},"
+        f" stop:1 {palette.border});"
+        f" border-radius: 6px;"
+    )
+
+
+class StatusChip(QLabel):
+    """A short state word on a tinted pill — present, pending, rejected.
+
+    Coloured text alone was doing this job in three different screens, each with its own
+    palette mapping. A chip reads as a state rather than as emphasis, and one definition
+    means "approved" is the same green everywhere it appears.
+    """
+
+    def __init__(self, text: str, colour: str, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet(
+            f"color: {colour}; background-color: {_tint(colour, 38)};"
+            f" border-radius: 8px; padding: 2px 8px; font-size: 11px; font-weight: 600;"
+        )
+
+
+class EmptyState(QWidget):
+    """What a screen shows when it has nothing — a reason, not a blank rectangle.
+
+    An empty table under a heading reads as a failure. Saying which of "nothing to show",
+    "not synced yet" or "filtered out" applies is usually the only thing the user needs.
+    """
+
+    def __init__(
+        self,
+        headline: str,
+        detail: str = "",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, Space.GAP, 0, Space.GAP)
+        layout.setSpacing(Space.TIGHT)
+
+        self._headline = QLabel(headline)
+        self._headline.setStyleSheet("font-weight: 600;")
+        self._detail = QLabel(detail)
+        self._detail.setObjectName("CardCaption")
+        self._detail.setWordWrap(True)
+        self._detail.setVisible(bool(detail))
+
+        layout.addWidget(self._headline)
+        layout.addWidget(self._detail)
+
+    def set_message(self, headline: str, detail: str = "") -> None:
+        self._headline.setText(headline)
+        self._detail.setText(detail)
+        self._detail.setVisible(bool(detail))
+
+
+def data_table(
+    columns: Sequence[str],
+    *,
+    stretch_last: bool = True,
+    fit_rows: bool = False,
+    selectable: bool = False,
+) -> QTableWidget:
+    """The one table style.
+
+    There were four of these, one per screen, differing in resize mode, grid lines and
+    scroll policy — so the same data looked like it came from three different applications.
+
+    ``fit_rows`` shows every row instead of scrolling, for the short tables that sit inside
+    an already-scrolling page: a scrollbar within a scrollbar is unusable with a wheel.
+    """
+    table = QTableWidget(0, len(columns))
+    table.setHorizontalHeaderLabels(list(columns))
+    table.verticalHeader().setVisible(False)
+    table.setAlternatingRowColors(True)
+    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setSelectionMode(
+        QAbstractItemView.SelectionMode.SingleSelection
+        if selectable
+        else QAbstractItemView.SelectionMode.NoSelection
+    )
+    table.setShowGrid(False)
+
+    header = table.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+    header.setStretchLastSection(stretch_last)
+    # Headers stay put while the rows move, so a long month never leaves the reader
+    # guessing which column is which.
+    header.setFixedHeight(34)
+
+    if fit_rows:
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.setSizeAdjustPolicy(QAbstractItemView.SizeAdjustPolicy.AdjustToContents)
+    return table
+
+
 def card_row(*cards: QWidget) -> QWidget:
     """Lay cards out in an evenly spaced row."""
     container = QWidget()
     layout = QHBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(12)
+    layout.setSpacing(Space.ROW)
     for card in cards:
         layout.addWidget(card)
     return container
+
+
+def _tint(colour: str, alpha: int) -> str:
+    """The chip's own colour at low opacity, so the pill always suits its text."""
+    value = QColor(colour)
+    return f"rgba({value.red()}, {value.green()}, {value.blue()}, {alpha})"
 
 
 def link_button(text: str, on_click: Callable[[], None]) -> QPushButton:

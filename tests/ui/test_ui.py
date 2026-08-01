@@ -18,7 +18,7 @@ from cerepulse.intelligence.insights import Insight, InsightKind, Severity
 from cerepulse.models.attendance import Punch, PunchDirection
 from cerepulse.models.values import Duration
 from cerepulse.ui import formatting as fmt
-from cerepulse.ui.theme import DARK, LIGHT, palette_for, stylesheet
+from cerepulse.ui.theme import DARK, LIGHT, MIN_CONTRAST, contrast_ratio, palette_for, stylesheet
 from cerepulse.ui.views.today import TodayView, summary_text
 from cerepulse.ui.widgets import Banner, Card, InsightStrip, SegmentBar
 from cerepulse.ui.workers import TaskRunner
@@ -98,6 +98,35 @@ def test_labels_are_transparent_so_they_do_not_box_over_cards() -> None:
     sheet = stylesheet(DARK)
     assert "QLabel, QCheckBox {" in sheet
     assert "background: transparent" in sheet
+
+
+@pytest.mark.parametrize("palette", [DARK, LIGHT], ids=["dark", "light"])
+def test_every_text_colour_clears_the_contrast_floor(palette) -> None:  # type: ignore[no-untyped-def]
+    """text_faint sat at 2.49:1 — barely half of AA — and it is every caption in the app.
+
+    Checked against the darkest and lightest things text is ever drawn on, so a colour that
+    reads on a card but not on a banner still fails here.
+    """
+    backgrounds = (palette.surface, palette.elevated, palette.overlay)
+    for name in ("text", "text_muted", "text_faint"):
+        colour = getattr(palette, name)
+        worst = min(contrast_ratio(colour, behind) for behind in backgrounds)
+        assert worst >= MIN_CONTRAST, f"{palette.name} {name} is only {worst:.2f}:1"
+
+
+def test_accents_stay_legible_too() -> None:
+    """They carry meaning, not just decoration, so they have to be readable as text."""
+    for name in ("work", "rest", "good", "bad", "adjust"):
+        colour = getattr(DARK, name)
+        assert contrast_ratio(colour, DARK.elevated) >= MIN_CONTRAST
+
+
+def test_muted_and_faint_stay_distinguishable() -> None:
+    """Raising faint must not collapse the hierarchy into one grey."""
+    for palette in (DARK, LIGHT):
+        muted = contrast_ratio(palette.text_muted, palette.elevated)
+        faint = contrast_ratio(palette.text_faint, palette.elevated)
+        assert muted > faint
 
 
 def test_named_themes_resolve() -> None:
@@ -459,6 +488,50 @@ def test_a_crashing_task_does_not_kill_the_app(qapp: QApplication) -> None:
     qapp.processEvents()
 
     assert isinstance(errors[0], ZeroDivisionError)
+
+
+def test_activity_names_the_running_task(qapp: QApplication) -> None:
+    """Ten task names used to collapse into "Syncing…", so a cache read and a two-minute
+    history backfill looked identical."""
+    runner = TaskRunner()
+    seen: list[tuple[str, int]] = []
+    runner.activity_changed.connect(lambda label, queued: seen.append((label, queued)))
+
+    runner.submit("history", lambda: None)
+    runner.wait(5000)
+    qapp.processEvents()
+
+    assert seen[0] == ("Fetching history", 0)
+
+
+def test_activity_reports_the_queue_depth(qapp: QApplication) -> None:
+    """The pool is single-slot, so work behind a backfill genuinely waits — say so."""
+    runner = TaskRunner()
+    depths: list[int] = []
+    runner.activity_changed.connect(lambda _label, queued: depths.append(queued))
+
+    for name in ("history", "trends", "leave"):
+        runner.submit(name, lambda: None)
+    runner.wait(5000)
+    qapp.processEvents()
+
+    assert max(depths) >= 2
+
+
+def test_an_unknown_task_still_gets_a_label(qapp: QApplication) -> None:
+    from cerepulse.ui.workers import describe
+
+    assert describe("something-new") == "Working"
+    assert describe("scope-swipe_requests") == "Fetching swipe requests"
+
+
+def test_activity_clears_when_the_queue_drains(qapp: QApplication) -> None:
+    runner = TaskRunner()
+    runner.submit("leave", lambda: None)
+    runner.wait(5000)
+    qapp.processEvents()
+
+    assert runner.activity == ""
 
 
 def test_tasks_run_one_at_a_time(qapp: QApplication) -> None:

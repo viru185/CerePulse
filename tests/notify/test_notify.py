@@ -11,7 +11,7 @@ from cerepulse.core.config import NotificationConfig
 from cerepulse.intelligence.day import analyze_day
 from cerepulse.intelligence.insights import Insight, InsightKind, Severity
 from cerepulse.models.attendance import Punch, PunchDirection
-from cerepulse.notify.policy import SILENT, NotificationPolicy, notification_title
+from cerepulse.notify.policy import SILENT, NotificationPolicy, Verdict, notification_title
 from cerepulse.notify.startup import RUN_KEY, VALUE_NAME, executable_command, is_frozen
 from cerepulse.notify.tray import Tray
 
@@ -64,35 +64,74 @@ def test_informational_kinds_never_notify(policy: NotificationPolicy, kind: Insi
 # --- repetition -----------------------------------------------------------------------
 
 
+def test_asking_whether_to_notify_does_not_consume_the_slot(
+    policy: NotificationPolicy,
+) -> None:
+    """The bug this replaced: a toast the tray then dropped still silenced its kind.
+
+    ``should_notify`` used to record the insight as sent before returning ``True``, so any
+    delivery failure — a hidden tray, an unsupported desktop — burned the once-a-day slot
+    and that alert stayed silent until midnight.
+    """
+    assert policy.should_notify(insight(InsightKind.ON_TRACK), now=MIDDAY)
+    assert policy.should_notify(insight(InsightKind.ON_TRACK), now=MIDDAY)
+    assert not policy._sent
+
+
 def test_the_same_alert_only_fires_once_a_day(policy: NotificationPolicy) -> None:
     """The background refresh runs every 15 minutes and yields the same insights each time."""
-    assert policy.should_notify(insight(InsightKind.ON_TRACK), now=MIDDAY)
-    assert not policy.should_notify(insight(InsightKind.ON_TRACK), now=MIDDAY)
-    assert not policy.should_notify(
-        insight(InsightKind.ON_TRACK), now=datetime(2026, 7, 28, 17, 30)
-    )
+    alert = insight(InsightKind.ON_TRACK)
+    assert policy.should_notify(alert, now=MIDDAY)
+    policy.record_sent(alert, now=MIDDAY)
+
+    assert not policy.should_notify(alert, now=MIDDAY)
+    assert not policy.should_notify(alert, now=datetime(2026, 7, 28, 17, 30))
 
 
 def test_a_new_day_allows_the_alert_again(policy: NotificationPolicy) -> None:
-    policy.should_notify(insight(InsightKind.ON_TRACK), now=MIDDAY)
-    assert policy.should_notify(insight(InsightKind.ON_TRACK), now=datetime(2026, 7, 29, 12, 0))
+    alert = insight(InsightKind.ON_TRACK)
+    policy.record_sent(alert, now=MIDDAY)
+    assert policy.should_notify(alert, now=datetime(2026, 7, 29, 12, 0))
 
 
 def test_different_kinds_do_not_suppress_each_other(policy: NotificationPolicy) -> None:
-    assert policy.should_notify(insight(InsightKind.ON_TRACK), now=MIDDAY)
+    policy.record_sent(insight(InsightKind.ON_TRACK), now=MIDDAY)
     assert policy.should_notify(insight(InsightKind.SWIPE_NEEDED), now=MIDDAY)
 
 
 def test_yesterdays_record_is_forgotten(policy: NotificationPolicy) -> None:
-    policy.should_notify(insight(InsightKind.ON_TRACK), now=MIDDAY)
-    policy.should_notify(insight(InsightKind.ON_TRACK), now=datetime(2026, 7, 29, 12, 0))
+    policy.record_sent(insight(InsightKind.ON_TRACK), now=MIDDAY)
+    policy.record_sent(insight(InsightKind.ON_TRACK), now=datetime(2026, 7, 29, 12, 0))
     assert len(policy._sent) == 1
 
 
 def test_reset_clears_the_record(policy: NotificationPolicy) -> None:
-    policy.should_notify(insight(InsightKind.ON_TRACK), now=MIDDAY)
+    alert = insight(InsightKind.ON_TRACK)
+    policy.record_sent(alert, now=MIDDAY)
     policy.reset()
-    assert policy.should_notify(insight(InsightKind.ON_TRACK), now=MIDDAY)
+    assert policy.should_notify(alert, now=MIDDAY)
+
+
+# --- why nothing appeared ---------------------------------------------------------------
+
+
+def test_the_verdict_names_the_reason(policy: NotificationPolicy) -> None:
+    """ "Nothing happened" is the commonest complaint; this is what answers it."""
+    alert = insight(InsightKind.ON_TRACK)
+    assert policy.verdict(alert, now=MIDDAY) is Verdict.SEND
+
+    policy.record_sent(alert, now=MIDDAY)
+    assert policy.verdict(alert, now=MIDDAY) is Verdict.ALREADY_SENT
+    assert policy.verdict(alert, now=datetime(2026, 7, 28, 23, 0)) is Verdict.QUIET_HOURS
+    assert policy.verdict(insight(InsightKind.STILL_WORKING), now=MIDDAY) is Verdict.SILENT_KIND
+
+
+def test_a_switched_off_alert_is_distinguished_from_a_switched_off_app() -> None:
+    off = NotificationPolicy(replace(NotificationConfig(), swipe_request_needed=False))
+    assert off.verdict(insight(InsightKind.SWIPE_NEEDED), now=MIDDAY) is Verdict.TURNED_OFF
+
+    disabled = NotificationPolicy(replace(NotificationConfig(), enabled=False))
+    assert disabled.verdict(insight(InsightKind.SWIPE_NEEDED), now=MIDDAY) is Verdict.DISABLED
 
 
 # --- quiet hours ----------------------------------------------------------------------
@@ -189,6 +228,52 @@ def test_tooltip_flags_a_short_day() -> None:
 def test_tooltip_for_a_day_with_no_punches() -> None:
     analysis = analyze_day([], day=DAY)
     assert "No punches recorded" in Tray.tooltip_text(analysis, now=MIDDAY)
+
+
+# --- tray delivery ----------------------------------------------------------------------
+#
+# The tray was previously untested in its entirety, which is exactly why an unshowable
+# notification could burn its once-a-day slot and nobody noticed. These instantiate it for
+# real; the offscreen Qt platform gives a tray that never becomes visible, which is the
+# failing-delivery case the bug depended on.
+
+
+@pytest.fixture
+def tray(qapp: object) -> Tray:
+    from PySide6.QtGui import QIcon
+
+    return Tray(QIcon(), NotificationConfig())
+
+
+def test_an_undeliverable_toast_says_so_rather_than_pretending(tray: Tray) -> None:
+    assert tray.delivery_problem() is not None
+    assert tray.notify(insight(InsightKind.SWIPE_NEEDED)) is False
+
+
+def test_a_dropped_toast_does_not_burn_its_slot(tray: Tray) -> None:
+    """The whole bug in one test: it must still be sendable once delivery works."""
+    alert = insight(InsightKind.SWIPE_NEEDED)
+
+    assert tray.notify_insights([alert], now=MIDDAY) == 0
+    assert tray.policy.should_notify(alert, now=MIDDAY)
+    assert not tray.policy._sent
+
+
+def test_notify_insights_counts_what_actually_appeared(tray: Tray) -> None:
+    """It used to count what the policy allowed, whether or not anything was shown."""
+    assert tray.notify_insights([insight(InsightKind.SWIPE_NEEDED)], now=MIDDAY) == 0
+
+
+def test_the_self_test_reports_the_reason_rather_than_failing_silently(tray: Tray) -> None:
+    outcome = tray.self_test(now=MIDDAY)
+    assert "Could not show a notification" in outcome
+
+
+def test_the_self_test_says_when_notifications_are_switched_off(qapp: object) -> None:
+    from PySide6.QtGui import QIcon
+
+    off = Tray(QIcon(), replace(NotificationConfig(), enabled=False))
+    assert "switched off" in off.self_test(now=MIDDAY)
 
 
 # --- startup registration -------------------------------------------------------------

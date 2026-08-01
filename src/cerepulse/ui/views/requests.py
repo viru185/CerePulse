@@ -12,9 +12,7 @@ from datetime import date
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QPushButton,
     QTableWidget,
@@ -26,7 +24,7 @@ from PySide6.QtWidgets import (
 from cerepulse.models.swipe import SwipeRequest, SwipeStatus
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette
-from cerepulse.ui.widgets import Banner, SectionTitle
+from cerepulse.ui.widgets import Banner, SectionTitle, data_table
 
 COLUMNS = ("For date", "Mode", "In", "Out", "Status", "Approved", "Remark")
 
@@ -69,14 +67,7 @@ class RequestsView(QWidget):
         layout.addWidget(self.table, 1)
 
     def _build_table(self) -> QTableWidget:
-        table = QTableWidget(0, len(COLUMNS))
-        table.setHorizontalHeaderLabels(COLUMNS)
-        table.verticalHeader().setVisible(False)
-        table.setAlternatingRowColors(True)
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        return table
+        return data_table(COLUMNS)
 
     # --- rendering ------------------------------------------------------------------
 

@@ -142,24 +142,86 @@ class Tray(QObject):
     # --- notifications --------------------------------------------------------------
 
     def notify_insights(self, insights: list[Insight], *, now: datetime | None = None) -> int:
-        """Show whichever insights the policy allows. Returns how many were shown."""
+        """Show whichever insights the policy allows. Returns how many actually appeared.
+
+        The record of what has been sent today is written only after a toast is delivered.
+        Recording it up front — as this used to — meant a notification the tray dropped
+        still consumed its once-a-day slot, so one failure silenced that kind until
+        midnight and the count returned here was a lie.
+        """
         shown = 0
         for insight in insights:
-            if self.policy.should_notify(insight, now=now):
-                self.notify(insight)
+            if not self.policy.should_notify(insight, now=now):
+                continue
+            if self.notify(insight):
+                self.policy.record_sent(insight, now=now)
                 shown += 1
         return shown
 
-    def notify(self, insight: Insight) -> None:
-        """Show one toast, bypassing the policy. Used for explicit user-facing events."""
-        if not self._tray.isVisible():
-            logger.debug("Tray hidden; skipping notification {!r}", insight.title)
-            return
+    def notify(self, insight: Insight) -> bool:
+        """Show one toast, bypassing the policy. Returns whether it was actually delivered.
+
+        Callers need the answer: an update notice that was silently dropped should fall
+        back to a dialog rather than vanishing.
+        """
+        reason = self.delivery_problem()
+        if reason is not None:
+            # INFO, not DEBUG. This is the line that explains an absent notification, and
+            # at DEBUG it never reached a log anyone would read.
+            logger.info("Notification {!r} not delivered: {}", insight.title, reason)
+            return False
+
         self._tray.showMessage(
             notification_title(insight),
             insight.detail or insight.title,
             _ICONS.get(insight.severity, QSystemTrayIcon.MessageIcon.Information),
             8000,
+        )
+        logger.info("Notified: {}", insight.title)
+        return True
+
+    def delivery_problem(self) -> str | None:
+        """What would stop a toast right now, or ``None`` if nothing would.
+
+        Separate from :meth:`notify` so Settings can ask without sending anything.
+        """
+        if not self._tray.isVisible():
+            return "the tray icon is not showing"
+        if not self._tray.supportsMessages():
+            return "this desktop does not support notifications"
+        return None
+
+    def self_test(self, *, now: datetime | None = None) -> str:
+        """Try to show a test toast and report, in plain words, what happened.
+
+        The commonest complaint about this feature is that nothing appears, and until now
+        the app had no way to tell the difference between "Windows suppressed it", "the
+        alert is switched off" and "it already fired this morning". This says which.
+        """
+        if not self.policy.config.enabled:
+            return "Notifications are switched off in Settings."
+
+        problem = self.delivery_problem()
+        if problem is not None:
+            return f"Could not show a notification — {problem}."
+
+        moment = now or datetime.now()
+        if self.policy.in_quiet_hours(moment):
+            quiet = f"{self.policy.config.quiet_hours_start}–{self.policy.config.quiet_hours_end}"
+            return (
+                f"Sent, but you are inside quiet hours ({quiet}), so real alerts would be "
+                f"held until morning."
+            )
+
+        self._tray.showMessage(
+            f"{about.NAME} is set up",
+            "Notifications are working. This is the only one you asked for.",
+            QSystemTrayIcon.MessageIcon.Information,
+            8000,
+        )
+        return (
+            "Sent. If nothing appeared, check Windows Settings → System → Notifications "
+            f"for {about.NAME}, and that Do Not Disturb is off."
         )
 
     def update_config(self, config: NotificationConfig) -> None:

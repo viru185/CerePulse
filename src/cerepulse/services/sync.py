@@ -24,6 +24,7 @@ from cerepulse.core.errors import CerePulseError, SessionExpiredError, Transport
 from cerepulse.services.attendance import AttendanceService
 from cerepulse.services.leave import LeaveService
 from cerepulse.services.portal import PortalGateway
+from cerepulse.services.scopes import Scope
 
 T = TypeVar("T")
 
@@ -40,6 +41,9 @@ class SyncReport:
     swipes_refreshed: bool = False
     holidays_refreshed: bool = False
     reauthenticated: bool = False
+    #: Whether cache TTLs were bypassed. Reported so the UI can say "fetched" rather than
+    #: "checked" when the user explicitly asked for fresh data.
+    forced: bool = False
     failures: list[str] = field(default_factory=list)
 
     @property
@@ -102,11 +106,16 @@ class SyncCoordinator:
         month: int | None = None,
         today: date | None = None,
         backfill: bool = True,
+        force: bool = False,
     ) -> SyncReport:
         """Refresh everything for one month, continuing past individual failures.
 
         Each step is independent: a leave outage should not cost the user their attendance
         refresh, so failures are collected rather than raised.
+
+        ``force`` bypasses every cache TTL. Without it a Refresh click can legitimately
+        fetch nothing, which is what made the button feel broken — the flag existed in the
+        window and was never carried any further than the call.
         """
         now = today or date.today()
         period_year = year or now.year
@@ -115,7 +124,7 @@ class SyncCoordinator:
         state_before = self._auth.state
 
         report.holidays_refreshed = self._step(
-            report, "holidays", lambda: self._leave.load_holidays(force_refresh=False)
+            report, "holidays", lambda: self._leave.load_holidays(force_refresh=force)
         )
         report.month_refreshed = self._step(
             report,
@@ -130,6 +139,7 @@ class SyncCoordinator:
         report.leave_refreshed = self._step(
             report, "leave", lambda: self._leave.refresh_leave(employee_code)
         )
+        report.forced = force
 
         if backfill and report.month_refreshed:
             fetched = self._step_value(
@@ -147,6 +157,52 @@ class SyncCoordinator:
             len(report.failures),
         )
         return report
+
+    def sync_scope(
+        self,
+        scope: Scope,
+        employee_code: str,
+        *,
+        year: int | None = None,
+        month: int | None = None,
+        today: date | None = None,
+        on_progress: Callable[[int, int], bool] | None = None,
+    ) -> int:
+        """Refresh exactly one thing, bypassing its cache TTL.
+
+        The point of asking for one scope is that you already believe it is wrong, so
+        respecting the TTL here would be perverse. Returns a count where one is meaningful
+        (days of detail fetched) and 0 otherwise.
+        """
+        now = today or date.today()
+        period_year = year or now.year
+        period_month = month or now.month
+
+        if scope is Scope.ATTENDANCE:
+            self.run(
+                lambda: self._attendance.refresh_month(employee_code, period_year, period_month)
+            )
+        elif scope is Scope.DAY_DETAIL:
+            return self.run(
+                lambda: self._attendance.drain_detail(
+                    employee_code, period_year, period_month, on_progress=on_progress
+                )
+            )
+        elif scope is Scope.LEAVE:
+            self.run(lambda: self._leave.refresh_leave(employee_code))
+        elif scope is Scope.SWIPE_REQUESTS:
+            self.run(lambda: self._leave.refresh_swipe_requests(employee_code))
+        elif scope is Scope.HOLIDAYS:
+            self.run(self._leave.refresh_holidays)
+        return 0
+
+    def sync_day(self, employee_code: str, day: date) -> None:
+        """Re-fetch one day's punch log, whatever the cache thinks it already has.
+
+        The case this exists for: looking at a past date whose punches never arrived, and
+        wanting exactly that day rather than a whole month.
+        """
+        self.run(lambda: self._attendance.refresh_day_detail(employee_code, day))
 
     def _step(self, report: SyncReport, name: str, operation: Callable[[], object]) -> bool:
         """Run one sync step with recovery, recording rather than raising on failure.

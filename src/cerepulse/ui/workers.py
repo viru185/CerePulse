@@ -63,14 +63,49 @@ class Task(QRunnable):
             self.signals.finished.emit()
 
 
+#: What each task name means to a person. A status line saying "analyze-day" is a status
+#: line written for the developer; the queue is single-slot, so whatever is running is
+#: genuinely what the user is waiting for and deserves saying properly.
+TASK_LABELS = {
+    "load-cache": "Reading cached data",
+    "sync": "Syncing",
+    "reload": "Reloading the month",
+    "analyze-day": "Working out your day",
+    "leave": "Fetching leave",
+    "swipes": "Fetching swipe requests",
+    "ledger": "Reading the leave ledger",
+    "trends": "Building insights",
+    "periods": "Asking which months are available",
+    "history": "Fetching history",
+    "scopes": "Checking what is up to date",
+    "sync-day": "Fetching that day",
+    "export-ics": "Writing the calendar file",
+    "sign-in": "Signing in",
+    "sign-out": "Signing out",
+    "clear-cache": "Clearing cached data",
+    "update-check": "Checking for updates",
+    "update-check-manual": "Checking for updates",
+}
+
+
+def describe(name: str) -> str:
+    """A human label for a task name, falling back to something harmless."""
+    if name.startswith("scope-"):
+        return "Fetching " + name.removeprefix("scope-").replace("_", " ")
+    return TASK_LABELS.get(name, "Working")
+
+
 class TaskRunner(QObject):
     """Submits tasks to a serialised background pool.
 
-    ``busy`` reports whether anything is in flight, which the views use to show a syncing
-    badge without each of them tracking state.
+    ``busy`` reports whether anything is in flight; ``activity_changed`` says *what*, which
+    is what the status line needs. Ten different task names used to collapse into the single
+    word "Syncing…", so a two-minute history backfill and a cache read looked identical.
     """
 
     busy_changed = Signal(bool)
+    #: The running task's label and how many are queued behind it. Empty label when idle.
+    activity_changed = Signal(str, int)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -80,10 +115,17 @@ class TaskRunner(QObject):
         self._in_flight = 0
         #: Keeps each task alive until its signals have been delivered.
         self._active: set[Task] = set()
+        #: Submission order, so the label names the task actually running rather than an
+        #: arbitrary member of a set.
+        self._queue: list[str] = []
 
     @property
     def busy(self) -> bool:
         return self._in_flight > 0
+
+    @property
+    def activity(self) -> str:
+        return describe(self._queue[0]) if self._queue else ""
 
     def submit(
         self,
@@ -103,8 +145,10 @@ class TaskRunner(QObject):
 
         self._in_flight += 1
         self._active.add(task)
+        self._queue.append(name)
         if self._in_flight == 1:
             self.busy_changed.emit(True)
+        self._announce()
 
         self._pool.start(task)
         return task
@@ -113,8 +157,17 @@ class TaskRunner(QObject):
     def _task_finished(self, task: Task) -> None:
         self._active.discard(task)
         self._in_flight = max(0, self._in_flight - 1)
+        if task.name in self._queue:
+            self._queue.remove(task.name)
         if self._in_flight == 0:
             self.busy_changed.emit(False)
+        self._announce()
+
+    def _announce(self) -> None:
+        # The queue depth matters: the pool is single-slot, so work submitted behind a
+        # history backfill genuinely waits, and saying so is the difference between "slow"
+        # and "broken".
+        self.activity_changed.emit(self.activity, max(0, len(self._queue) - 1))
 
     def wait(self, timeout_ms: int = 10_000) -> bool:
         """Block until the queue drains. Used on shutdown and in tests, never in handlers."""

@@ -16,10 +16,8 @@ from datetime import date
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QGridLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QPushButton,
     QScrollArea,
@@ -44,7 +42,7 @@ from cerepulse.models.values import Duration
 from cerepulse.services.attendance import TrendsView
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette
-from cerepulse.ui.widgets import Banner, Card, SectionTitle, card_row
+from cerepulse.ui.widgets import Banner, Card, SectionTitle, card_row, data_table
 
 #: The trailing blank is a spacer. Every real column here is a short number, so without one
 #: to absorb the leftover width either the last column is stranded against the far edge of
@@ -418,21 +416,8 @@ def _caption() -> QLabel:
 
 
 def _table(columns: tuple[str, ...]) -> QTableWidget:
-    table = QTableWidget(0, len(columns))
-    table.setHorizontalHeaderLabels(columns)
-    table.verticalHeader().setVisible(False)
-    table.setAlternatingRowColors(True)
-    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    table.setShowGrid(False)
-    header = table.horizontalHeader()
-    header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-    header.setStretchLastSection(True)
-    # These tables sit inside a scrolling page, so they must show every row rather than
-    # scrolling internally — a scrollbar inside a scrollbar is unusable with a wheel.
-    table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    table.setSizeAdjustPolicy(QAbstractItemView.SizeAdjustPolicy.AdjustToContents)
-    return table
+    # These sit inside a page that already scrolls, so they show every row.
+    return data_table(columns, fit_rows=True)
 
 
 def _abs(value: Duration) -> Duration:

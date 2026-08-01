@@ -28,7 +28,15 @@ from cerepulse.intelligence.insights import Insight, InsightKind
 from cerepulse.models.attendance import PunchDirection
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette
-from cerepulse.ui.widgets import Banner, Card, InsightStrip, SectionTitle, SegmentBar, card_row
+from cerepulse.ui.widgets import (
+    Banner,
+    Card,
+    InsightStrip,
+    SectionTitle,
+    SegmentBar,
+    Skeleton,
+    card_row,
+)
 
 
 class TodayView(QWidget):
@@ -37,6 +45,7 @@ class TodayView(QWidget):
     insight_action = Signal(object)
     refresh_requested = Signal()
     back_to_today = Signal()
+    sync_day_requested = Signal(object)  # date
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -61,28 +70,41 @@ class TodayView(QWidget):
 
         layout.addWidget(self._build_hero())
 
+        # Shown until the first analysis arrives, so a cold start reads as "loading"
+        # rather than as a day with nothing logged in it.
+        self._skeleton = Skeleton(palette, rows=4)
+        layout.addWidget(self._skeleton)
+
+        # Everything below the hero swaps out for the skeleton in one move, rather than
+        # each card having to know how to look absent.
+        self._content = QWidget()
+        body = QVBoxLayout(self._content)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(16)
+        layout.addWidget(self._content)
+
         # Insights sit directly under the headline, before the numbers. The screen is meant
         # to say what the day means; leading with four figures and burying the one sentence
         # that interprets them below a chart makes it a dashboard instead.
         self._insights = InsightStrip(palette)
         self._insights.action_triggered.connect(self.insight_action)
-        layout.addWidget(self._insights)
+        body.addWidget(self._insights)
 
-        layout.addWidget(self._build_cards())
+        body.addWidget(self._build_cards())
 
-        layout.addWidget(SectionTitle("Your day"))
+        body.addWidget(SectionTitle("Your day"))
         self._segments = SegmentBar(palette)
-        layout.addWidget(self._segments)
+        body.addWidget(self._segments)
         self._legend = QLabel()
         self._legend.setObjectName("CardCaption")
-        layout.addWidget(self._legend)
+        body.addWidget(self._legend)
 
-        layout.addWidget(SectionTitle("Punches"))
+        body.addWidget(SectionTitle("Punches"))
         self._timeline = QVBoxLayout()
         self._timeline.setSpacing(4)
         timeline_host = QWidget()
         timeline_host.setLayout(self._timeline)
-        layout.addWidget(timeline_host)
+        body.addWidget(timeline_host)
 
         layout.addStretch(1)
 
@@ -99,15 +121,22 @@ class TodayView(QWidget):
         layout.setSpacing(2)
 
         # Viewing a past day is a distinct mode and has to look like one, with an obvious
-        # way out. Opening a date from Attendance previously left no route back.
+        # way out. The button names its actual destination: arriving here by double-clicking
+        # a date in Attendance and being offered only "Back to today" is a dead end, because
+        # the thing the user wants back is the month they were reading.
         context = QHBoxLayout()
         context.setSpacing(8)
         self._viewing = QLabel()
         self._viewing.setObjectName("CardCaption")
         self._back = QPushButton("Back to today")
         self._back.clicked.connect(self.back_to_today)
+        # The punch log for a given day arrives one portal request at a time, so a date
+        # opened from Attendance may have none yet. This asks for that day and no other.
+        self._sync_day = QPushButton("Sync this day")
+        self._sync_day.clicked.connect(self._request_day_sync)
         context.addWidget(self._viewing)
         context.addWidget(self._back)
+        context.addWidget(self._sync_day)
         context.addStretch(1)
         self._context_bar = QWidget()
         self._context_bar.setLayout(context)
@@ -152,7 +181,24 @@ class TodayView(QWidget):
 
     # --- rendering ------------------------------------------------------------------
 
-    def show_awaiting_today(self, day: date, *, last_synced: datetime | None = None) -> None:
+    def set_loading(self, loading: bool) -> None:
+        """Show placeholders instead of empty cards while the first day is being read."""
+        if loading and self._analysis is None:
+            self._skeleton.start()
+            self._content.setVisible(False)
+        else:
+            self._skeleton.stop()
+            self._content.setVisible(True)
+
+    def _request_day_sync(self) -> None:
+        if self._analysis is not None:
+            self.sync_day_requested.emit(self._analysis.day)
+
+    def set_back_target(self, origin: str | None) -> None:
+        """Name where the exit leads. ``None`` means the only way out is back to today."""
+        self._back.setText(f"← Back to {origin}" if origin else "Back to today")
+
+    def show_awaiting_today(self, day: date, last_synced: datetime | None = None) -> None:
         """State plainly that today has not arrived in the data yet.
 
         Preferable to rendering the most recent cached day in its place: that reads as a
@@ -183,9 +229,11 @@ class TodayView(QWidget):
         self._analysis = analysis
         palette = self._palette
 
-        self._context_bar.setVisible(not is_today)
-        if not is_today:
-            self._viewing.setText(f"Viewing {fmt.long_day_label(analysis.day)}")
+        # The bar is also the way back when the user drilled in from another screen, so it
+        # stays up for today's own date when there is somewhere to return to.
+        drilled_in = self._back.text().startswith("←")
+        self._context_bar.setVisible(not is_today or drilled_in)
+        self._viewing.setText("" if is_today else f"Viewing {fmt.long_day_label(analysis.day)}")
 
         self.worked.set_value(fmt.duration(analysis.worked), accent=palette.work)
         self.break_taken.set_value(fmt.duration(analysis.break_taken), accent=palette.rest)
