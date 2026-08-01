@@ -13,12 +13,15 @@ from datetime import date, datetime, timedelta
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
     QSizePolicy,
+    QTableWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -27,7 +30,7 @@ from cerepulse.intelligence.insights import Insight, Severity
 from cerepulse.intelligence.month import DayRollup
 from cerepulse.intelligence.segments import WorkSegment
 from cerepulse.models.values import Duration
-from cerepulse.ui.theme import Palette
+from cerepulse.ui.theme import Palette, Space
 
 
 class Card(QFrame):
@@ -434,15 +437,113 @@ class SectionTitle(QLabel):
         self.setFont(font)
 
 
+class StatusChip(QLabel):
+    """A short state word on a tinted pill — present, pending, rejected.
+
+    Coloured text alone was doing this job in three different screens, each with its own
+    palette mapping. A chip reads as a state rather than as emphasis, and one definition
+    means "approved" is the same green everywhere it appears.
+    """
+
+    def __init__(self, text: str, colour: str, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet(
+            f"color: {colour}; background-color: {_tint(colour, 38)};"
+            f" border-radius: 8px; padding: 2px 8px; font-size: 11px; font-weight: 600;"
+        )
+
+
+class EmptyState(QWidget):
+    """What a screen shows when it has nothing — a reason, not a blank rectangle.
+
+    An empty table under a heading reads as a failure. Saying which of "nothing to show",
+    "not synced yet" or "filtered out" applies is usually the only thing the user needs.
+    """
+
+    def __init__(
+        self,
+        headline: str,
+        detail: str = "",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, Space.GAP, 0, Space.GAP)
+        layout.setSpacing(Space.TIGHT)
+
+        self._headline = QLabel(headline)
+        self._headline.setStyleSheet("font-weight: 600;")
+        self._detail = QLabel(detail)
+        self._detail.setObjectName("CardCaption")
+        self._detail.setWordWrap(True)
+        self._detail.setVisible(bool(detail))
+
+        layout.addWidget(self._headline)
+        layout.addWidget(self._detail)
+
+    def set_message(self, headline: str, detail: str = "") -> None:
+        self._headline.setText(headline)
+        self._detail.setText(detail)
+        self._detail.setVisible(bool(detail))
+
+
+def data_table(
+    columns: Sequence[str],
+    *,
+    stretch_last: bool = True,
+    fit_rows: bool = False,
+    selectable: bool = False,
+) -> QTableWidget:
+    """The one table style.
+
+    There were four of these, one per screen, differing in resize mode, grid lines and
+    scroll policy — so the same data looked like it came from three different applications.
+
+    ``fit_rows`` shows every row instead of scrolling, for the short tables that sit inside
+    an already-scrolling page: a scrollbar within a scrollbar is unusable with a wheel.
+    """
+    table = QTableWidget(0, len(columns))
+    table.setHorizontalHeaderLabels(list(columns))
+    table.verticalHeader().setVisible(False)
+    table.setAlternatingRowColors(True)
+    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setSelectionMode(
+        QAbstractItemView.SelectionMode.SingleSelection
+        if selectable
+        else QAbstractItemView.SelectionMode.NoSelection
+    )
+    table.setShowGrid(False)
+
+    header = table.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+    header.setStretchLastSection(stretch_last)
+    # Headers stay put while the rows move, so a long month never leaves the reader
+    # guessing which column is which.
+    header.setFixedHeight(34)
+
+    if fit_rows:
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.setSizeAdjustPolicy(QAbstractItemView.SizeAdjustPolicy.AdjustToContents)
+    return table
+
+
 def card_row(*cards: QWidget) -> QWidget:
     """Lay cards out in an evenly spaced row."""
     container = QWidget()
     layout = QHBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(12)
+    layout.setSpacing(Space.ROW)
     for card in cards:
         layout.addWidget(card)
     return container
+
+
+def _tint(colour: str, alpha: int) -> str:
+    """The chip's own colour at low opacity, so the pill always suits its text."""
+    value = QColor(colour)
+    return f"rgba({value.red()}, {value.green()}, {value.blue()}, {alpha})"
 
 
 def link_button(text: str, on_click: Callable[[], None]) -> QPushButton:

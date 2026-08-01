@@ -13,9 +13,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QPushButton,
     QTableWidget,
@@ -30,7 +28,7 @@ from cerepulse.models.leave import LeaveCategory, LeaveTransaction
 from cerepulse.services.leave import LeaveView as LeaveData
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette
-from cerepulse.ui.widgets import Banner, Card, InsightStrip, SectionTitle
+from cerepulse.ui.widgets import Banner, Card, InsightStrip, SectionTitle, data_table
 
 LEDGER_COLUMNS = ("Type", "Date", "Credit", "Consumed", "Balance", "Remark")
 
@@ -98,32 +96,12 @@ class LeaveViewWidget(QWidget):
         layout.addWidget(self.table, 1)
 
     def _build_breaks(self) -> QTableWidget:
-        table = QTableWidget(0, len(BREAK_COLUMNS))
-        table.setHorizontalHeaderLabels(BREAK_COLUMNS)
-        table.verticalHeader().setVisible(False)
-        table.setAlternatingRowColors(True)
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setShowGrid(False)
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setStretchLastSection(True)
         # Short by design — six suggestions at most — so it shows every row rather than
         # scrolling inside a screen that already scrolls.
-        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        table.setSizeAdjustPolicy(QAbstractItemView.SizeAdjustPolicy.AdjustToContents)
-        return table
+        return data_table(BREAK_COLUMNS, fit_rows=True)
 
     def _build_table(self) -> QTableWidget:
-        table = QTableWidget(0, len(LEDGER_COLUMNS))
-        table.setHorizontalHeaderLabels(LEDGER_COLUMNS)
-        table.verticalHeader().setVisible(False)
-        table.setAlternatingRowColors(True)
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        return table
+        return data_table(LEDGER_COLUMNS)
 
     # --- rendering ------------------------------------------------------------------
 

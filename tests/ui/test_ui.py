@@ -18,7 +18,7 @@ from cerepulse.intelligence.insights import Insight, InsightKind, Severity
 from cerepulse.models.attendance import Punch, PunchDirection
 from cerepulse.models.values import Duration
 from cerepulse.ui import formatting as fmt
-from cerepulse.ui.theme import DARK, LIGHT, palette_for, stylesheet
+from cerepulse.ui.theme import DARK, LIGHT, MIN_CONTRAST, contrast_ratio, palette_for, stylesheet
 from cerepulse.ui.views.today import TodayView, summary_text
 from cerepulse.ui.widgets import Banner, Card, InsightStrip, SegmentBar
 from cerepulse.ui.workers import TaskRunner
@@ -98,6 +98,35 @@ def test_labels_are_transparent_so_they_do_not_box_over_cards() -> None:
     sheet = stylesheet(DARK)
     assert "QLabel, QCheckBox {" in sheet
     assert "background: transparent" in sheet
+
+
+@pytest.mark.parametrize("palette", [DARK, LIGHT], ids=["dark", "light"])
+def test_every_text_colour_clears_the_contrast_floor(palette) -> None:  # type: ignore[no-untyped-def]
+    """text_faint sat at 2.49:1 — barely half of AA — and it is every caption in the app.
+
+    Checked against the darkest and lightest things text is ever drawn on, so a colour that
+    reads on a card but not on a banner still fails here.
+    """
+    backgrounds = (palette.surface, palette.elevated, palette.overlay)
+    for name in ("text", "text_muted", "text_faint"):
+        colour = getattr(palette, name)
+        worst = min(contrast_ratio(colour, behind) for behind in backgrounds)
+        assert worst >= MIN_CONTRAST, f"{palette.name} {name} is only {worst:.2f}:1"
+
+
+def test_accents_stay_legible_too() -> None:
+    """They carry meaning, not just decoration, so they have to be readable as text."""
+    for name in ("work", "rest", "good", "bad", "adjust"):
+        colour = getattr(DARK, name)
+        assert contrast_ratio(colour, DARK.elevated) >= MIN_CONTRAST
+
+
+def test_muted_and_faint_stay_distinguishable() -> None:
+    """Raising faint must not collapse the hierarchy into one grey."""
+    for palette in (DARK, LIGHT):
+        muted = contrast_ratio(palette.text_muted, palette.elevated)
+        faint = contrast_ratio(palette.text_faint, palette.elevated)
+        assert muted > faint
 
 
 def test_named_themes_resolve() -> None:

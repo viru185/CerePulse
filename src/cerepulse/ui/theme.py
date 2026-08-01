@@ -56,6 +56,12 @@ class Palette:
         }[accent]
 
 
+#: Smallest contrast ratio any text is allowed against the surface behind it. WCAG AA for
+#: body text. ``text_faint`` used to sit at 2.49:1 — barely half of this — and it is the
+#: colour of every caption, legend and explanatory note in the app, so the parts that
+#: explain the numbers were the hardest parts to read.
+MIN_CONTRAST = 4.5
+
 DARK = Palette(
     name="dark",
     surface="#000000",
@@ -63,7 +69,7 @@ DARK = Palette(
     border="#1F1F23",
     text="#F4F4F5",
     text_muted="#A1A1AA",
-    text_faint="#52525B",
+    text_faint="#8A8A94",
     work="#22D3EE",
     rest="#F59E0B",
     good="#34D399",
@@ -79,7 +85,7 @@ LIGHT = Palette(
     border="#E4E4E7",
     text="#18181B",
     text_muted="#52525B",
-    text_faint="#A1A1AA",
+    text_faint="#6E6E78",
     # Darkened so they hold contrast against a white card.
     work="#0891B2",
     rest="#B45309",
@@ -92,6 +98,42 @@ LIGHT = Palette(
 #: Native on Windows 11, with a tabular-figures variant for anything numeric.
 FONT_FAMILY = '"Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif'
 MONO_FAMILY = '"Cascadia Mono", "Consolas", monospace'
+
+
+class Space:
+    """The only gaps the UI is allowed to use.
+
+    Every screen previously picked its own margins and spacings, so a card on Today sat at
+    a different distance from its heading than the same card on Insights. A fixed ladder
+    means a layout either matches the rest of the app or is obviously wrong.
+    """
+
+    TIGHT = 4
+    SNUG = 8
+    ROW = 12
+    GAP = 16
+    SECTION = 24
+
+
+def contrast_ratio(foreground: str, background: str) -> float:
+    """WCAG relative-luminance contrast between two hex colours.
+
+    Here rather than in a test so the palette can be checked, and so anyone adding a colour
+    has something to check it with.
+    """
+    return _ratio(_luminance(foreground), _luminance(background))
+
+
+def _luminance(hex_colour: str) -> float:
+    value = hex_colour.lstrip("#")
+    channels = [int(value[index : index + 2], 16) / 255 for index in (0, 2, 4)]
+    linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _ratio(first: float, second: float) -> float:
+    lighter, darker = max(first, second), min(first, second)
+    return (lighter + 0.05) / (darker + 0.05)
 
 
 def palette_for(theme: str) -> Palette:
@@ -235,8 +277,9 @@ def stylesheet(palette: Palette) -> str:
         selection-color: {palette.text};
         font-variant-numeric: tabular-nums;
     }}
+    /* Opaque, so rows scrolling underneath do not show through a sticky header. */
     QHeaderView::section {{
-        background-color: {palette.elevated};
+        background-color: {palette.overlay};
         color: {palette.text_muted};
         border: none;
         border-bottom: 1px solid {palette.border};
