@@ -39,24 +39,28 @@ class Diagnostics:
     updates_bytes: int
     data_root: str
     last_checked: datetime | None
+    #: The tail of the update helper's own log. Everything that helper does happens after
+    #: the app has quit, so this is the only record of why an install did or did not work.
+    last_handoff: str = ""
 
     def as_text(self) -> str:
         """The paste-into-an-issue form."""
         checked = self.last_checked.strftime("%Y-%m-%d %H:%M") if self.last_checked else "never"
-        return "\n".join(
-            [
-                f"{about.NAME} {self.version} ({self.channel}, {self.mode})",
-                f"Windows      {self.windows}",
-                f"Python       {self.python}",
-                f"Qt           {self.qt}",
-                f"Cache schema v{self.schema}",
-                f"Database     {human_size(self.database_bytes)}",
-                f"Cache        {human_size(self.cache_bytes)}",
-                f"Logs         {human_size(self.logs_bytes)}",
-                f"Updates      {human_size(self.updates_bytes)}",
-                f"Last checked {checked}",
-            ]
-        )
+        lines = [
+            f"{about.NAME} {self.version} ({self.channel}, {self.mode})",
+            f"Windows      {self.windows}",
+            f"Python       {self.python}",
+            f"Qt           {self.qt}",
+            f"Cache schema v{self.schema}",
+            f"Database     {human_size(self.database_bytes)}",
+            f"Cache        {human_size(self.cache_bytes)}",
+            f"Logs         {human_size(self.logs_bytes)}",
+            f"Updates      {human_size(self.updates_bytes)}",
+            f"Last checked {checked}",
+        ]
+        if self.last_handoff:
+            lines.extend(["", "Last update attempt:", self.last_handoff])
+        return "\n".join(lines)
 
 
 def collect(*, channel: str = "stable") -> Diagnostics:
@@ -79,7 +83,21 @@ def collect(*, channel: str = "stable") -> Diagnostics:
         updates_bytes=directory_size(downloads_dir()),
         data_root=str(paths.data_root()),
         last_checked=last_checked(),
+        last_handoff=handoff_log(downloads_dir()),
     )
+
+
+def handoff_log(updates: Path, *, lines: int = 8) -> str:
+    """The tail of the update helper's log, or nothing when it has never run.
+
+    Safe to paste: the helper only ever records a process id, a file name and an exit code.
+    """
+    log = updates / "apply-update.log"
+    try:
+        text = log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return "\n".join(text.strip().splitlines()[-lines:])
 
 
 def directory_size(directory: Path) -> int:
@@ -124,4 +142,4 @@ def _qt_version() -> str:
         return sys.version.split()[0]
 
 
-__all__ = ["Diagnostics", "collect", "directory_size", "human_size"]
+__all__ = ["Diagnostics", "collect", "directory_size", "handoff_log", "human_size"]
