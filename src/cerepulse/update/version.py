@@ -50,12 +50,26 @@ class Version:
     def __lt__(self, other: Version) -> bool:
         if self._key() != other._key():
             return self._key() < other._key()
-        # Same numbers and both pre-releases: fall back to lexical order for stability.
-        return self.label < other.label
+        # Same numbers, both pre-releases. Compare segment by segment with numbers ordered
+        # as numbers: lexically, "beta.10" sorts before "beta.9", which would offer a beta
+        # user an older build than the one they are running.
+        return _label_key(self.label) < _label_key(other.label)
 
     def __str__(self) -> str:
         base = f"{self.major}.{self.minor}.{self.patch}"
         return f"{base}-{self.label}" if self.label else base
+
+
+def _label_key(label: str) -> tuple[tuple[int, int | str], ...]:
+    """Split a pre-release label into comparable segments.
+
+    ``(0, n)`` for numeric segments and ``(1, text)`` for the rest, so numbers always sort
+    below identifiers — the same rule semver uses — and never against each other as strings.
+    """
+    segments: list[tuple[int, int | str]] = []
+    for part in label.replace("-", ".").split("."):
+        segments.append((0, int(part)) if part.isdigit() else (1, part))
+    return tuple(segments)
 
 
 def is_newer(candidate: str, current: str) -> bool:

@@ -143,6 +143,7 @@ class SettingsView(QWidget):
         grid.addWidget(self._build_appearance(), 2, 1)
         grid.addWidget(self._build_history(), 3, 0)
         grid.addWidget(self._build_cache(), 3, 1)
+        grid.addWidget(self._build_updates(), 4, 0, 1, 2)
 
         page.addStretch(1)
 
@@ -281,6 +282,23 @@ class SettingsView(QWidget):
         card.body.addLayout(row)
         return card.finish()
 
+    def _build_updates(self) -> Card:
+        card = Card(
+            "Updates",
+            "Beta sees early builds from the development branch. Switching back to stable "
+            "does not undo an update — it stops offering new prereleases, and the next "
+            "stable release picks you up.",
+        )
+        self._channel = _choice([("Stable", "stable"), ("Beta", "beta")])
+        self._check_startup = QCheckBox("Check when CerePulse starts")
+        self._auto_download = QCheckBox("Download updates in the background")
+        self._auto_download.setToolTip("Installing always waits for you to say yes.")
+
+        card.add("Channel", self._channel)
+        card.add_full(self._check_startup)
+        card.add_full(self._auto_download)
+        return card.finish()
+
     def _build_cache(self) -> Card:
         card = Card(
             "Local data",
@@ -341,6 +359,10 @@ class SettingsView(QWidget):
         self._startup.setChecked(config.ui.start_with_windows)
         self._tone.setCurrentIndex(max(0, self._tone.findData(config.ui.tone)))
 
+        self._channel.setCurrentIndex(max(0, self._channel.findData(config.updates.channel)))
+        self._check_startup.setChecked(config.updates.check_on_startup)
+        self._auto_download.setChecked(config.updates.download_automatically)
+
         notifications = config.notifications
         self._notify.setChecked(notifications.enabled)
         self._quiet_start.setTime(_to_qtime(notifications.quiet_hours_start))
@@ -372,6 +394,12 @@ class SettingsView(QWidget):
                 background_mode=self._background.currentData(),
                 start_with_windows=self._startup.isChecked(),
                 tone=self._tone.currentData(),
+            ),
+            updates=replace(
+                config.updates,
+                channel=self._channel.currentData(),
+                check_on_startup=self._check_startup.isChecked(),
+                download_automatically=self._auto_download.isChecked(),
             ),
             notifications=replace(
                 config.notifications,

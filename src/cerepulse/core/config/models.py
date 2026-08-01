@@ -87,6 +87,12 @@ class LoggingConfig:
 @dataclass(frozen=True, slots=True)
 class UpdateConfig:
     check_on_startup: bool = True
+    #: stable | beta. A typo resolves to stable, so a mistyped value cannot opt someone
+    #: into prereleases.
+    channel: str = "stable"
+    #: Fetch the installer in the background as soon as one is found. Installing still
+    #: waits for an explicit yes.
+    download_automatically: bool = True
 
 
 @dataclass(frozen=True, slots=True)

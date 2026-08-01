@@ -53,12 +53,29 @@ def clean() -> None:
             shutil.rmtree(target)
 
 
-def write_version_resource() -> Path:
-    """Generate the Windows version resource embedded in the executable."""
-    parts = [int(piece) for piece in about.VERSION.split(".")[:3]]
+def numeric_version(version: str) -> tuple[int, int, int, int]:
+    """The four integers Windows wants, from a version that may carry a label.
+
+    ``0.4.0-beta.1`` has to become ``(0, 4, 0, 0)``: the resource is a fixed struct of four
+    16-bit numbers and cannot hold "beta". The full string still goes into FileVersion and
+    ProductVersion, which are free text, so nothing is lost — the label is visible in the
+    file properties even though the numeric fields cannot express it.
+    """
+    base = version.split("-", 1)[0].split("+", 1)[0]
+    parts: list[int] = []
+    for piece in base.split(".")[:4]:
+        try:
+            parts.append(int(piece))
+        except ValueError:
+            break
     while len(parts) < 4:
         parts.append(0)
-    quad = ", ".join(str(part) for part in parts)
+    return parts[0], parts[1], parts[2], parts[3]
+
+
+def write_version_resource() -> Path:
+    """Generate the Windows version resource embedded in the executable."""
+    quad = ", ".join(str(part) for part in numeric_version(about.VERSION))
 
     target = ROOT / "packaging" / "version_info.txt"
     target.write_text(
@@ -133,10 +150,13 @@ def build_installer() -> Path | None:
         )
         return None
 
+    numeric = ".".join(str(part) for part in numeric_version(about.VERSION))
     run(
         [
             str(iscc),
             f"/DAppVersion={about.VERSION}",
+            # VersionInfoVersion is a fixed numeric struct; a pre-release label fails it.
+            f"/DNumericVersion={numeric}",
             f"/DSourceDir={APP_DIR}",
             f"/DOutputDir={DIST}",
             str(ISS),

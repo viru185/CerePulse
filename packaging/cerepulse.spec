@@ -57,6 +57,9 @@ analysis = Analysis(
     binaries=[],
     datas=[
         (str(ROOT / "src" / "cerepulse" / "ui" / "assets"), "cerepulse/ui/assets"),
+        # The What's New dialog reads this. It opens 400 ms after launch, which is no time
+        # to be waiting on a round trip to GitHub for notes we already have.
+        (str(ROOT / "CHANGELOG.md"), "."),
     ],
     hiddenimports=HIDDEN,
     hookspath=[],

@@ -4,8 +4,9 @@ Unauthenticated: the repository is public, so no token is needed and none is ask
 check is best-effort — a rate limit, an outage or no network must never interrupt someone
 looking at their attendance, so every failure returns "no update" rather than raising.
 
-The app never installs anything by itself. It reports what is available and opens the
-release page; downloading and running an installer is the user's decision.
+The list endpoint is used rather than ``/releases/latest``, because ``latest`` excludes
+prereleases server-side and the beta channel needs to see them. Filtering happens here, so
+one request answers for either channel.
 """
 
 from __future__ import annotations
@@ -17,14 +18,18 @@ import httpx
 from loguru import logger
 
 from cerepulse import __about__ as about
-from cerepulse.update.version import is_newer
+from cerepulse.update.channel import Channel
+from cerepulse.update.version import Version, is_newer
 
 #: Derived from the configured repository so a fork needs no code change.
 API_URL = about.REPO_URL.replace("https://github.com/", "https://api.github.com/repos/")
-LATEST_RELEASE_URL = f"{API_URL}/releases/latest"
+RELEASES_URL = f"{API_URL}/releases"
 
 #: Short, because this runs at startup and must never delay the window.
 TIMEOUT_SECONDS = 6.0
+
+#: Enough to find the newest release on either channel without paging.
+PAGE_SIZE = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,19 +42,61 @@ class Release:
     url: str
     published_at: datetime | None = None
     installer_url: str = ""
+    #: Bytes, from the asset metadata, so a download can show a percentage.
+    installer_size: int = 0
+    prerelease: bool = False
 
     @property
     def display_name(self) -> str:
         return self.name or f"Version {self.version}"
 
+    @property
+    def channel(self) -> Channel:
+        return Channel.BETA if self.prerelease else Channel.STABLE
 
-def check_for_update(current_version: str | None = None) -> Release | None:
-    """Return the latest release when it is newer than this build, otherwise None."""
+    @property
+    def is_installable(self) -> bool:
+        """Whether this release published something the app can actually install."""
+        return bool(self.installer_url)
+
+
+def check_for_update(
+    current_version: str | None = None,
+    *,
+    channel: Channel = Channel.STABLE,
+) -> Release | None:
+    """The newest release on ``channel`` that is newer than this build, or None.
+
+    A beta installation is offered stable releases too: once a stable build overtakes the
+    beta someone is running, they should be moved onto it rather than stranded.
+    """
     current = current_version or about.VERSION
 
+    payload = _fetch()
+    if payload is None:
+        return None
+
+    candidates = [
+        release
+        for release in (_parse(item) for item in payload)
+        if release is not None
+        and (channel.accepts_prereleases or not release.prerelease)
+        and is_newer(release.version, current)
+    ]
+    if not candidates:
+        logger.debug("No newer release on {} ({} is current)", channel.value, current)
+        return None
+
+    newest = max(candidates, key=lambda release: Version.parse(release.version) or Version(0, 0))
+    logger.info("Update available on {}: {} (running {})", channel.value, newest.version, current)
+    return newest
+
+
+def _fetch() -> list[dict[str, object]] | None:
     try:
         response = httpx.get(
-            LATEST_RELEASE_URL,
+            RELEASES_URL,
+            params={"per_page": PAGE_SIZE},
             timeout=TIMEOUT_SECONDS,
             follow_redirects=True,
             headers={
@@ -64,47 +111,43 @@ def check_for_update(current_version: str | None = None) -> Release | None:
         logger.debug("Update check failed: {}", exc)
         return None
 
-    release = _parse(payload)
-    if release is None:
-        return None
-    if release.version == "" or not is_newer(release.version, current):
-        logger.debug("No newer release ({} is current)", current)
-        return None
-
-    logger.info("Update available: {} (running {})", release.version, current)
-    return release
+    return payload if isinstance(payload, list) else None
 
 
-def _parse(payload: dict[str, object]) -> Release | None:
-    if payload.get("draft") or payload.get("prerelease"):
+def _parse(payload: object) -> Release | None:
+    if not isinstance(payload, dict) or payload.get("draft"):
         return None
 
     tag = str(payload.get("tag_name") or "")
-    if not tag:
+    if not tag or Version.parse(tag) is None:
         return None
 
+    url, size = _installer_asset(payload)
     return Release(
         version=tag.lstrip("vV"),
         name=str(payload.get("name") or ""),
         notes=str(payload.get("body") or ""),
         url=str(payload.get("html_url") or about.REPO_URL),
         published_at=_parse_timestamp(payload.get("published_at")),
-        installer_url=_installer_asset(payload),
+        installer_url=url,
+        installer_size=size,
+        prerelease=bool(payload.get("prerelease")),
     )
 
 
-def _installer_asset(payload: dict[str, object]) -> str:
-    """The Setup .exe, when the release publishes one."""
+def _installer_asset(payload: dict[str, object]) -> tuple[str, int]:
+    """The Setup .exe and its size, when the release publishes one."""
     assets = payload.get("assets")
     if not isinstance(assets, list):
-        return ""
+        return "", 0
     for asset in assets:
         if not isinstance(asset, dict):
             continue
         name = str(asset.get("name", "")).lower()
         if name.endswith(".exe") and "setup" in name:
-            return str(asset.get("browser_download_url", ""))
-    return ""
+            size = asset.get("size")
+            return str(asset.get("browser_download_url", "")), int(size) if size else 0
+    return "", 0
 
 
 def _parse_timestamp(value: object) -> datetime | None:
