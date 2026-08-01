@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
+from enum import Enum
 
 from loguru import logger
 
@@ -48,6 +49,26 @@ SILENT = {
 }
 
 
+class Verdict(Enum):
+    """Why an insight will or will not be shown.
+
+    Named outcomes rather than a bare boolean because the commonest support question about
+    notifications is "why did nothing happen?", and until now the answer only existed as a
+    DEBUG log line nobody had switched on.
+    """
+
+    SEND = "send"
+    DISABLED = "notifications are turned off"
+    SILENT_KIND = "this kind never notifies"
+    TURNED_OFF = "this alert is switched off in settings"
+    QUIET_HOURS = "quiet hours"
+    ALREADY_SENT = "already shown today"
+
+    @property
+    def will_send(self) -> bool:
+        return self is Verdict.SEND
+
+
 @dataclass
 class NotificationPolicy:
     """Decides whether an insight should be shown, and remembers what already was."""
@@ -57,30 +78,41 @@ class NotificationPolicy:
     _sent: set[tuple[InsightKind, date]] = field(default_factory=set)
 
     def should_notify(self, insight: Insight, *, now: datetime | None = None) -> bool:
-        """True when this insight warrants a toast right now."""
+        """True when this insight warrants a toast right now.
+
+        A pure predicate. It used to record the insight as sent before returning, which
+        meant a toast the tray then failed to deliver still burned its once-a-day slot —
+        so a single dropped delivery silenced that kind until midnight. Recording is now
+        :meth:`record_sent`, called only once something has actually appeared on screen.
+        """
+        return self.verdict(insight, now=now) is Verdict.SEND
+
+    def verdict(self, insight: Insight, *, now: datetime | None = None) -> Verdict:
+        """Why this insight will or will not be shown. Drives the Settings self-test."""
         moment = now or datetime.now()
 
         if not self.config.enabled:
-            return False
+            return Verdict.DISABLED
         if insight.kind in SILENT:
-            return False
+            return Verdict.SILENT_KIND
 
         toggle = TOGGLES.get(insight.kind)
         if toggle is None or not getattr(self.config, toggle, False):
-            return False
+            return Verdict.TURNED_OFF
 
         # A critical insight still waits for morning; nothing here is an emergency.
         if self.in_quiet_hours(moment):
-            logger.debug("Suppressed {} — quiet hours", insight.kind.value)
-            return False
+            return Verdict.QUIET_HOURS
 
-        key = (insight.kind, moment.date())
-        if key in self._sent:
-            return False
+        if (insight.kind, moment.date()) in self._sent:
+            return Verdict.ALREADY_SENT
+        return Verdict.SEND
 
-        self._sent.add(key)
+    def record_sent(self, insight: Insight, *, now: datetime | None = None) -> None:
+        """Remember a toast that was genuinely delivered, so it is not repeated today."""
+        moment = now or datetime.now()
+        self._sent.add((insight.kind, moment.date()))
         self._forget_older_than(moment.date())
-        return True
 
     def in_quiet_hours(self, moment: datetime) -> bool:
         """Whether ``moment`` falls inside the configured quiet window.

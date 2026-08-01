@@ -102,6 +102,7 @@ class SettingsView(QWidget):
     clear_cache_requested = Signal()
     sync_history_requested = Signal()
     cancel_history_requested = Signal()
+    test_notification_requested = Signal()
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -249,6 +250,16 @@ class SettingsView(QWidget):
             box = QCheckBox(label)
             self._alerts[field] = box
             card.add_full(box)
+
+        # The commonest complaint about notifications is that nothing happens, and until
+        # this button the app had no way to say which of half a dozen reasons applied.
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        test = QPushButton("Send a test notification")
+        test.clicked.connect(self.test_notification_requested)
+        row.addWidget(test)
+        row.addStretch(1)
+        card.body.addLayout(row)
         return card.finish()
 
     def _build_history(self) -> Card:

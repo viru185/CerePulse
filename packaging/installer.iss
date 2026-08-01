@@ -67,9 +67,15 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; \
   Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+; AppUserModelID must match what the app sets on itself at startup (ui/app.py). Windows
+; attributes toast notifications to this identity: when the shortcut and the process
+; disagree — or neither declares one — the app can fail to appear under Settings → System
+; → Notifications at all, leaving a user whose toasts are switched off nothing to switch on.
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; \
+  AppUserModelID: "VirenHirpara.CerePulse"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon; \
+  AppUserModelID: "VirenHirpara.CerePulse"
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; \

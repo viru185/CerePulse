@@ -14,8 +14,9 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Signal
-from PySide6.QtGui import QCloseEvent
+from loguru import logger
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
@@ -152,6 +153,7 @@ class MainWindow(QMainWindow):
         self.settings.clear_cache_requested.connect(self._clear_cache)
         self.settings.sync_history_requested.connect(self.sync_history)
         self.settings.cancel_history_requested.connect(self.cancel_history)
+        self.settings.test_notification_requested.connect(self._test_notification)
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
@@ -222,10 +224,21 @@ class MainWindow(QMainWindow):
         self._sync.degraded.connect(self._on_degraded)
 
     def _build_tray(self) -> Tray | None:
-        """Create the tray icon, unless the desktop has no tray or the user opted out."""
-        if self._context.config.ui.background_mode != "tray":
+        """Create the tray icon whenever it could be useful.
+
+        Qt delivers notifications through a tray icon, so tying the tray to
+        ``background_mode`` silently made notifications impossible in foreground mode —
+        with no log line and no way for the user to tell. The tray now exists whenever
+        notifications are on; ``background_mode`` governs only what closing the window does.
+        """
+        wanted = (
+            self._context.config.ui.background_mode == "tray"
+            or self._context.config.notifications.enabled
+        )
+        if not wanted:
             return None
         if not Tray.is_available():
+            logger.info("No system tray on this desktop; notifications are unavailable")
             return None
 
         tray = Tray(app_icon(), self._context.config.notifications, self)
@@ -233,7 +246,14 @@ class MainWindow(QMainWindow):
         tray.refresh_requested.connect(lambda: self.refresh(force=True))
         tray.quit_requested.connect(self._quit)
         tray.show()
+        if tray.delivery_problem() is not None:
+            logger.warning("Tray is up but cannot notify: {}", tray.delivery_problem())
         return tray
+
+    @property
+    def _closes_to_tray(self) -> bool:
+        """Whether the window hides instead of exiting. Distinct from having a tray icon."""
+        return self._tray is not None and self._context.config.ui.background_mode == "tray"
 
     # --- lifecycle ------------------------------------------------------------------
 
@@ -302,9 +322,20 @@ class MainWindow(QMainWindow):
             self._tray.hide()
         QApplication.quit()
 
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 — Qt override
+        """Escape retraces a drill-down, the way it does everywhere else.
+
+        Only when there is somewhere to go: swallowing Escape on a top-level screen would
+        make it feel broken.
+        """
+        if event.key() == Qt.Key.Key_Escape and self._navigation.back():
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 — Qt override
         """Close to the tray when running in tray mode; otherwise actually exit."""
-        if self._tray is not None and not getattr(self, "_quitting", False):
+        if self._closes_to_tray and not getattr(self, "_quitting", False):
             event.ignore()
             self.hide()
             return
@@ -499,6 +530,21 @@ class MainWindow(QMainWindow):
             Severity.SUCCESS,
         )
 
+    def _test_notification(self) -> None:
+        """Try a toast and say plainly what happened, including when nothing could."""
+        if self._tray is None:
+            self.settings.banner.show_message(
+                "No system tray is available, so notifications cannot be shown.",
+                Severity.WARNING,
+            )
+            return
+
+        outcome = self._tray.self_test()
+        self.settings.banner.show_message(
+            outcome,
+            Severity.SUCCESS if outcome.startswith("Sent") else Severity.WARNING,
+        )
+
     def _apply_theme(self, theme: str) -> None:
         from PySide6.QtWidgets import QApplication
 
@@ -539,8 +585,6 @@ class MainWindow(QMainWindow):
 
     def _on_degraded(self, scope: str, exc: BaseException) -> None:
         """A part of a screen is missing, but the screen still works."""
-        from loguru import logger
-
         logger.warning("Could not load {}: {}", scope, exc)
 
     def _on_error(self, exc: BaseException) -> None:
