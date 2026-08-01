@@ -62,6 +62,7 @@ from cerepulse.ui.views.sync_panel import SyncPanel
 from cerepulse.ui.views.today import TodayView
 from cerepulse.ui.views.week import WeekView
 from cerepulse.ui.workers import TaskRunner
+from cerepulse.update import Channel
 
 SCREENS = ("Today", "Week", "Attendance", "Insights", "Leave", "Requests", "Settings", "About")
 TODAY_SCREEN = SCREENS.index("Today")
@@ -158,6 +159,8 @@ class MainWindow(QMainWindow):
         self.insights.refresh_requested.connect(lambda: self._sync.refresh_trends())
         self.insights.sync_history_requested.connect(self.sync_history)
         self.about.update_check_requested.connect(self._check_for_update_now)
+        self.about.rollback_requested.connect(self._rollback)
+        self.about.test_connection_requested.connect(self._test_connection)
         self.settings.config_saved.connect(self._save_config)
         self.settings.sign_out_requested.connect(self._sign_out)
         self.settings.clear_cache_requested.connect(self._clear_cache)
@@ -209,12 +212,19 @@ class MainWindow(QMainWindow):
         self._navigation = NavigationController(self._stack, self._nav, SCREENS, self)
         self._navigation.screen_changed.connect(self._on_screen_changed)
 
+        updates = self._context.config.updates
         self._updates = UpdateController(
             runner=self._runner,
             window=self,
+            channel=Channel.parse(updates.channel),
+            download_automatically=updates.download_automatically,
             notifier=(self._tray.notify if self._tray is not None else None),
             parent=self,
         )
+        self._updates.update_failed.connect(
+            lambda message: self.about.banner.show_message(message, Severity.WARNING)
+        )
+        self._updates.handover.connect(self._quit)
 
         self._sync = SyncController(
             context=self._context,
@@ -287,9 +297,45 @@ class MainWindow(QMainWindow):
         self._updates.schedule_startup_checks(
             check_for_updates=self._context.config.updates.check_on_startup
         )
+        self.about.refresh(channel=self._context.config.updates.channel)
 
     def _check_for_update_now(self) -> None:
         self._updates.check_now(on_error=self._on_error)
+
+    def _rollback(self, version: str) -> None:
+        """Reinstall an earlier version whose installer is still staged."""
+        confirmed = QMessageBox.question(
+            self,
+            f"Roll back to {version}?",
+            f"CerePulse will close, reinstall {version}, and reopen. Your cached data and "
+            f"settings are untouched.",
+        )
+        if confirmed != QMessageBox.StandardButton.Yes:
+            return
+
+        from cerepulse.update import InstallError, rollback_to
+
+        try:
+            rollback_to(version)
+        except InstallError as exc:
+            self.about.banner.show_message(str(exc), Severity.WARNING)
+            return
+        self._quit()
+
+    def _test_connection(self) -> None:
+        """Prove the portal is reachable and the saved credentials still work."""
+        self.about.banner.show_message("Testing the connection to SpineHR…", Severity.INFO)
+        self._runner.submit(
+            "connection-test",
+            self._context.gateway.fetch_employee,
+            on_success=lambda employee: self.about.banner.show_message(
+                f"Connected. Signed in as {getattr(employee, 'code', 'unknown')}.",
+                Severity.SUCCESS,
+            ),
+            on_error=lambda exc: self.about.banner.show_message(
+                f"Could not reach SpineHR: {_message_for(exc)}", Severity.CRITICAL
+            ),
+        )
 
     def _sign_in_silently(self) -> None:
         self._status.setText("Signing in…")
@@ -569,6 +615,10 @@ class MainWindow(QMainWindow):
         # graph is what makes a changed shift policy or tone take effect now rather than
         # at the next launch.
         self._context.apply_config(config)  # type: ignore[arg-type]
+        self._updates.use_config(
+            channel=Channel.parse(config.updates.channel),  # type: ignore[attr-defined]
+            download_automatically=config.updates.download_automatically,  # type: ignore[attr-defined]
+        )
         self._auto.setInterval(config.sync.refresh_interval_minutes * 60_000)  # type: ignore[attr-defined]
         self._apply_theme(config.ui.theme)  # type: ignore[attr-defined]
         if self._tray is not None:
@@ -582,6 +632,7 @@ class MainWindow(QMainWindow):
                 # Almost always because this is a source run, not an installed build.
                 note = " Start-with-Windows needs an installed build."
 
+        self.about.refresh(channel=config.updates.channel)  # type: ignore[attr-defined]
         self.settings.banner.show_message(
             f"Saved. Switching tray mode or theme fully applies on the next start.{note}",
             Severity.SUCCESS,

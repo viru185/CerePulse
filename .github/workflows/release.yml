@@ -50,11 +50,32 @@ jobs:
           }
           Write-Host "Releasing $version"
 
+      # A tag carrying a pre-release label (v0.5.0-beta.1) publishes to the beta channel.
+      # This used to be hardcoded false, so a beta tag would have shipped to everyone.
+      - name: Decide the channel
+        id: channel
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          $isPre = $tag -match '-'
+          "prerelease=$($isPre.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          Write-Host "$tag -> prerelease=$isPre"
+
       - name: Install InnoSetup
         run: choco install innosetup --no-progress -y
 
       - name: Build installer and portable zip
         run: uv run python tools/build_all.py --clean
+
+      # The app refuses to run an installer whose digest does not match, so publishing this
+      # is what makes the auto-updater's verification possible at all.
+      - name: Checksum the artifacts
+        shell: pwsh
+        run: |
+          $lines = Get-ChildItem dist -Include *-Setup.exe,*-portable.zip -Recurse |
+            ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }
+          $lines | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+          Get-Content dist/SHA256SUMS.txt
 
       - name: Generate release notes
         uses: orhun/git-cliff-action@v4
@@ -71,10 +92,11 @@ jobs:
           name: CerePulse ${{ github.event.inputs.tag || github.ref_name }}
           body_path: RELEASE_NOTES.md
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.channel.outputs.prerelease }}
           files: |
             dist/*-Setup.exe
             dist/*-portable.zip
+            dist/SHA256SUMS.txt
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -83,4 +105,5 @@ jobs:
           path: |
             dist/*-Setup.exe
             dist/*-portable.zip
+            dist/SHA256SUMS.txt
           retention-days: 14

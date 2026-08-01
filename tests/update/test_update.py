@@ -10,7 +10,7 @@ import respx
 
 from cerepulse.ui.whats_new import render_notes
 from cerepulse.update import seen
-from cerepulse.update.checker import LATEST_RELEASE_URL, check_for_update
+from cerepulse.update.checker import RELEASES_URL, check_for_update
 from cerepulse.update.version import Version, is_newer
 
 
@@ -89,7 +89,7 @@ def test_a_malformed_tag_never_triggers_an_update() -> None:
 
 @respx.mock
 def test_a_newer_release_is_reported() -> None:
-    respx.get(LATEST_RELEASE_URL).mock(return_value=httpx.Response(200, json=release_payload()))
+    respx.get(RELEASES_URL).mock(return_value=httpx.Response(200, json=[release_payload()]))
     release = check_for_update("0.1.0")
 
     assert release is not None
@@ -101,14 +101,15 @@ def test_a_newer_release_is_reported() -> None:
 
 @respx.mock
 def test_the_same_version_is_not_an_update() -> None:
-    respx.get(LATEST_RELEASE_URL).mock(return_value=httpx.Response(200, json=release_payload()))
+    respx.get(RELEASES_URL).mock(return_value=httpx.Response(200, json=[release_payload()]))
     assert check_for_update("0.2.0") is None
 
 
 @respx.mock
-def test_drafts_and_prereleases_are_ignored() -> None:
-    respx.get(LATEST_RELEASE_URL).mock(
-        return_value=httpx.Response(200, json=release_payload(prerelease=True))
+def test_prereleases_are_ignored_on_the_stable_channel() -> None:
+    """The default. Opting into betas is explicit; see test_channels.py."""
+    respx.get(RELEASES_URL).mock(
+        return_value=httpx.Response(200, json=[release_payload(prerelease=True)])
     )
     assert check_for_update("0.1.0") is None
 
@@ -116,26 +117,26 @@ def test_drafts_and_prereleases_are_ignored() -> None:
 @respx.mock
 def test_a_network_failure_is_silent() -> None:
     """An update check failing must never interrupt someone reading their attendance."""
-    respx.get(LATEST_RELEASE_URL).mock(side_effect=httpx.ConnectError("offline"))
+    respx.get(RELEASES_URL).mock(side_effect=httpx.ConnectError("offline"))
     assert check_for_update("0.1.0") is None
 
 
 @respx.mock
 def test_a_rate_limit_is_silent() -> None:
-    respx.get(LATEST_RELEASE_URL).mock(return_value=httpx.Response(403, json={}))
+    respx.get(RELEASES_URL).mock(return_value=httpx.Response(403, json={}))
     assert check_for_update("0.1.0") is None
 
 
 @respx.mock
 def test_malformed_json_is_silent() -> None:
-    respx.get(LATEST_RELEASE_URL).mock(return_value=httpx.Response(200, text="not json"))
+    respx.get(RELEASES_URL).mock(return_value=httpx.Response(200, text="not json"))
     assert check_for_update("0.1.0") is None
 
 
 @respx.mock
 def test_a_release_without_an_installer_still_reports() -> None:
-    respx.get(LATEST_RELEASE_URL).mock(
-        return_value=httpx.Response(200, json=release_payload(assets=[]))
+    respx.get(RELEASES_URL).mock(
+        return_value=httpx.Response(200, json=[release_payload(assets=[])])
     )
     release = check_for_update("0.1.0")
     assert release is not None

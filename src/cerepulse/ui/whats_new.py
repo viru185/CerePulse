@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import html
 import re
+import sys
+from pathlib import Path
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QTextBrowser,
     QVBoxLayout,
@@ -63,7 +67,10 @@ class WhatsNewDialog(QDialog):
 
         notes = QTextBrowser()
         notes.setOpenExternalLinks(True)
-        notes.setHtml(render_notes(release.notes if release else ""))
+        # Falls back to the bundled changelog. Both call sites open this without a Release,
+        # so until now it always rendered "No release notes were published" — the dialog
+        # shown after every single update said nothing at all.
+        notes.setHtml(render_notes(release.notes if release else changelog_section(shown_version)))
         layout.addWidget(notes, 1)
 
         buttons = QHBoxLayout()
@@ -82,13 +89,30 @@ class WhatsNewDialog(QDialog):
 
 
 class UpdateAvailableDialog(QDialog):
-    """Offers an available update. The app never installs anything on its own."""
+    """Offers an available update, and installs it once the user says so.
 
-    def __init__(self, release: Release, parent: QWidget | None = None) -> None:
+    The install button replaces the download link the app used to offer. Handing someone a
+    browser download and leaving them to find it, close the running copy and run it
+    themselves was three steps of work for something the app can do in one.
+    """
+
+    install_requested = Signal()
+    download_requested = Signal()
+
+    def __init__(
+        self,
+        release: Release,
+        *,
+        downloaded: bool = False,
+        can_install: bool = True,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._release = release
+        self._can_install = can_install
         self.setWindowTitle(f"Update available — {about.NAME}")
         self.setModal(True)
-        self.resize(560, 460)
+        self.resize(560, 500)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 22, 24, 20)
@@ -98,7 +122,8 @@ class UpdateAvailableDialog(QDialog):
         heading.setStyleSheet("font-size: 19px; font-weight: 700;")
         layout.addWidget(heading)
 
-        current = QLabel(f"You are running {about.VERSION}.")
+        channel = " · beta" if release.prerelease else ""
+        current = QLabel(f"You are running {about.VERSION}{channel}.")
         current.setObjectName("CardCaption")
         layout.addWidget(current)
 
@@ -107,22 +132,119 @@ class UpdateAvailableDialog(QDialog):
         notes.setHtml(render_notes(release.notes))
         layout.addWidget(notes, 1)
 
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 100)
+        self._progress.setTextVisible(True)
+        self._progress.setVisible(False)
+        layout.addWidget(self._progress)
+
+        self._status = QLabel()
+        self._status.setObjectName("CardCaption")
+        self._status.setWordWrap(True)
+        layout.addWidget(self._status)
+
         buttons = QHBoxLayout()
         later = QPushButton("Later")
         later.clicked.connect(self.reject)
         buttons.addWidget(later)
+
+        site = QPushButton("View on GitHub")
+        site.clicked.connect(lambda: _open(release.url))
+        buttons.addWidget(site)
         buttons.addStretch(1)
 
-        def download_and_close() -> None:
-            _open(release.installer_url or release.url)
-            self.accept()
-
-        download = QPushButton("Download")
-        download.setObjectName("Primary")
-        download.setDefault(True)
-        download.clicked.connect(download_and_close)
-        buttons.addWidget(download)
+        self._action = QPushButton()
+        self._action.setObjectName("Primary")
+        self._action.setDefault(True)
+        self._action.clicked.connect(self._act)
+        buttons.addWidget(self._action)
         layout.addLayout(buttons)
+
+        self._ready = downloaded
+        self._refresh()
+
+    # --- state ------------------------------------------------------------------------
+
+    def set_progress(self, fraction: float) -> None:
+        self._progress.setVisible(True)
+        self._progress.setValue(int(fraction * 100))
+        self._status.setText("Downloading in the background. You can keep working.")
+
+    def set_ready(self, _release: object = None) -> None:
+        self._ready = True
+        self._progress.setVisible(False)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        if not self._can_install:
+            # A source run or a portable copy has no installer to hand over to, and
+            # overwriting a portable copy where the user put it would be presumptuous.
+            self._action.setText("Download")
+            self._status.setText(
+                "This copy is portable or run from source, so it cannot update itself. "
+                "The download opens in your browser."
+            )
+            return
+
+        self._action.setText("Install and restart" if self._ready else "Download now")
+        self._status.setText(
+            "Downloaded and verified. CerePulse will close, update, and reopen."
+            if self._ready
+            else "Not downloaded yet."
+        )
+
+    def _act(self) -> None:
+        if not self._can_install:
+            _open(self._release.installer_url or self._release.url)
+            self.accept()
+            return
+        if self._ready:
+            self.install_requested.emit()
+            self.accept()
+            return
+        self.download_requested.emit()
+        self._status.setText("Starting download…")
+
+
+def changelog_section(version: str) -> str:
+    """The bundled changelog's entry for one version, or an empty string.
+
+    Shipped with the app so the post-update dialog works offline and without a round trip
+    to GitHub — it runs four hundred milliseconds after launch, which is no time to be
+    waiting on a network call.
+    """
+    text = _bundled_changelog()
+    if not text:
+        return ""
+
+    wanted = f"## [{version.lstrip('vV')}]"
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith(wanted):
+            continue
+        body: list[str] = []
+        for following in lines[index + 1 :]:
+            if following.startswith("## ["):
+                break
+            body.append(following)
+        return "\n".join(body).strip()
+    return ""
+
+
+def _bundled_changelog() -> str:
+    """CHANGELOG.md, from the source tree or from inside the frozen build."""
+    candidates = [Path(__file__).resolve().parents[3] / "CHANGELOG.md"]
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        candidates.insert(0, Path(base) / "CHANGELOG.md")
+
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                return candidate.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    return ""
 
 
 def render_notes(markdown: str) -> str:

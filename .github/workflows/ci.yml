@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # dev is where development happens and where betas are cut from, so it has to be as
+    # well tested as main — a broken dev means a broken beta.
+    branches: [main, dev]
   pull_request:
 
 concurrency:
