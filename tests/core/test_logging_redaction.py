@@ -10,24 +10,35 @@ from loguru import logger
 
 from cerepulse.core.logging_setup import configure_logging, redact
 
-# The real captured session ticket shape — long, opaque, and must never survive redaction.
+# Synthetic throughout. These have the shape of the real thing — a long opaque ticket, a
+# base64 password blob, a 16-digit hEnSa — but none of them came from a live session. An
+# earlier version of this file used a genuine capture, which put a real encrypted password
+# in the repository alongside the key that decrypts it.
 _AUTH_TICKET = "A1B2C3D4E5F60718293A4B5C6D7E8F90A1B2C3D4E5F60718293A4B5C6D7E8F90"
+_VIEW_STATE = "c3ludGhldGljVmlld1N0YXRl"
+_EVENT_VALIDATION = "c3ludGhldGljRXZlbnRWYWxpZGF0aW9u"
+_PASSWORD_BLOB = "F1b3V8lVXXdfjzMIDhc5hA%3D%3D"
+_H_EN_SA = "1234567890123456"
 
 
 @pytest.mark.parametrize(
-    "raw",
+    ("raw", "secret"),
     [
-        "__VIEWSTATE=c3ludGhldGljVmlld1N0YXRl&__EVENTTARGET=btnLogin",
-        "txtPassword=F1b3V8lVXXdfjzMIDhc5hA%3D%3D&txtUser=CIPL00364",
-        "hEnSa=1234567890123456",
-        "__EVENTVALIDATION=c3ludGhldGljRXZlbnRWYWxpZGF0aW9u",
+        (f"__VIEWSTATE={_VIEW_STATE}&__EVENTTARGET=btnLogin", _VIEW_STATE),
+        (f"txtPassword={_PASSWORD_BLOB}&txtUser=CIPL00364", _PASSWORD_BLOB),
+        (f"hEnSa={_H_EN_SA}", _H_EN_SA),
+        (f"__EVENTVALIDATION={_EVENT_VALIDATION}", _EVENT_VALIDATION),
     ],
 )
-def test_form_secrets_are_removed(raw: str) -> None:
+def test_form_secrets_are_removed(raw: str, secret: str) -> None:
+    """Each field is checked against its own value, not against a shared list.
+
+    The list version could pass while leaking: a value absent from the output because it
+    was never in the input reads exactly like one that was properly redacted.
+    """
     out = redact(raw)
     assert "<redacted>" in out
-    for secret in ("c3ludGhldGlj", "F1b3V8lVXX", "1234567890123456", "c3ludGhldGlj"):
-        assert secret not in out
+    assert secret not in out
 
 
 def test_non_secret_fields_survive() -> None:
