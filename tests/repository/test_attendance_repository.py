@@ -68,6 +68,61 @@ def test_punches_round_trip_in_order(attendance: AttendanceRepository) -> None:
     assert punches[0].machine == "IN"
 
 
+def test_a_day_fetched_while_it_was_still_running_gets_one_more_try(
+    attendance: AttendanceRepository,
+) -> None:
+    """The portal answers with nothing for the day in progress, and that answer is a lie.
+
+    Storing it as "fetched, genuinely no punches" dropped the day out of the backlog for
+    good, so Today showed the single In and Out reconstructed from the grid for a day that
+    really had ten punches.
+    """
+    attendance.save_month(make_month(make_day(JUL_1, total="9.01")))
+    # Fetched during the day itself: the empty result cannot be trusted.
+    attendance.save_day_detail(EMPLOYEE, JUL_1, [], synced_at=datetime(2026, 7, 1, 14, 0))
+
+    assert attendance.days_missing_detail(EMPLOYEE, 2026, 7) == [JUL_1]
+
+
+def test_a_day_still_empty_when_asked_afterwards_is_believed(
+    attendance: AttendanceRepository,
+) -> None:
+    """Otherwise drain_detail, which loops until the backlog empties, would never finish."""
+    attendance.save_month(make_month(make_day(JUL_1, total="9.01")))
+    attendance.save_day_detail(EMPLOYEE, JUL_1, [], synced_at=datetime(2026, 7, 3, 9, 0))
+
+    assert attendance.days_missing_detail(EMPLOYEE, 2026, 7) == []
+
+
+def test_the_retry_stops_once_the_punches_arrive(attendance: AttendanceRepository) -> None:
+    attendance.save_month(make_month(make_day(JUL_1, total="9.01")))
+    attendance.save_day_detail(EMPLOYEE, JUL_1, [], synced_at=datetime(2026, 7, 1, 14, 0))
+    assert attendance.days_missing_detail(EMPLOYEE, 2026, 7) == [JUL_1]
+
+    attendance.save_day_detail(EMPLOYEE, JUL_1, make_punches())
+    assert attendance.days_missing_detail(EMPLOYEE, 2026, 7) == []
+
+
+def test_a_day_with_no_hours_is_left_alone(attendance: AttendanceRepository) -> None:
+    """An empty punch log is only suspicious when the grid claims hours for the same day."""
+    attendance.save_month(make_month(make_day(JUL_1, total="0.00")))
+    attendance.save_day_detail(EMPLOYEE, JUL_1, [], synced_at=datetime(2026, 7, 1, 14, 0))
+
+    assert attendance.days_missing_detail(EMPLOYEE, 2026, 7) == []
+
+
+def test_a_month_refresh_does_not_reopen_a_settled_day(
+    attendance: AttendanceRepository,
+) -> None:
+    """synced_at is rewritten for every row on every refresh, so it cannot be the signal."""
+    attendance.save_month(make_month(make_day(JUL_1, total="9.01")))
+    attendance.save_day_detail(EMPLOYEE, JUL_1, [], synced_at=datetime(2026, 7, 3, 9, 0))
+
+    attendance.save_month(make_month(make_day(JUL_1, total="9.01")))
+
+    assert attendance.days_missing_detail(EMPLOYEE, 2026, 7) == []
+
+
 def test_missing_month_returns_none(attendance: AttendanceRepository) -> None:
     assert attendance.find_month(EMPLOYEE, 2026, 7) is None
     assert attendance.find_day(EMPLOYEE, JUL_1) is None

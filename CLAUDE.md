@@ -61,6 +61,15 @@ follow redirects for this reason.
 **5. Day detail costs one postback per day.** The monthly grid carries no punches. Fetching
 a month's detail is ~20 async postbacks, which is why `backfill_detail` is paced and bounded.
 
+**6. The day-detail postback target is a grid row, not a date.** `GridView1$ctl17$LnkDate`
+means "the seventeenth row of whatever month is on screen". The attendance page opens on the
+current month, so `fetch_day_detail` **must select the day's own month first** — otherwise a
+June day requested in August posts June's row index against August's grid and comes back
+with an empty punch log. Silently, because an empty log is a legitimate answer for a day
+someone did not work. Five months of history cached zero punches this way before anyone
+noticed, because every screen fell back to the grid-derived first-in/last-out pair and simply
+looked like a day with one In and one Out.
+
 ## Architecture
 
 Dependency flow is strictly one way:

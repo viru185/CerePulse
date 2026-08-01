@@ -101,6 +101,56 @@ def test_shows_period_matches_the_selected_options() -> None:
     assert not portal._shows_period(PERIOD_PAGE, 2025, 7)
 
 
+# --- day detail -------------------------------------------------------------------------
+
+
+def test_day_detail_selects_the_days_own_month_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The postback target is a grid row, not a date.
+
+    ``GridView1$ctl17$LnkDate`` means "the seventeenth row of whatever is on screen". The
+    attendance page opens on the current month, so asking for a June day in August posted
+    June's row index against August's grid and got an empty punch log back — silently, since
+    an empty log is a legitimate answer. Five months of history cached zero punches that way.
+    """
+    from datetime import date
+
+    from cerepulse.models.attendance import AttendanceDay, DayStatus
+    from cerepulse.models.values import Duration
+    from cerepulse.parsers.attendance import ParsedDay
+
+    portal = gateway()
+    selected: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(portal, "_url", lambda *_args: "/Atten/MyAttendanceReport.aspx")
+    monkeypatch.setattr(portal._auth, "check_response", lambda response: response)
+    monkeypatch.setattr(
+        portal._client, "get", lambda *_a, **_k: httpx.Response(200, text=PERIOD_PAGE)
+    )
+
+    def select(url: str, html: str, year: int, month: int) -> str:
+        selected.append((year, month))
+        return html
+
+    monkeypatch.setattr(portal, "_select_period", select)
+    # Stop once the period has been decided; the postback itself is not what is under test.
+    monkeypatch.setattr("cerepulse.services.portal.find_script_manager", lambda _html: None)
+
+    june = ParsedDay(
+        day=AttendanceDay(
+            day=date(2026, 6, 15),
+            weekday="Mon",
+            status=DayStatus.PRESENT,
+            total_hours=Duration(540),
+        ),
+        detail_ctl="ctl17",
+    )
+
+    with pytest.raises(Exception, match="ScriptManager"):
+        portal.fetch_day_detail(june)
+
+    assert selected == [(2026, 6)], "the June day must be asked for against June's grid"
+
+
 # --- available periods ----------------------------------------------------------------
 
 

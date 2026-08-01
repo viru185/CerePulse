@@ -29,6 +29,7 @@ TOGGLES: dict[InsightKind, str] = {
     InsightKind.EARLY_EXIT: "short_hours_warning",
     InsightKind.SHORT_HOURS: "short_hours_warning",
     InsightKind.SWIPE_NEEDED: "swipe_request_needed",
+    InsightKind.SWIPE_DECIDED: "swipe_request_decided",
     InsightKind.LONG_BREAK: "break_exceeded",
     InsightKind.LEAVE_EXPIRING: "leave_expiring",
 }

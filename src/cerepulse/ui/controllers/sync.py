@@ -41,6 +41,8 @@ class SyncController(QObject):
     leave_ready = Signal(object)  # LeaveView
     ledger_ready = Signal(object)  # list[LeaveTransaction]
     swipes_ready = Signal(object)  # list[SwipeRequest]
+    #: Requests decided since the previous fetch. Empty on every sync that changed nothing.
+    swipes_decided = Signal(object)  # list[StatusChange]
     trends_ready = Signal(object)  # TrendsView
     periods_ready = Signal(object)  # list[tuple[int, int]]
 
@@ -230,10 +232,16 @@ class SyncController(QObject):
         )
         self._runner.submit(
             "swipes",
-            lambda: self._context.leave.load_swipe_requests(self.employee_code),
-            on_success=self.swipes_ready.emit,
+            lambda: self._context.leave.load_swipe_requests_with_changes(self.employee_code),
+            on_success=self._on_swipes,
             on_error=lambda exc: self.degraded.emit("swipe requests", exc),
         )
+
+    def _on_swipes(self, result: tuple[list[Any], list[Any]]) -> None:
+        requests, changes = result
+        self.swipes_ready.emit(requests)
+        if changes:
+            self.swipes_decided.emit(changes)
 
     def _on_leave(self, data: object) -> None:
         self.leave_ready.emit(data)

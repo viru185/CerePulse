@@ -11,6 +11,7 @@ from loguru import logger
 from cerepulse.core.config import AppConfig
 from cerepulse.core.errors import TransportError
 from cerepulse.export.ics import CalendarEvent
+from cerepulse.intelligence.attention import StatusChange, status_changes
 from cerepulse.intelligence.insights import Insight
 from cerepulse.intelligence.leave import LeaveOutlook, LeavePolicy, analyze_leave, leave_insights
 from cerepulse.intelligence.optimizer import BreakPlan, suggest_breaks
@@ -208,20 +209,46 @@ class LeaveService:
     def load_swipe_requests(
         self, employee_code: str, *, force_refresh: bool = False
     ) -> list[SwipeRequest]:
+        return self.load_swipe_requests_with_changes(employee_code, force_refresh=force_refresh)[0]
+
+    def load_swipe_requests_with_changes(
+        self, employee_code: str, *, force_refresh: bool = False
+    ) -> tuple[list[SwipeRequest], list[StatusChange]]:
+        """The requests, and any that were decided since the previous fetch.
+
+        The changes come back with the data rather than through a callback or a field on
+        this service, so nothing here has to remember anything between calls — which also
+        means a caller that does not care simply uses :meth:`load_swipe_requests`.
+        """
         stale = self._sync_meta.is_stale(
             SWIPE_SCOPE, max_age_minutes=self._config.sync.cache_ttl_minutes
         )
+        changes: list[StatusChange] = []
         if force_refresh or stale:
             try:
-                self.refresh_swipe_requests(employee_code)
+                changes = self.refresh_swipe_requests(employee_code)
             except TransportError as exc:
                 logger.warning("Swipe-request refresh failed, serving cache: {}", exc)
-        return self._swipes.find_all(employee_code)
+        return self._swipes.find_all(employee_code), changes
 
-    def refresh_swipe_requests(self, employee_code: str) -> None:
+    def refresh_swipe_requests(self, employee_code: str) -> list[StatusChange]:
+        """Fetch, compare with what was stored, then save. Returns what moved.
+
+        The comparison has to happen before the save, because the save is what destroys the
+        only record of the previous statuses. The portal carries no filed date, no request
+        id and no approver, so diffing two fetches is the only way to know a request was
+        ever decided — without it, an approval is something the user finds by re-checking.
+        """
         logger.info("Refreshing swipe requests")
-        self._swipes.save_all(employee_code, self._gateway.fetch_swipe_requests())
+        before = self._swipes.find_all(employee_code)
+        fetched = self._gateway.fetch_swipe_requests()
+        changes = status_changes(before, fetched)
+
+        self._swipes.save_all(employee_code, fetched)
         self._sync_meta.mark_synced(SWIPE_SCOPE)
+        if changes:
+            logger.info("{} swipe request(s) decided since the last sync", len(changes))
+        return changes
 
     # --- holidays -------------------------------------------------------------------
 

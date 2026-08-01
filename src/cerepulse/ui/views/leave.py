@@ -74,6 +74,12 @@ class LeaveViewWidget(QWidget):
         self.banner = Banner()
         layout.addWidget(self.banner)
 
+        # The total leads, because "how much leave do I have" is the question the screen is
+        # opened with, and adding six cards up in your head is not an answer to it.
+        self.total = Card("Total available")
+        self.total.setMinimumWidth(190)
+        layout.addWidget(self.total)
+
         self._cards = QHBoxLayout()
         self._cards.setSpacing(12)
         cards_host = QWidget()
@@ -106,6 +112,7 @@ class LeaveViewWidget(QWidget):
     # --- rendering ------------------------------------------------------------------
 
     def show_leave(self, data: LeaveData) -> None:
+        self._render_total(data.outlooks)
         self._render_cards(data.outlooks)
         self._insights.set_insights(data.insights)
         self._render_breaks(data.breaks)
@@ -148,6 +155,29 @@ class LeaveViewWidget(QWidget):
             f"{_days(best.cost)} into {best.total_days}. Nothing is booked — "
             f"apply in SpineHR."
         )
+
+    def _render_total(self, outlooks: list[LeaveOutlook]) -> None:
+        """Everything available, and how much of it is on a deadline.
+
+        A single number would be the wrong answer on its own: some of a balance can be
+        comp-off that lapses in a fortnight, and a total that hides that reads as more
+        freedom than the user actually has. Expired days are excluded outright — they are
+        not available, whatever the portal's column still says.
+        """
+        live = [outlook for outlook in outlooks if not outlook.is_expired]
+        total = sum(outlook.balance.available_balance for outlook in live)
+        at_risk = sum(outlook.balance.available_balance for outlook in live if outlook.is_at_risk)
+
+        self.total.set_value(
+            _days(total), accent=self._palette.good if total > 0 else self._palette.text_muted
+        )
+        parts = [f"across {len(live)} leave type(s)"]
+        if at_risk:
+            parts.append(f"{_days(at_risk)} expiring soon")
+        expired = [outlook for outlook in outlooks if outlook.is_expired]
+        if expired:
+            parts.append(f"{len(expired)} type(s) already lapsed and not counted")
+        self.total.set_caption("  ·  ".join(parts))
 
     def _render_cards(self, outlooks: list[LeaveOutlook]) -> None:
         while self._cards.count():
@@ -202,8 +232,10 @@ class LeaveViewWidget(QWidget):
 INLINE_DATES = 4
 
 
-def _days(count: int) -> str:
-    return f"{count} day" if count == 1 else f"{count} days"
+def _days(count: float) -> str:
+    """``1 day``, ``4 days``, ``4.5 days`` — balances come in halves, break plans do not."""
+    shown = f"{count:g}"
+    return f"{shown} day" if count == 1 else f"{shown} days"
 
 
 def _booking_text(plan: BreakPlan) -> str:

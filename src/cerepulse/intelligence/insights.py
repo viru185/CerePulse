@@ -35,6 +35,8 @@ class InsightKind(Enum):
     EARLY_EXIT = "early_exit"
     SWIPE_NEEDED = "swipe_needed"
     SWIPE_FILED = "swipe_filed"
+    #: A filed request has been approved or turned down since the last sync.
+    SWIPE_DECIDED = "swipe_decided"
     LONG_BREAK = "long_break"
     MISSING_PUNCH = "missing_punch"
     STILL_WORKING = "still_working"

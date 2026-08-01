@@ -23,7 +23,7 @@ from loguru import logger
 from cerepulse.core.errors import MigrationError
 
 #: Bumped whenever a migration is added. Checked against the database on open.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _migration_001(connection: sqlite3.Connection) -> None:
@@ -131,8 +131,28 @@ def _migration_001(connection: sqlite3.Connection) -> None:
     """)
 
 
+def _migration_002(connection: sqlite3.Connection) -> None:
+    """Record *when* a day's punch detail was fetched, not merely that it was.
+
+    The portal answers the day-detail request with nothing for the day still in progress.
+    That empty answer was stored as "fetched, genuinely no punches", the day left the sync
+    backlog, and it was never asked about again — so a day with ten real punches was stuck
+    forever showing the single In and Out reconstructed from the monthly grid.
+
+    Re-asking needs a stopping condition, or a day the portal will never have punches for
+    is re-fetched on every sync and ``drain_detail`` never terminates. This timestamp is it:
+    a detail fetch made on or before the day itself is untrustworthy and worth exactly one
+    retry, and once a fetch made *after* the day still comes back empty, the day really is
+    empty and the question is settled.
+
+    Existing rows get NULL, which reads as "fetched at an unknown time" and therefore
+    earns the one retry — which is what the already-stuck days need.
+    """
+    connection.execute("ALTER TABLE attendance_day ADD COLUMN detail_synced_at TEXT")
+
+
 #: Ordered migrations. Append only; never edit one that has shipped.
-MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (_migration_001,)
+MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (_migration_001, _migration_002)
 
 
 def current_version(connection: sqlite3.Connection) -> int:

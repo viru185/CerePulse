@@ -93,6 +93,11 @@ class AttendanceRepository:
         An empty list is a legitimate result — it records "fetched, nothing there" rather
         than leaving the day looking unfetched.
 
+        ``detail_synced_at`` records *when* that answer was obtained, which is what lets
+        :meth:`days_missing_detail` tell a genuinely empty day from one fetched while it was
+        still being worked. It is deliberately separate from ``synced_at``, which every
+        month refresh overwrites for every row and so says nothing about the punch log.
+
         The day's grid row must already be cached: punches hang off it by foreign key, and
         the month grid is always what identifies a day as worth fetching in the first place.
         """
@@ -101,10 +106,10 @@ class AttendanceRepository:
             updated = connection.execute(
                 """
                 UPDATE attendance_day
-                   SET detail_loaded = 1, synced_at = ?
+                   SET detail_loaded = 1, synced_at = ?, detail_synced_at = ?
                  WHERE employee_code = ? AND day = ?
                 """,
-                (stamp, employee_code, day.isoformat()),
+                (stamp, stamp, employee_code, day.isoformat()),
             ).rowcount
             if not updated:
                 raise RepositoryError(
@@ -211,14 +216,42 @@ class AttendanceRepository:
         return [row_to_attendance_day(row, tuple(grouped.get(row["day"], ()))) for row in rows]
 
     def days_missing_detail(self, employee_code: str, year: int, month: int) -> list[date]:
-        """Worked days whose punch log has not been fetched — the sync backlog."""
+        """Worked days whose punch log is missing — the sync backlog.
+
+        Two cases, not one. The obvious one is a day never fetched. The other is a day the
+        portal answered with nothing *at the time*, which is what it does for the day still
+        in progress: the empty result was recorded as "fetched, nothing there", the backlog
+        forgot about it, and the day was left permanently with no punches. Today then showed
+        a single In and a single Out — the pair reconstructed from the monthly grid — for a
+        day that really had ten punches, and no amount of refreshing brought them back.
+
+        An empty punch log stays legitimate on its own; what makes it a contradiction is the
+        grid reporting hours for the same day. A day with 9:27 on it has punches somewhere.
+
+        The retry is bounded by ``detail_synced_at``, and it has to be: ``drain_detail``
+        loops until the backlog empties, so a day that is genuinely empty and permanently
+        eligible would never let it finish. A fetch made on or before the day itself was
+        made while the day was still running and is worth one more try; a fetch made
+        afterwards that still found nothing has settled the question.
+        """
         rows = self.database.execute(
             """
             SELECT day FROM attendance_day
              WHERE employee_code = ?
                AND substr(day, 1, 7) = ?
-               AND detail_loaded = 0
                AND status IN ('present', 'half_day')
+               AND (
+                     detail_loaded = 0
+                  OR (
+                        total_minutes > 0
+                    AND (detail_synced_at IS NULL OR substr(detail_synced_at, 1, 10) <= day)
+                    AND NOT EXISTS (
+                            SELECT 1 FROM punch
+                             WHERE punch.employee_code = attendance_day.employee_code
+                               AND punch.day = attendance_day.day
+                        )
+                     )
+                 )
              ORDER BY day
             """,
             (employee_code, f"{year:04d}-{month:02d}"),

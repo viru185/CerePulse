@@ -406,12 +406,18 @@ def test_days_with_nothing_filed_leave_the_swipe_column_blank(qapp: QApplication
     assert view.table.item(0, 7).text() == ""
 
 
+def _select_filter(view, label: str) -> None:  # type: ignore[no-untyped-def]
+    from cerepulse.ui.views.attendance import FILTERS
+
+    view._filter.setCurrentIndex([name for name, _ in FILTERS].index(label))
+
+
 def test_the_filter_hides_settled_rows(qapp: QApplication) -> None:
     from cerepulse.ui.views.attendance import AttendanceView
 
     view = AttendanceView(DARK)
     view.show_month(_month_view())
-    view._only_attention.setChecked(True)
+    _select_filter(view, "Needs attention")
 
     visible = [r for r in range(view.table.rowCount()) if not view.table.isRowHidden(r)]
     assert len(visible) == 1
@@ -425,20 +431,57 @@ def test_an_empty_filter_result_says_so_rather_than_showing_a_blank_table(
 
     view = AttendanceView(DARK)
     view.show_month(_month_view(attention_on=set()))
-    view._only_attention.setChecked(True)
+    _select_filter(view, "Needs attention")
 
-    assert "Nothing outstanding" in view.banner.text()
+    assert "No days match" in view.banner.text()
 
 
-def test_unticking_the_filter_brings_every_row_back(qapp: QApplication) -> None:
+def test_going_back_to_all_days_brings_every_row_back(qapp: QApplication) -> None:
     from cerepulse.ui.views.attendance import AttendanceView
 
     view = AttendanceView(DARK)
     view.show_month(_month_view())
-    view._only_attention.setChecked(True)
-    view._only_attention.setChecked(False)
+    _select_filter(view, "Needs attention")
+    _select_filter(view, "All days")
 
     assert not any(view.table.isRowHidden(r) for r in range(view.table.rowCount()))
+
+
+def test_every_filter_survives_a_month_it_finds_nothing_in(qapp: QApplication) -> None:
+    """Each predicate reads a _Row; one that assumes a field is populated would crash here."""
+    from cerepulse.ui.views.attendance import FILTERS, AttendanceView
+
+    view = AttendanceView(DARK)
+    view.show_month(_month_view(attention_on=set()))
+    for label, _predicate in FILTERS:
+        _select_filter(view, label)
+
+
+def test_selecting_a_row_fills_the_drawer(qapp: QApplication) -> None:
+    """The whole point: reading one day without leaving the month."""
+    from cerepulse.ui.views.attendance import AttendanceView
+
+    view = AttendanceView(DARK)
+    view.show_month(_month_view())
+    # isVisibleTo, not isVisible: nothing is on screen in an offscreen test, so isVisible
+    # would be False either way and the assertion would pass without proving anything.
+    assert not view.drawer.isVisibleTo(view)
+
+    view.show_day(date(2026, 7, 2))
+
+    assert view.drawer.isVisibleTo(view)
+    assert "02 July" in view.drawer._date.text() or "2 July" in view.drawer._date.text()
+
+
+def test_the_drawer_says_when_the_figures_came_from_the_grid(qapp: QApplication) -> None:
+    """Otherwise an estimate and a measurement look identical, side by side."""
+    from cerepulse.ui.views.attendance import AttendanceView
+
+    view = AttendanceView(DARK)
+    view.show_month(_month_view())
+    view.show_day(date(2026, 7, 1))
+
+    assert "not synced" in view.drawer._note.text()
 
 
 def test_the_heatmap_measures_worked_time_not_the_gross_span(qapp: QApplication) -> None:

@@ -124,13 +124,26 @@ class PortalGateway:
         return self._retrying_stale_menu(get)
 
     def fetch_day_detail(self, day: ParsedDay) -> list[Punch]:
-        """Fetch one day's punch log via the async postback its date link triggers."""
+        """Fetch one day's punch log via the async postback its date link triggers.
+
+        The postback target is a **row control in the grid currently on screen** —
+        ``GridView1$ctl17$LnkDate`` — not a date. The attendance page opens on the current
+        month, so asking for a July day during August posted July's row index against
+        August's two-row grid and got nothing back. Silently, because an empty punch log is
+        a legitimate answer for a day someone genuinely did not work.
+
+        Selecting the day's own month first is therefore not an optimisation, it is what
+        makes the target mean the day it was parsed from.
+        """
         target = day.detail_target()
         if target is None:
             raise ParserError(f"{day.day.day:%d %b} has no clickable date link")
 
+        when = day.day.day
         url = self._url(*MENU_ATTENDANCE)
         page = self._auth.check_response(self._client.get(url, follow_redirects=True)).text
+        if not self._shows_period(page, when.year, when.month):
+            page = self._select_period(url, page, when.year, when.month)
 
         script_manager = find_script_manager(page)
         if script_manager is None:

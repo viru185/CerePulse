@@ -37,7 +37,7 @@ from cerepulse.core.errors import (
     SessionExpiredError,
     TransportError,
 )
-from cerepulse.intelligence.attention import AttentionKind
+from cerepulse.intelligence.attention import Attention, AttentionKind
 from cerepulse.intelligence.day import DayAnalysis
 from cerepulse.intelligence.insights import ActionKind, Insight, Severity
 from cerepulse.intelligence.month import analyze_week, week_start_for
@@ -153,6 +153,9 @@ class MainWindow(QMainWindow):
         self.attendance.fetch_detail_requested.connect(
             lambda: self._sync.sync_scope(Scope.DAY_DETAIL)
         )
+        self.attendance.open_portal.connect(
+            lambda: open_url(self._context.client.url_for(pages.ATTENDANCE_REPORT))
+        )
         self.today.sync_day_requested.connect(self._sync_day)
         self.leave.refresh_requested.connect(lambda: self._sync.refresh_leave())
         self.leave.export_requested.connect(self._export_calendar)
@@ -160,6 +163,7 @@ class MainWindow(QMainWindow):
         self.requests.open_portal.connect(
             lambda: open_url(self._context.client.url_for(pages.SWIPE_REQUESTS))
         )
+        self.requests.day_selected.connect(self._open_day)
         self.week.week_changed.connect(self._change_week)
         self.week.day_selected.connect(self._open_day)
         self.insights.refresh_requested.connect(lambda: self._sync.refresh_trends())
@@ -244,6 +248,7 @@ class MainWindow(QMainWindow):
         self._sync.leave_ready.connect(self._apply_leave)
         self._sync.ledger_ready.connect(self.leave.show_ledger)
         self._sync.swipes_ready.connect(self._apply_swipes)
+        self._sync.swipes_decided.connect(self._on_swipes_decided)
         self._sync.trends_ready.connect(self.insights.show_trends)
         self._sync.periods_ready.connect(self._adopt_periods)
         self._sync.sync_finished.connect(self._on_sync_finished)
@@ -570,14 +575,33 @@ class MainWindow(QMainWindow):
     def _apply_swipes(self, requests: list[object]) -> None:
         # Taken from the month view rather than recomputed. This screen used to carry its
         # own third definition of "needs a request", which disagreed with both the others.
-        needing: list[date] = []
+        # The whole Attention travels, not just the date, so the screen can say *why* a day
+        # was flagged in the same words the Attendance tooltip uses.
+        needing: list[Attention] = []
         if self._month_view is not None:
             needing = [
-                day
-                for day, attention in sorted(self._month_view.attention.items())
+                attention
+                for _day, attention in sorted(self._month_view.attention.items())
                 if attention.kind is AttentionKind.SHORT_NO_REQUEST
             ]
         self.requests.show_requests(requests, needing=needing)  # type: ignore[arg-type]
+
+    def _on_swipes_decided(self, changes: list[object]) -> None:
+        """News the portal never volunteers: a request has been approved or turned down.
+
+        Worth a toast because the alternative is re-opening SpineHR every day to find out,
+        which is exactly the errand this app exists to remove.
+        """
+        from cerepulse.intelligence.attention import decision_insight
+
+        insight = decision_insight(changes)  # type: ignore[arg-type]
+        if insight is None:
+            return
+        self.requests.banner.show_message(
+            f"{insight.title} — {insight.detail}", insight.severity, key="decided"
+        )
+        if self._tray is not None:
+            self._tray.notify_insights([insight])
 
     def _adopt_periods(self, periods: list[tuple[int, int]]) -> None:
         self._fetchable_months = periods

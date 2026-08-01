@@ -245,6 +245,7 @@ class SettingsView(QWidget):
             ("work_target_reached", "Target reached"),
             ("short_hours_warning", "Short of hours"),
             ("swipe_request_needed", "Swipe request needed"),
+            ("swipe_request_decided", "Swipe request approved or rejected"),
             ("break_exceeded", "Break ran over"),
             ("leave_expiring", "Leave expiring"),
         ):

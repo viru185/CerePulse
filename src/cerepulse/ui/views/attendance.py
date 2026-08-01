@@ -1,4 +1,4 @@
-"""Attendance — month rollup, hours bank, heatmap, and the day table.
+"""Attendance — month rollup, hours bank, heatmap, day table, and the day drawer.
 
 The hours-bank banner is careful about honesty. Most days in a month have no cached punch
 log, so their worked time is estimated from the grid's gross span minus the break
@@ -7,7 +7,11 @@ figure it cannot support.
 
 The heatmap and the table answer different questions and both are worth having. A table of
 thirty rows answers "what happened on the 14th"; the calendar answers "what does this month
-look like" — whether the short days cluster in one bad week or are spread across all four.
+look like" — whether the short days cluster in one bad week or are spread across four.
+
+The drawer answers a third: "what happened *inside* the 14th". Reaching that used to mean
+leaving for the Today screen and finding the way back, which is a lot of navigation for a
+glance at four punches.
 
 Whether a day needs attention is decided in ``intelligence/attention.py``, not here, so the
 row highlight, the filter and the heatmap ring cannot drift apart.
@@ -15,12 +19,12 @@ row highlight, the filter and the heatmap ring cannot drift apart.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -31,35 +35,96 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cerepulse.intelligence.attention import swipe_state
+from cerepulse.intelligence.attention import Attention, swipe_state
+from cerepulse.intelligence.day import DayAnalysis
 from cerepulse.intelligence.insights import Severity
-from cerepulse.intelligence.month import MonthAnalysis
-from cerepulse.models.attendance import DayStatus
+from cerepulse.intelligence.month import DayRollup, MonthAnalysis
+from cerepulse.models.attendance import AttendanceDay, DayStatus
 from cerepulse.models.swipe import SwipeRequest, SwipeStatus
 from cerepulse.services.attendance import MonthView
 from cerepulse.ui import formatting as fmt
-from cerepulse.ui.theme import Palette
-from cerepulse.ui.widgets import Banner, Card, MonthHeatmap, SectionTitle, card_row, data_table
+from cerepulse.ui.theme import Palette, Space
+from cerepulse.ui.widgets import (
+    Banner,
+    Card,
+    DayTimeline,
+    MonthHeatmap,
+    SectionTitle,
+    StatusChip,
+    card_row,
+    data_table,
+)
 
 COLUMNS = ("Date", "Day", "Status", "In", "Out", "Worked", "Late", "Swipe", "Remarks")
 
 
+class _Row:
+    """One table row's data, gathered so a filter reads it without touching widgets."""
+
+    __slots__ = ("analysis", "attention", "day", "requests", "rollup")
+
+    def __init__(
+        self,
+        day: AttendanceDay,
+        rollup: DayRollup | None,
+        attention: Attention | None,
+        requests: list[SwipeRequest],
+        analysis: DayAnalysis | None,
+    ) -> None:
+        self.day = day
+        self.rollup = rollup
+        self.attention = attention
+        self.requests = requests
+        self.analysis = analysis
+
+
+_AWAY = (DayStatus.LEAVE, DayStatus.ABSENT, DayStatus.HALF_DAY)
+_OFF = (DayStatus.HOLIDAY, DayStatus.WEEKLY_OFF)
+
+#: The filters, in the order they are offered. Each decides from a :class:`_Row` alone, so
+#: adding one is a line here rather than a branch in the render path.
+FILTERS: tuple[tuple[str, Callable[[_Row, MonthAnalysis], bool]], ...] = (
+    ("All days", lambda row, month: True),
+    ("Needs attention", lambda row, month: row.attention is not None),
+    (
+        "Short days",
+        lambda row, month: (
+            row.rollup is not None
+            and row.rollup.is_working_day
+            and not row.rollup.in_progress
+            and row.rollup.worked < month.policy.work_target
+        ),
+    ),
+    ("Overtime days", lambda row, month: row.day.total_hours > month.policy.shift_span),
+    ("Present", lambda row, month: row.day.status is DayStatus.PRESENT),
+    ("Leave and absence", lambda row, month: row.day.status in _AWAY),
+    ("Holidays and offs", lambda row, month: row.day.status in _OFF),
+    ("Has a swipe request", lambda row, month: bool(row.requests)),
+    (
+        "Punch detail missing",
+        lambda row, month: row.day.status.counts_as_worked and not row.day.detail_loaded,
+    ),
+)
+
+
 class AttendanceView(QWidget):
-    """A month of attendance, as a calendar and as a row per day."""
+    """A month of attendance, as a calendar, a row per day, and a drawer for one day."""
 
     day_selected = Signal(date)
     month_changed = Signal(int, int)
     refresh_requested = Signal()
     fetch_detail_requested = Signal()
+    open_portal = Signal()
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._palette = palette
         self._view: MonthView | None = None
+        self._rows: list[_Row] = []
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 24)
-        layout.setSpacing(14)
+        layout.setContentsMargins(Space.SECTION, 20, Space.SECTION, Space.SECTION)
+        layout.setSpacing(Space.ROW + 2)
 
         layout.addLayout(self._build_header())
 
@@ -78,26 +143,53 @@ class AttendanceView(QWidget):
         shape = QHBoxLayout()
         shape.setSpacing(18)
         self.heatmap = MonthHeatmap(palette)
-        self.heatmap.day_selected.connect(self.day_selected)
+        self.heatmap.day_selected.connect(self.show_day)
         shape.addWidget(self.heatmap)
         shape.addWidget(self._build_legend())
         shape.addStretch(1)
         layout.addLayout(shape)
 
         layout.addWidget(SectionTitle("Days"))
+
+        body = QHBoxLayout()
+        body.setSpacing(Space.GAP)
         self.table = self._build_table()
-        layout.addWidget(self.table, 1)
+        body.addWidget(self.table, 1)
+        self.drawer = _DayDrawer(palette)
+        self.drawer.open_in_today.connect(self.day_selected)
+        self.drawer.open_portal.connect(self.open_portal)
+        body.addWidget(self.drawer)
+        layout.addLayout(body, 1)
 
     def _build_header(self) -> QHBoxLayout:
         row = QHBoxLayout()
+        row.setSpacing(Space.SNUG)
+
+        # Stepping is what people actually do; the dropdown was the only way to move a month
+        # and it makes reading three months in sequence six clicks instead of two.
+        previous = QPushButton("‹")
+        previous.setFixedWidth(30)
+        previous.setToolTip("Previous month")
+        previous.clicked.connect(lambda: self._step_month(-1))
+        row.addWidget(previous)
+
         self._period = QComboBox()
         self._period.setMinimumWidth(160)
         self._period.currentIndexChanged.connect(self._emit_month)
         row.addWidget(self._period)
 
-        self._only_attention = QCheckBox("Needs attention only")
-        self._only_attention.toggled.connect(self._apply_filter)
-        row.addWidget(self._only_attention)
+        self._next = QPushButton("›")
+        self._next.setFixedWidth(30)
+        self._next.setToolTip("Next month")
+        self._next.clicked.connect(lambda: self._step_month(1))
+        row.addWidget(self._next)
+
+        self._filter = QComboBox()
+        self._filter.setMinimumWidth(170)
+        for label, _predicate in FILTERS:
+            self._filter.addItem(label)
+        self._filter.currentIndexChanged.connect(lambda _index: self._apply_filter())
+        row.addWidget(self._filter)
         row.addStretch(1)
 
         # Punch detail arrives five days per refresh, so a fresh month needs four or five
@@ -114,12 +206,13 @@ class AttendanceView(QWidget):
     def _build_legend(self) -> QWidget:
         host = QWidget()
         layout = QVBoxLayout(host)
-        layout.setContentsMargins(0, 14, 0, 0)
+        layout.setContentsMargins(0, Space.ROW + 2, 0, 0)
         layout.setSpacing(3)
         for text in (
             "Deeper fill = more hours",
             "Green = target met",
             "Red outline = needs attention",
+            "Click a day for its detail",
         ):
             label = QLabel(text)
             label.setObjectName("CardCaption")
@@ -133,6 +226,7 @@ class AttendanceView(QWidget):
         # "Attendance ..." while In and Out sat in a sea of padding.
         table = data_table(COLUMNS, selectable=True)
         table.cellDoubleClicked.connect(self._emit_day)
+        table.itemSelectionChanged.connect(self._on_selection)
         return table
 
     # --- rendering ------------------------------------------------------------------
@@ -194,11 +288,9 @@ class AttendanceView(QWidget):
             attention=set(view.attention),
         )
         self._render_table(view)
-        self._apply_filter(self._only_attention.isChecked())
+        self._apply_filter()
 
     def _render_bank(self, analysis: MonthAnalysis) -> None:
-        from cerepulse.intelligence.insights import Severity
-
         notes = []
         if analysis.estimated_days:
             # Say so rather than implying a precision the cache cannot support.
@@ -235,10 +327,21 @@ class AttendanceView(QWidget):
 
     def _render_table(self, view: MonthView) -> None:
         month = view.month
-        self.table.setRowCount(len(month.days))
-        for row, day in enumerate(month.days):
-            attention = view.attention.get(day.day)
-            requests = view.swipes.get(day.day, [])
+        rollups = {rollup.day: rollup for rollup in view.analysis.days}
+        self._rows = [
+            _Row(
+                day,
+                rollups.get(day.day),
+                view.attention.get(day.day),
+                view.swipes.get(day.day, []),
+                view.analyses.get(day.day),
+            )
+            for day in month.days
+        ]
+
+        self.table.setRowCount(len(self._rows))
+        for row, entry in enumerate(self._rows):
+            day = entry.day
             values = (
                 day.day.strftime("%d %b").lstrip("0"),
                 day.weekday,
@@ -247,7 +350,7 @@ class AttendanceView(QWidget):
                 fmt.clock_time(day.last_out),
                 day.total_hours.as_clock() if day.total_hours else fmt.EMPTY,
                 day.late_mark.as_clock() if day.late_mark else "",
-                _swipe_text(requests),
+                _swipe_text(entry.requests),
                 day.remarks,
             )
             for column, text in enumerate(values):
@@ -255,8 +358,6 @@ class AttendanceView(QWidget):
                 if column == 0:
                     # Carries the real date, so double-click can open that day.
                     item.setData(Qt.ItemDataRole.UserRole, day.day)
-                    # And whether the row is outstanding, so the filter needs no second pass.
-                    item.setData(Qt.ItemDataRole.UserRole + 1, attention is not None)
                 if column in (3, 4, 5, 6):
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -264,13 +365,13 @@ class AttendanceView(QWidget):
                 if column == 2:
                     item.setForeground(_status_colour(day.status, self._palette))
                 if column == 7:
-                    item.setForeground(_swipe_colour(requests, self._palette))
-                    item.setToolTip(_swipe_tooltip(requests))
-                if attention is not None and column == 0:
+                    item.setForeground(_swipe_colour(entry.requests, self._palette))
+                    item.setToolTip(_swipe_tooltip(entry.requests))
+                if entry.attention is not None and column == 0:
                     # The date cell alone. Colouring the whole row would fight the status
                     # and swipe columns, which already carry meaning in the same channel.
                     item.setForeground(QColor(self._palette.bad))
-                    item.setToolTip(attention.reason)
+                    item.setToolTip(entry.attention.reason)
                 self.table.setItem(row, column, item)
 
             if not day.detail_loaded and day.status.counts_as_worked:
@@ -281,24 +382,52 @@ class AttendanceView(QWidget):
 
     # --- interaction ----------------------------------------------------------------
 
-    def _apply_filter(self, only_attention: bool) -> None:
-        """Hide settled rows. Filtering by row rather than rebuilding keeps the selection."""
-        outstanding = 0
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            flagged = bool(item and item.data(Qt.ItemDataRole.UserRole + 1))
-            outstanding += int(flagged)
-            self.table.setRowHidden(row, only_attention and not flagged)
+    def _apply_filter(self) -> None:
+        """Hide rows the filter excludes. Filtering keeps the selection; rebuilding loses it."""
+        if self._view is None:
+            return
+        label, predicate = FILTERS[max(0, self._filter.currentIndex())]
+        month = self._view.analysis
 
-        if only_attention and not outstanding and self._view is not None:
-            # An empty table under a checkbox reads as a bug. This is good news, so say it.
-            self.banner.show_message("Nothing outstanding this month.", Severity.SUCCESS)
-        elif only_attention:
+        shown = 0
+        for row, entry in enumerate(self._rows):
+            keep = predicate(entry, month)
+            shown += int(keep)
+            self.table.setRowHidden(row, not keep)
+
+        if self._filter.currentIndex() == 0:
+            self.banner.clear_message(key="filter")
+        elif not shown:
+            # An empty table under a filter reads as a bug, so name which filter emptied it.
             self.banner.show_message(
-                f"Showing {outstanding} day(s) that need something doing.", Severity.INFO
+                f"No days match “{label}” this month.", Severity.SUCCESS, key="filter"
             )
         else:
-            self.banner.clear_message()
+            self.banner.show_message(
+                f"Showing {shown} of {len(self._rows)} days — {label.lower()}.",
+                Severity.INFO,
+                key="filter",
+            )
+
+    def _on_selection(self) -> None:
+        """A single click fills the drawer; a double click still opens the day fully."""
+        rows = {index.row() for index in self.table.selectedIndexes()}
+        if len(rows) != 1:
+            return
+        entry = self._rows[rows.pop()] if self._rows else None
+        if entry is not None:
+            self.drawer.show_day(entry)
+
+    def show_day(self, day: date) -> None:
+        """Select and reveal one date — the heatmap's click lands here."""
+        for row, entry in enumerate(self._rows):
+            if entry.day.day == day:
+                self.table.selectRow(row)
+                cell = self.table.item(row, 0)
+                if cell is not None:
+                    self.table.scrollToItem(cell)
+                self.drawer.show_day(entry)
+                return
 
     def _emit_day(self, row: int, _column: int) -> None:
         item = self.table.item(row, 0)
@@ -309,6 +438,146 @@ class AttendanceView(QWidget):
         data = self._period.itemData(index)
         if data:
             self.month_changed.emit(*data)
+
+    def _step_month(self, delta: int) -> None:
+        """Move one entry through the picker, which is already in newest-first order."""
+        target = self._period.currentIndex() - delta
+        if 0 <= target < self._period.count():
+            self._period.setCurrentIndex(target)
+
+
+class _DayDrawer(QWidget):
+    """One day beside the table: its shape, its punches, and what can be done about it."""
+
+    open_in_today = Signal(object)  # date
+    open_portal = Signal()
+
+    WIDTH = 300
+
+    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self._entry: _Row | None = None
+        self.setFixedWidth(self.WIDTH)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(Space.GAP, 0, 0, 0)
+        layout.setSpacing(Space.SNUG)
+
+        top = QHBoxLayout()
+        self._date = QLabel()
+        self._date.setStyleSheet("font-size: 14px; font-weight: 600;")
+        top.addWidget(self._date)
+        top.addStretch(1)
+        self._status = StatusChip("", palette.text_muted)
+        top.addWidget(self._status)
+        layout.addLayout(top)
+
+        self._headline = QLabel()
+        self._headline.setObjectName("CardCaption")
+        self._headline.setWordWrap(True)
+        layout.addWidget(self._headline)
+
+        self._timeline = DayTimeline(palette)
+        layout.addWidget(self._timeline)
+
+        self._facts = QLabel()
+        self._facts.setWordWrap(True)
+        self._facts.setStyleSheet("font-variant-numeric: tabular-nums;")
+        layout.addWidget(self._facts)
+
+        self._note = QLabel()
+        self._note.setObjectName("CardCaption")
+        self._note.setWordWrap(True)
+        layout.addWidget(self._note)
+
+        layout.addStretch(1)
+
+        self._open = QPushButton("Open in Today")
+        self._open.clicked.connect(self._emit_open)
+        self._copy = QPushButton("Copy summary")
+        self._copy.clicked.connect(self._copy_summary)
+        self._portal = QPushButton("Open in SpineHR")
+        self._portal.clicked.connect(self.open_portal)
+        for button in (self._open, self._copy, self._portal):
+            layout.addWidget(button)
+
+        self.setVisible(False)
+
+    def show_day(self, entry: _Row) -> None:
+        self._entry = entry
+        day, analysis = entry.day, entry.analysis
+
+        self._date.setText(day.day.strftime("%A, %d %B").replace(" 0", " "))
+        self._status.set_state(_status_text(day.status), _status_hex(day.status, self._palette))
+
+        if analysis is not None and analysis.next_action is not None:
+            self._headline.setText(analysis.next_action.headline)
+        elif entry.attention is not None:
+            self._headline.setText(entry.attention.reason)
+        else:
+            self._headline.setText("")
+
+        segments = analysis.segments if analysis is not None else ()
+        self._timeline.set_day(segments, leave_at=analysis.leave_at if analysis else None)
+        self._timeline.setVisible(bool(segments))
+
+        self._facts.setText(self._fact_lines(entry))
+        self._note.setText(self._note_text(entry))
+        self._copy.setEnabled(analysis is not None)
+        self.setVisible(True)
+
+    def _fact_lines(self, entry: _Row) -> str:
+        day, analysis = entry.day, entry.analysis
+        lines = [
+            f"In {fmt.clock_time(day.first_in)}     Out {fmt.clock_time(day.last_out)}",
+            f"Span {day.total_hours.as_clock() if day.total_hours else fmt.EMPTY}",
+        ]
+        if analysis is not None:
+            lines.append(f"Worked {analysis.worked}     Break {analysis.break_taken}")
+        elif entry.rollup is not None and entry.rollup.estimated:
+            lines.append(f"Worked ≈{entry.rollup.worked}  (estimated)")
+        if day.late_mark:
+            lines.append(f"Late {day.late_mark.as_clock()}")
+        return "\n".join(lines)
+
+    def _note_text(self, entry: _Row) -> str:
+        notes = []
+        if entry.analysis is None and entry.day.status.counts_as_worked:
+            notes.append(
+                "Punch detail is not synced for this day, so the figures come from the "
+                "monthly summary and any break inside the day is not counted."
+            )
+        if entry.day.remarks:
+            notes.append(entry.day.remarks)
+        for request in entry.requests:
+            notes.append(
+                f"Swipe request ({request.direction}): "
+                f"{request.status.value.replace('_', ' ')}"
+                + (f" — {request.remark}" if request.remark else "")
+            )
+        return "\n".join(notes)
+
+    def _emit_open(self) -> None:
+        if self._entry is not None:
+            self.open_in_today.emit(self._entry.day.day)
+
+    def _copy_summary(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        from cerepulse.ui.views.today import summary_text
+
+        if self._entry is None or self._entry.analysis is None:
+            return
+        QApplication.clipboard().setText(summary_text(self._entry.analysis))
+        self._copy.setText("Copied")
+        _restore_later(self._copy, "Copy summary")
+
+
+def _restore_later(button: QPushButton, text: str) -> None:
+    from PySide6.QtCore import QTimer
+
+    QTimer.singleShot(1500, lambda: button.setText(text))
 
 
 def _status_text(status: DayStatus) -> str:
@@ -324,16 +593,18 @@ def _status_text(status: DayStatus) -> str:
     }[status]
 
 
+def _status_hex(status: DayStatus, palette: Palette) -> str:
+    return {
+        DayStatus.PRESENT: palette.good,
+        DayStatus.HALF_DAY: palette.rest,
+        DayStatus.ABSENT: palette.bad,
+        DayStatus.LEAVE: palette.adjust,
+        DayStatus.ON_DUTY: palette.work,
+    }.get(status, palette.text_muted)
+
+
 def _status_colour(status: DayStatus, palette: Palette) -> QColor:
-    return QColor(
-        {
-            DayStatus.PRESENT: palette.good,
-            DayStatus.HALF_DAY: palette.rest,
-            DayStatus.ABSENT: palette.bad,
-            DayStatus.LEAVE: palette.adjust,
-            DayStatus.ON_DUTY: palette.work,
-        }.get(status, palette.text_muted)
-    )
+    return QColor(_status_hex(status, palette))
 
 
 def _swipe_text(requests: list[SwipeRequest]) -> str:

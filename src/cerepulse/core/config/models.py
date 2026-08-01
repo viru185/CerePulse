@@ -76,6 +76,9 @@ class NotificationConfig:
     break_exceeded: bool = True
     short_hours_warning: bool = True
     swipe_request_needed: bool = True
+    #: A filed request has been approved or turned down. The portal itself never says so,
+    #: which is why people re-check it for days.
+    swipe_request_decided: bool = True
     leave_expiring: bool = True
 
 

@@ -118,6 +118,10 @@ class MonthView:
     #: The holiday calendar this month was measured against. Carried so the Week screen can
     #: project the days still ahead without a database read on the GUI thread.
     holidays: list[Holiday] = field(default_factory=list)
+    #: Punch-level analysis per day, for the days that have one. Computed here anyway to
+    #: build the month rollup; carrying it means a screen can show one day's detail without
+    #: a second trip through the repository.
+    analyses: dict[date, DayAnalysis] = field(default_factory=dict)
 
     @property
     def is_stale(self) -> bool:
@@ -544,6 +548,7 @@ class AttendanceService:
                 today=today or date.today(),
             ),
             holidays=holidays,
+            analyses=analyses,
         )
 
 
