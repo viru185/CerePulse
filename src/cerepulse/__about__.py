@@ -7,7 +7,7 @@ so there is exactly one place to bump a release.
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 NAME = "CerePulse"
 TAGLINE = "Knows when you can leave, before you ask."

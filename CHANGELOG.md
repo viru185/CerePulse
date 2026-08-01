@@ -2,13 +2,33 @@
 
 All notable changes to CerePulse are documented here.
 
-## [0.2.0] - 2026-07-29
+## [0.3.0] - 2026-08-01
+
+### Bug Fixes
+- Make notifications actually arrive, and say so when they cannot
+
+### Features
+- Make the explanatory text readable, and the tables consistent
+- Allow only one copy to run
+- Sync one thing at a time, and one day at a time
+- Say what is loading, and stop swallowing what failed
+
+### Refactor
+- Split the window into controllers
+
+### Tests
+- Use synthetic fixtures, never captured ones
+
+## [0.2.0] - 2026-08-01
 
 ### Bug Fixes
 - Repair month selection, sign-in persistence, and day accounting
 - Stop charging today for hours it does not owe yet
 - Two things six months of real data made obvious
 - Stop reporting "nothing logged" for a day with hours
+
+### Documentation
+- Regenerate changelog for 0.2.0
 
 ### Features
 - Fetch past months and make them reachable
@@ -17,6 +37,9 @@ All notable changes to CerePulse are documented here.
 - Show what the history says, and how much history there is
 - Swipe status per day, a needs-attention filter, and a heatmap
 - Plan the cheapest breaks, and export the calendar
+
+### Tests
+- Use synthetic fixtures, never captured ones
 
 ## [0.1.1] - 2026-07-28
 
