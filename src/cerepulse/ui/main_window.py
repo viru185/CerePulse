@@ -17,6 +17,7 @@ from loguru import logger
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QHBoxLayout,
     QLabel,
@@ -44,6 +45,7 @@ from cerepulse.notify.startup import set_registered
 from cerepulse.notify.tray import Tray
 from cerepulse.services.attendance import MonthView
 from cerepulse.services.leave import LeaveView as LeaveData
+from cerepulse.services.portal import MENU_ATTENDANCE, MENU_SWIPE
 from cerepulse.services.scopes import Scope
 from cerepulse.transport import pages
 from cerepulse.ui import formatting as fmt
@@ -59,6 +61,7 @@ from cerepulse.ui.views.settings import SettingsView
 from cerepulse.ui.views.sync_panel import SyncPanel
 from cerepulse.ui.views.today import TodayView
 from cerepulse.ui.views.week import WeekView
+from cerepulse.ui.widgets import Banner
 from cerepulse.ui.workers import TaskRunner
 from cerepulse.update import Channel
 
@@ -169,14 +172,21 @@ class MainWindow(QMainWindow):
         self.attendance.fetch_detail_requested.connect(
             lambda: self._sync.sync_scope(Scope.DAY_DETAIL)
         )
-        self.attendance.open_portal.connect(lambda: self._open_portal(pages.ATTENDANCE_REPORT))
+        self.attendance.open_portal.connect(
+            lambda: self._open_portal(pages.ATTENDANCE_REPORT, menu=MENU_ATTENDANCE)
+        )
         self.today.sync_day_requested.connect(self._sync_day)
-        self.records.refresh_requested.connect(lambda: self._sync.refresh_leave())
-        self.records.open_portal.connect(lambda: self._open_portal(pages.SWIPE_REQUESTS))
+        # Through `refresh`, not straight to the service. A Refresh button that cannot end
+        # a pause is worse than no button: Records is the screen the portal is opened from,
+        # so its Refresh was the one the user reached for and the one that did nothing.
+        self.records.refresh_requested.connect(self._refresh_records)
+        self.records.open_portal.connect(
+            lambda: self._open_portal(pages.SWIPE_REQUESTS, menu=MENU_SWIPE)
+        )
         self.records.day_selected.connect(self._open_day)
         self.week.week_changed.connect(self._change_week)
         self.week.day_selected.connect(self._open_day)
-        self.insights.refresh_requested.connect(lambda: self._sync.refresh_trends())
+        self.insights.refresh_requested.connect(self._refresh_insights)
         self.insights.sync_history_requested.connect(self.sync_history)
         self.about.update_check_requested.connect(self._check_for_update_now)
         self.about.rollback_requested.connect(self._rollback)
@@ -217,6 +227,19 @@ class MainWindow(QMainWindow):
             layout.addWidget(button)
 
         layout.addStretch(1)
+
+        # Signing a browser in without a password has worked since 0.9 and was reachable
+        # from two buttons buried in a day drawer and a Records header — places you find
+        # only if you already know they are there. The sidebar is the one surface visible
+        # from every screen, so it is where "take me to the portal" belongs.
+        self._portal = QPushButton("Open SpineHR")
+        self._portal.setObjectName("SidebarButton")
+        self._portal.setToolTip(
+            "Opens the portal in your browser, already signed in.\n"
+            "CerePulse pauses while you have it — press Refresh when you are done."
+        )
+        self._portal.clicked.connect(lambda: self._open_portal(pages.HOME))
+        layout.addWidget(self._portal)
 
         # The status is the way in to per-scope sync, so it is a button rather than a
         # label: the one place that says how fresh things are should also be where you go
@@ -461,14 +484,41 @@ class MainWindow(QMainWindow):
             # An explicit Refresh is the user asking for the session back; a background
             # tick is not, and honouring one would take the session off their browser.
             if quiet:
+                # Quiet callers are not all timers. Changing month or opening a day also
+                # come through here, and returning silently made those look broken rather
+                # than paused — the screen simply did not fill in, with nothing said.
+                self._set_status("Paused — signed in elsewhere")
                 return
             self._resume()
         if not quiet:
             self._set_status("Refreshing…")
         self._sync.refresh(force=force)
 
-    def _open_portal(self, page: str) -> None:
+    def _refresh_records(self) -> None:
+        """Records' own Refresh, which must also be able to end a pause."""
+        if self._paused:
+            self._resume()
+        self._set_status("Refreshing…")
+        self._sync.refresh_leave()
+
+    def _refresh_insights(self) -> None:
+        """Insights reads the cache rather than fetching, so a pause does not block it.
+
+        It still ends one: the user pressing Refresh anywhere means the same thing, and
+        having it mean something different here is the kind of inconsistency that makes a
+        button feel unreliable.
+        """
+        if self._paused:
+            self._resume()
+            self._sync.refresh(force=True)
+        self._sync.refresh_trends()
+
+    def _open_portal(self, page: str, *, menu: tuple[str, str] | None = None) -> None:
         """Open SpineHR in the browser, signed in, and hand the session over.
+
+        ``menu`` names the page by its menu label so the URL carries its privilege token.
+        Without one the portal answers a deep link with the privileges error, which is why
+        the plain ``page`` is only ever a safe fallback.
 
         Verified against the live portal: a login form scraped here and submitted by a
         client with none of this app's cookies is accepted, so the browser really can be
@@ -497,7 +547,7 @@ class MainWindow(QMainWindow):
                 f"({_message_for(exc)}). It has paused either way."
             )
 
-        self._sync.open_in_browser(page, on_ready=ready, on_error=failed)
+        self._sync.open_in_browser(page, on_ready=ready, on_error=failed, menu=menu)
 
     def _stand_down(self, message: str = "") -> None:
         """Stop using the portal because something else is signed in as the same user.
@@ -512,23 +562,39 @@ class MainWindow(QMainWindow):
         logger.info("Paused: the portal session is in use elsewhere")
 
         self._set_status("Paused — signed in elsewhere")
-        self.today.banner.show_message(
-            message
-            or (
-                "SpineHR is signed in somewhere else, so CerePulse has paused rather than "
-                "taking the session back. Showing cached data. Press Refresh when you are "
-                "done in the browser."
-            ),
-            Severity.WARNING,
-            key="session",
+        text = message or (
+            "SpineHR is signed in somewhere else, so CerePulse has paused rather than "
+            "taking the session back. Showing cached data. Press Refresh when you are "
+            "done in the browser."
         )
+        for banner in self._session_banners:
+            banner.show_message(text, Severity.WARNING, key="session")
 
     def _resume(self) -> None:
-        """Take the session back, because the user just asked for it."""
+        """Take the session back, because the user just asked for it.
+
+        Clearing the flag is not enough on its own, and used not to be: the very next
+        request would bounce to the login page, the auth layer would read that as a second
+        eviction, and the app would pause again before the user had finished reading the
+        banner clearing. Authorising one sign-in is what turns Refresh from a gesture into
+        the thing it says it is.
+        """
         self._paused = False
-        self.today.banner.clear_message("session")
+        for banner in self._session_banners:
+            banner.clear_message("session")
+        self._context.auth.expect_reclaim()
         self._auto.start()
         logger.info("Resuming: reclaiming the portal session at the user's request")
+
+    @property
+    def _session_banners(self) -> tuple[Banner, ...]:
+        """Every banner a session message goes on.
+
+        One screen is not enough. The pause is most often triggered from Records or
+        Attendance — those are the screens with a portal button — and writing the
+        explanation only to Today put it where the user demonstrably was not looking.
+        """
+        return (self.today.banner, self.records.banner, self.attendance.banner)
 
     def sync_history(self) -> None:
         self.settings.banner.show_message("Fetching history…", Severity.INFO)
@@ -768,9 +834,30 @@ class MainWindow(QMainWindow):
         """Where an action leads. Insight chips and the next-action card share the set."""
         kind = getattr(action, "kind", None)
         if kind is ActionKind.OPEN_SWIPE_REQUEST:
-            self._open_portal(pages.SWIPE_REQUESTS)
+            self._copy_request_date(getattr(action, "on", None))
+            self._open_portal(pages.SWIPE_REQUESTS, menu=MENU_SWIPE)
         elif kind is ActionKind.OPEN_ATTENDANCE:
-            self._open_portal(pages.ATTENDANCE_REPORT)
+            self._open_portal(pages.ATTENDANCE_REPORT, menu=MENU_ATTENDANCE)
+
+    def _copy_request_date(self, day: date | None) -> None:
+        """Put the request date on the clipboard, in the portal's own format.
+
+        The form itself cannot be pre-filled: Add New is a postback on the list page, so the
+        Type, Category and Request Date controls do not exist until the user clicks it, and
+        no URL addresses them. Type and Category are dropdowns anyway. The date is the one
+        field that has to be typed, and it is the one thing the app already knows — so it
+        goes on the clipboard rather than being read off one window and retyped into
+        another. ``14-Jul-26`` is the portal's own rendering, zero-padded, so it can be
+        pasted without editing.
+        """
+        if day is None:
+            return
+        clipboard = QApplication.clipboard()
+        if clipboard is None:  # offscreen and some remote sessions have none
+            return
+        stamp = day.strftime("%d-%b-%y")
+        clipboard.setText(stamp)
+        self._set_status(f"Copied {stamp}")
 
     def _save_config(self, config: object) -> None:
         from cerepulse.core.config import save_config

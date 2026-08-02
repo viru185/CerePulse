@@ -24,6 +24,7 @@ itself would have posted.
 from __future__ import annotations
 
 import html
+import json
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -49,8 +50,28 @@ class Handover:
         self.url = url
         self._server = server
         self._thread = thread
+        self._stopped = threading.Event()
 
     def stop(self) -> None:
+        """Take the page down. Safe to call twice, and called from two directions.
+
+        Once by the request handler the moment the page has been served, and once by the
+        timer for a page nobody ever fetched. Whichever gets there first wins; the other
+        returns immediately rather than blocking on a server that is already closing.
+        """
+        if self._stopped.is_set():
+            return
+        self._stopped.set()
+        # Logged here rather than after the join: this runs on the caller's thread, where
+        # the sink is known to still exist. The teardown below is a detached daemon and can
+        # outlive whatever configured logging, which is a good way to end up writing to a
+        # closed file to announce that a server closed.
+        logger.info("Taking the handover page down")
+        # Never from the serving thread itself: `shutdown` waits for the serve loop to
+        # exit, and the serve loop is what would be calling it.
+        threading.Thread(target=self._shutdown, name="cerepulse-handover-stop", daemon=True).start()
+
+    def _shutdown(self) -> None:
         self._server.shutdown()
         self._server.server_close()
         self._thread.join(timeout=2)
@@ -74,14 +95,24 @@ def prepare(client: HttpClient, username: str, password: str, *, landing: str = 
     page = _page(action, fields, target)
 
     token = secrets.token_urlsafe(16)
-    server = HTTPServer(("127.0.0.1", 0), _handler_for(token, page))
-    server.timeout = TIMEOUT_SECONDS
+    # The handler needs the Handover to shut itself down, and the Handover needs the server
+    # the handler is part of. A one-element list breaks the cycle without a global.
+    handle: list[Handover] = []
+    server = HTTPServer(("127.0.0.1", 0), _handler_for(token, page, handle))
     thread = threading.Thread(target=server.serve_forever, name="cerepulse-handover", daemon=True)
     thread.start()
 
     port = server.server_address[1]
+    handover = Handover(f"http://127.0.0.1:{port}/{token}", server, thread)
+    handle.append(handover)
+
+    # A page nobody fetches must not sit there holding a credential until the app exits.
+    # `server.timeout` does not do this: it only applies to `handle_request`, and the thread
+    # runs `serve_forever`, which ignores it — so this promise was previously unkept.
+    threading.Timer(TIMEOUT_SECONDS, handover.stop).start()
+
     logger.info("Handover page ready on 127.0.0.1:{}", port)
-    return Handover(f"http://127.0.0.1:{port}/{token}", server, thread)
+    return handover
 
 
 def _login_state(client: HttpClient) -> WebFormsState:
@@ -92,11 +123,21 @@ def _login_state(client: HttpClient) -> WebFormsState:
 
 
 def _page(action: str, fields: dict[str, str], landing: str) -> bytes:
-    """A form that posts itself the moment it loads.
+    """A form that posts itself the moment it loads, then follows on to the landing page.
 
     Rendered as hidden inputs rather than assembled as a URL: the credential must not end
     up in a query string, where it would be written to the browser's history and to every
     proxy log on the way.
+
+    The post goes into a hidden iframe rather than the top window, which is what makes the
+    landing page reachable at all. Submitting at the top level hands control to the portal
+    the instant the response arrives, and nothing can run afterwards to go anywhere else —
+    which is why ``landing`` was computed, stored and silently ignored until now. In the
+    iframe the login completes, the browser keeps the cookies it was issued, and this page
+    survives to navigate.
+
+    The iframe is cross-origin, so its contents cannot be read; only that it finished
+    loading. That is enough, and reading more would be the browser correctly refusing.
     """
     inputs = "\n".join(
         f'<input type="hidden" name="{html.escape(name)}" value="{html.escape(value)}">'
@@ -110,16 +151,31 @@ def _page(action: str, fields: dict[str, str], landing: str) -> bytes:
 <p style="color:#888;font-size:.9em">
 CerePulse has handed its session over and paused. It will not sign back in until you ask it
 to.</p>
-<form id="f" method="post" action="{html.escape(action)}">{inputs}</form>
+<form id="f" method="post" target="signin" action="{html.escape(action)}">{inputs}</form>
+<iframe name="signin" style="display:none" title="sign-in"></iframe>
 <script>
-  document.title = "Opening SpineHR";
-  sessionStorage.setItem("cerepulse-landing", {landing!r});
+  var landing = {json.dumps(landing)};
+  var frame = document.getElementsByName("signin")[0];
+  var gone = false;
+  function go() {{
+    if (gone) return;
+    gone = true;
+    window.location.replace(landing);
+  }}
+  // The iframe fires load once for its initial blank document and again when the login
+  // response lands; only the second one means the cookies exist.
+  var loads = 0;
+  frame.addEventListener("load", function () {{ if (++loads >= 2) go(); }});
+  // A backstop, because a login that redirects oddly could leave that count short. Landing
+  // signed out is recoverable — the portal shows its login page — and hanging on this
+  // screen is not.
+  setTimeout(go, 8000);
   document.getElementById("f").submit();
 </script>
 </body>""".encode()
 
 
-def _handler_for(token: str, page: bytes) -> type[BaseHTTPRequestHandler]:
+def _handler_for(token: str, page: bytes, handle: list[Handover]) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — http.server API
             # The token makes the URL unguessable, so nothing else on the machine can fetch
@@ -134,6 +190,13 @@ def _handler_for(token: str, page: bytes) -> type[BaseHTTPRequestHandler]:
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(page)
+            self.wfile.flush()
+
+            # Served once, and that is the whole life of it. Without this the page — and the
+            # encrypted credential in it — stayed available on localhost until the app quit,
+            # which the module docstring already claimed was not the case.
+            if handle:
+                handle[0].stop()
 
         def log_message(self, format: str, *args: object) -> None:
             """Silence http.server's stderr logging; it would print the token."""

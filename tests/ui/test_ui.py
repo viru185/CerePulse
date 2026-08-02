@@ -296,8 +296,9 @@ def test_today_leads_with_the_instruction(qapp: QApplication) -> None:
     assert view._next_action._headline.text() == analysis.next_action.headline
 
 
-def test_the_cards_report_what_is_left_not_what_is_spent(qapp: QApplication) -> None:
-    """Break 42m reads as an achievement; the question at 3 PM is what is still yours."""
+def test_both_cards_lead_with_what_has_been_done(qapp: QApplication) -> None:
+    """They used to disagree: Worked showed elapsed, Break showed remaining. Two numbers
+    side by side described in opposite grammars cannot be read as a pair."""
     analysis = analyze_day(
         punches(("09:00", "in"), ("12:30", "out"), ("13:00", "in")),
         day=DAY,
@@ -306,8 +307,51 @@ def test_the_cards_report_what_is_left_not_what_is_spent(qapp: QApplication) -> 
     view = TodayView(DARK)
     view.show_analysis(analysis, is_today=True)
 
-    assert view.break_left._value.text() == fmt.duration(analysis.break_remaining)
-    assert "taken" in view.break_left._caption.text()
+    assert view.worked._value.text() == fmt.duration(analysis.worked)
+    assert view.break_taken._value.text() == fmt.duration(analysis.break_taken)
+
+
+def test_both_captions_name_their_target_and_then_the_verdict(qapp: QApplication) -> None:
+    """The break card never named `break_target`, so its number had nothing to be
+    measured against."""
+    analysis = analyze_day(
+        punches(("09:00", "in"), ("12:30", "out"), ("13:00", "in")),
+        day=DAY,
+        now=datetime(2026, 7, 28, 15, 0),
+    )
+    view = TodayView(DARK)
+    view.show_analysis(analysis, is_today=True)
+
+    for caption in (view.worked._caption.text(), view.break_taken._caption.text()):
+        assert "target" in caption
+        assert "left" in caption or "over" in caption or "met" in caption
+
+
+def test_an_overrun_break_says_by_how_much(qapp: QApplication) -> None:
+    """It used to read the bare word "None" — true of what was left, silent about the one
+    number anyone actually wants."""
+    analysis = analyze_day(
+        punches(("09:00", "in"), ("12:00", "out"), ("14:00", "in"), ("18:00", "out")),
+        day=DAY,
+    )
+    view = TodayView(DARK)
+    view.show_analysis(analysis, is_today=False)
+
+    assert analysis.break_over.minutes > 0, "two hours off against a one-hour allowance"
+    assert "None" not in view.break_taken._value.text()
+    assert f"{fmt.duration(analysis.break_over)} over" in view.break_taken._caption.text()
+
+
+def test_a_break_inside_its_allowance_says_what_is_left(qapp: QApplication) -> None:
+    analysis = analyze_day(
+        punches(("09:00", "in"), ("12:30", "out"), ("13:00", "in")),
+        day=DAY,
+        now=datetime(2026, 7, 28, 15, 0),
+    )
+    view = TodayView(DARK)
+    view.show_analysis(analysis, is_today=True)
+
+    assert f"{fmt.duration(analysis.break_remaining)} left" in view.break_taken._caption.text()
 
 
 def test_worked_carries_its_own_consequence(qapp: QApplication) -> None:

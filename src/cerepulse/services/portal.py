@@ -131,6 +131,15 @@ class PortalGateway:
     def _url(self, label: str, section: str) -> str:
         return self.menu().require(label, section=section).url
 
+    def page_url(self, label: str, section: str) -> str:
+        """A page's full URL, privilege token and all, for handing to a browser.
+
+        Public because the deep link the app opens in a browser has to be a real menu URL:
+        `/Atten/SwipeRequestList.aspx` on its own is answered with the privileges page, and
+        the `?mnusr=` token cannot be invented — it is only ever read off the live menu.
+        """
+        return self._retrying_stale_menu(lambda: self._url(label, section))
+
     def _retrying_stale_menu(self, operation: Callable[[], T]) -> T:
         """Run an operation, reloading the menu once if its token turned out to be stale.
 

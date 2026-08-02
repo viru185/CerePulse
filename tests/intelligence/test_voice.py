@@ -121,6 +121,47 @@ def test_half_an_hour_over_is_not_called_a_rounding_error() -> None:
     assert "Barely counts" not in detail
 
 
+def test_a_clean_break_is_congratulated_at_the_free_to_go_moment() -> None:
+    """The only place a break kept inside its allowance can be praised. Staying under
+    produces no insight of its own, precisely because there is nothing to warn about — so
+    the app noticed every long lunch and never once a short one."""
+    analysis = analyze_day(
+        punches(("09:00", "in"), ("13:00", "out"), ("13:45", "in")), day=DAY, now=at("18:15")
+    )
+    assert analysis.break_over.minutes == 0, "45 minutes against a one-hour allowance"
+
+    plain = find(analysis, InsightKind.ON_TRACK)
+    voiced = find(voice_day(analysis, tone=Tone.PLAYFUL), InsightKind.ON_TRACK)
+
+    assert voiced.detail != plain.detail
+    assert voiced.detail.startswith(plain.detail), "added to the fact, not instead of it"
+
+
+def test_praise_for_discipline_has_to_be_earned() -> None:
+    """A compliment paid on every day is not a compliment."""
+    from cerepulse.intelligence.voice import _QUIPS
+
+    overran = analyze_day(
+        punches(("09:00", "in"), ("12:00", "out"), ("14:30", "in")), day=DAY, now=at("19:30")
+    )
+    assert overran.break_over.minutes > 0, "two and a half hours against a one-hour allowance"
+
+    voiced = find(voice_day(overran, tone=Tone.PLAYFUL), InsightKind.ON_TRACK)
+    assert not any(line in voiced.detail for line in _QUIPS[(InsightKind.ON_TRACK, "disciplined")])
+
+
+def test_a_day_with_no_break_at_all_is_not_praised_for_discipline() -> None:
+    """Skipping lunch entirely is not the behaviour to congratulate, and calling it a
+    well-judged break would be the app misreading someone having a bad day."""
+    from cerepulse.intelligence.voice import _QUIPS
+
+    straight = analyze_day(punches(("09:00", "in")), day=DAY, now=at("18:30"))
+    assert straight.break_taken.minutes == 0
+
+    voiced = find(voice_day(straight, tone=Tone.PLAYFUL), InsightKind.ON_TRACK)
+    assert not any(line in voiced.detail for line in _QUIPS[(InsightKind.ON_TRACK, "disciplined")])
+
+
 def test_break_headroom_never_gets_a_quip() -> None:
     """It sits on screen all morning; a daily joke there is the first thing to be muted."""
     analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=at("11:00"))

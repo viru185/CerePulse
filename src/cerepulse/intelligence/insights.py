@@ -8,6 +8,7 @@ conclusions from raw numbers.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from enum import Enum
 
 
@@ -61,6 +62,13 @@ class Action:
 
     kind: ActionKind
     label: str
+    #: The day the action is about, when it is about one. Still only navigation — this
+    #: opens a page *concerning* a date, and the app files nothing. It exists because the
+    #: portal's swipe form cannot be pre-filled from outside (Add New is a postback, and
+    #: the fields do not exist until it fires), so the most the app can do is put the date
+    #: where the user can paste it rather than read it off one window and type it into
+    #: another.
+    on: date | None = None
 
 
 @dataclass(frozen=True, slots=True)

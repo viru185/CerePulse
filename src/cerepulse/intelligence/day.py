@@ -106,6 +106,25 @@ class DayAnalysis:
         return self.work_remaining.minutes == 0 and self.state is not DayState.EMPTY
 
     @property
+    def break_over(self) -> Duration:
+        """Break taken beyond the allowance, floored at zero.
+
+        The mirror of :attr:`extra_worked`, and the one number the break card could not
+        show: over its allowance the card said the bare word "None" — meaning no break
+        remaining — while the amount by which it had been overrun appeared nowhere. This
+        subtraction was already being done twice inside this module; naming it stops the
+        view doing it a third time.
+        """
+        return _clamp(self.break_taken - self.policy.break_target)
+
+    @property
+    def break_completion(self) -> float:
+        """Fraction of the break allowance used. Exceeds 1.0 on a long lunch, as work does."""
+        if self.policy.break_target.minutes <= 0:
+            return 0.0
+        return self.break_taken.minutes / self.policy.break_target.minutes
+
+    @property
     def leave_at(self) -> datetime | None:
         """When the work target is satisfied — the single most useful number on Today."""
         return self.expected_out_break_adjusted
@@ -288,7 +307,7 @@ def _with_insights(
                 Severity.WARNING,
                 "Consider a swipe request",
                 "This day is short of the target and no request has been filed.",
-                Action(ActionKind.OPEN_SWIPE_REQUEST, "Raise swipe request"),
+                Action(ActionKind.OPEN_SWIPE_REQUEST, "Raise swipe request", on=analysis.day),
             )
         )
 

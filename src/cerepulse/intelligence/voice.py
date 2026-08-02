@@ -116,6 +116,16 @@ def _bucket(insight: Insight, analysis: DayAnalysis) -> str | None:
         return _band(analysis.break_taken, (0, "over"), (105, "leisurely"), (150, "epic"))
 
     if insight.kind is InsightKind.ON_TRACK:
+        # The free-to-go moment: hours done and still clocked in. It is the one place the
+        # *break* can be praised, because a break kept inside its allowance produces no
+        # insight of its own — there is nothing to warn about — so the app noticed every
+        # long lunch and never once a short one.
+        #
+        # No state test here. ON_TRACK is only ever raised on an INCOMPLETE day (see
+        # `_with_insights`), so asking for COMPLETE as well would have made this bucket
+        # unreachable — which is exactly what the first attempt did.
+        if analysis.break_over.minutes == 0 and analysis.break_taken.minutes > 0:
+            return "disciplined"
         return "free"
 
     # Break headroom deliberately gets nothing. It is a live figure that sits on screen for
@@ -203,6 +213,11 @@ _QUIPS: dict[tuple[InsightKind, str], tuple[str, ...]] = {
         "Everything past this point is a gift.",
         "The rest of today is yours.",
         "You may leave at any time. No notes.",
+    ),
+    (InsightKind.ON_TRACK, "disciplined"): (
+        "Hours in, break inside its allowance. A tidy day.",
+        "Target met and the break behaved. Nothing to tidy up.",
+        "Full day, honest lunch. That is the whole job.",
     ),
     (InsightKind.NO_PUNCHES, "weekend"): (
         "It is the weekend. That is rather the point.",

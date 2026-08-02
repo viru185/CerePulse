@@ -71,6 +71,70 @@ def test_either_way_the_session_is_marked_expired(auth: AuthManager) -> None:
     assert auth.state is SessionState.EXPIRED
 
 
+# --- ending the truce -----------------------------------------------------------------
+#
+# The truce is right by default and wrong the moment the user asks for the session back.
+# `looks_evicted` measures time since the app's own last request, and while paused the app
+# makes none — so that clock ends up timing the trip to the browser. Coming back promptly
+# was read as a *second* eviction and paused the app again, which is why Refresh looked
+# broken; taking longer than the idle timeout always worked, which is why it looked random.
+
+
+def test_reclaiming_lets_the_next_expiry_sign_back_in(auth: AuthManager) -> None:
+    _active(auth, seconds_ago=30)
+    auth.expect_reclaim()
+
+    with pytest.raises(SessionExpiredError) as raised:
+        auth.check_response(LOGIN_REDIRECT)
+    assert not isinstance(raised.value, SessionTakenError), "the user asked for this one"
+
+
+def test_reclaiming_is_spent_after_one_use(auth: AuthManager) -> None:
+    """Not a mode. A session taken *after* the user reclaimed it is a new event, and they
+    have not asked for that one back."""
+    _active(auth, seconds_ago=30)
+    auth.expect_reclaim()
+
+    with pytest.raises(SessionExpiredError):
+        auth.check_response(LOGIN_REDIRECT)
+    with pytest.raises(SessionTakenError):
+        auth.check_response(LOGIN_REDIRECT)
+
+
+def test_reclaiming_still_marks_the_session_expired(auth: AuthManager) -> None:
+    _active(auth, seconds_ago=30)
+    auth.expect_reclaim()
+
+    with pytest.raises(SessionExpiredError):
+        auth.check_response(LOGIN_REDIRECT)
+    assert auth.state is SessionState.EXPIRED
+
+
+def test_reclaiming_also_covers_the_menu_less_landing_page(auth: AuthManager) -> None:
+    """The third shape of a dead session has to honour the reclaim too, or resuming works
+    on two of the portal's three ways of saying "signed out"."""
+    _active(auth, seconds_ago=30)
+    auth.expect_reclaim()
+
+    with pytest.raises(SessionExpiredError) as raised:
+        _gateway(auth, "<html><body>Signed out.</body></html>").menu()
+    assert not isinstance(raised.value, SessionTakenError)
+
+
+def test_an_untouched_reclaim_does_not_leak_into_a_later_eviction(auth: AuthManager) -> None:
+    """Resuming when the session turned out to be fine must not arm a free pass that fires
+    hours later against a genuine theft."""
+    _active(auth, seconds_ago=30)
+    auth.expect_reclaim()
+    auth.check_response(httpx.Response(200, text=MENU_PAGE))  # a live page: nothing consumed
+
+    with pytest.raises(SessionExpiredError) as raised:
+        auth.check_response(LOGIN_REDIRECT)
+    assert not isinstance(raised.value, SessionTakenError), (
+        "the reclaim is spent by the next expiry, whenever that is"
+    )
+
+
 def test_a_taken_session_is_still_an_expired_session(auth: AuthManager) -> None:
     """Subclassing matters: every existing `except SessionExpiredError` still catches it,
     so nothing that used to recover silently starts crashing instead."""

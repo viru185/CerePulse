@@ -33,6 +33,7 @@ from cerepulse.intelligence.day import DayAnalysis, DayState
 from cerepulse.intelligence.insights import Insight, InsightKind
 from cerepulse.intelligence.next_action import NextActionKind, Presence, presence_of
 from cerepulse.models.attendance import PunchDirection
+from cerepulse.models.values import Duration
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette, Space
 from cerepulse.ui.widgets import (
@@ -245,16 +246,17 @@ class TodayView(QWidget):
         # carries the figure and its consequence; break is a separate question and keeps
         # its own.
         #
-        # Named for what is left rather than what is done. "Break 42m" reads as an
-        # achievement; the question anyone actually has at 3 PM is how much of the
-        # allowance is still theirs to spend.
+        # Both lead with what has been *done*. They used to disagree — Worked showed elapsed
+        # and Break showed remaining, each relegating the other half to its caption — which
+        # made two numbers sitting side by side impossible to read as a pair. Whether that
+        # is enough is the caption's job, and it says so for both in the same words.
         self.worked = Card("Worked", clickable=True)
-        self.break_left = Card("Break Remaining", clickable=True)
+        self.break_taken = Card("Break", clickable=True)
 
         self.worked.clicked.connect(lambda: self._explain("worked"))
-        self.break_left.clicked.connect(lambda: self._explain("break_taken"))
+        self.break_taken.clicked.connect(lambda: self._explain("break_taken"))
 
-        return card_row(self.worked, self.break_left)
+        return card_row(self.worked, self.break_taken)
 
     # --- rendering ------------------------------------------------------------------
 
@@ -327,7 +329,7 @@ class TodayView(QWidget):
             f"It appears once your first punch of the day is recorded."
         )
 
-        for card in (self.worked, self.break_left):
+        for card in (self.worked, self.break_taken):
             card.set_value(fmt.EMPTY)
             card.set_caption("")
         self._next_action.setVisible(False)
@@ -382,34 +384,42 @@ class TodayView(QWidget):
         palette = self._palette
         empty = analysis.state is DayState.EMPTY
 
-        # One card for the whole target question: what has been worked, and what that
-        # leaves. Remaining and overtime were separate cards, but they are the same fact
-        # read from either side and only one of them is ever non-zero.
+        # Two cards, one grammar: the value is what has been done, the caption names the
+        # target and then says where that leaves you. Remaining and overtime were once
+        # separate cards, but they are the same fact read from either side and only one of
+        # them is ever non-zero — so they are the verdict, not a figure of their own.
         self.worked.set_value(fmt.duration(analysis.worked), accent=palette.work)
-        if empty:
-            self.worked.set_caption("nothing logged")
-        elif analysis.work_remaining:
-            self.worked.set_caption(
-                f"of {analysis.policy.work_target} target  ·  "
-                f"{fmt.duration(analysis.work_remaining)} left"
+        self.worked.set_caption(
+            "nothing logged"
+            if empty
+            else _verdict(
+                analysis.policy.work_target,
+                left=analysis.work_remaining,
+                over=analysis.extra_worked,
+                over_word="overtime",
             )
-        elif analysis.extra_worked:
-            self.worked.set_caption(
-                f"of {analysis.policy.work_target} target  ·  "
-                f"{fmt.duration(analysis.extra_worked)} overtime"
-            )
-        else:
-            self.worked.set_caption(f"of {analysis.policy.work_target} target  ·  target met")
+        )
 
         if empty:
-            self.break_left.set_value(fmt.EMPTY)
-            self.break_left.set_caption("")
-        elif analysis.break_remaining:
-            self.break_left.set_value(fmt.duration(analysis.break_remaining), accent=palette.rest)
-            self.break_left.set_caption(f"{fmt.duration(analysis.break_taken)} taken")
+            self.break_taken.set_value(fmt.EMPTY)
+            self.break_taken.set_caption("")
         else:
-            self.break_left.set_value("None", accent=palette.text_muted)
-            self.break_left.set_caption(f"{fmt.duration(analysis.break_taken)} taken — over")
+            # Over the allowance the card used to read "None" — true of what was *left*,
+            # silent about by how much it had been overrun, which is the number anyone
+            # actually wants. Colour carries the same judgement as the words.
+            over = analysis.break_over
+            self.break_taken.set_value(
+                fmt.duration(analysis.break_taken),
+                accent=palette.bad if over else palette.rest,
+            )
+            self.break_taken.set_caption(
+                _verdict(
+                    analysis.policy.break_target,
+                    left=analysis.break_remaining,
+                    over=over,
+                    over_word="over",
+                )
+            )
 
     def _render_presence(self, analysis: DayAnalysis, *, is_today: bool) -> None:
         """Say where you are now, which the four durations between them never did."""
@@ -537,6 +547,21 @@ class TodayView(QWidget):
         QApplication.clipboard().setText(summary_text(self._analysis))
         self._copy.setText("Copied")
         QTimer.singleShot(1500, lambda: self._copy.setText("Copy summary"))
+
+
+def _verdict(target: Duration, *, left: Duration, over: Duration, over_word: str) -> str:
+    """ "of 8h target · 45m left", or "· 12m over", or "· target met".
+
+    One sentence shape for work and for break, because the whole complaint about these two
+    cards was that they described the same relationship in two different grammars. Only one
+    of ``left`` and ``over`` is ever non-zero; both being zero is the target landed exactly.
+    """
+    stem = f"of {target} target  ·  "
+    if left:
+        return f"{stem}{fmt.duration(left)} left"
+    if over:
+        return f"{stem}{fmt.duration(over)} {over_word}"
+    return f"{stem}target met"
 
 
 def summary_text(analysis: DayAnalysis) -> str:

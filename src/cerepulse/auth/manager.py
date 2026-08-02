@@ -65,6 +65,8 @@ class AuthManager:
         self._username = ""
         #: Called with no arguments when a replay needs fresh credentials.
         self.credential_provider: Callable[[], tuple[str, str]] | None = None
+        #: Set by :meth:`expect_reclaim` and cleared by the next :meth:`session_lost`.
+        self._reclaiming = False
 
     # --- state ----------------------------------------------------------------------
 
@@ -198,6 +200,24 @@ class AuthManager:
         self._transition(SessionState.AUTHENTICATED)
         return True
 
+    def expect_reclaim(self) -> None:
+        """Authorise exactly one sign-in over the top of whatever holds the session.
+
+        The truce is right by default and wrong the moment the user asks for the session
+        back. :meth:`looks_evicted` decides by measuring how long since the app's own last
+        request — but while paused the app makes no requests at all, so that clock ends up
+        timing the user's trip to the browser rather than anything about the session. Come
+        back inside :data:`IDLE_TIMEOUT_SECONDS` and the deliberate refusal to re-authenticate
+        fires again, the app pauses a second time, and Refresh looks broken. Take longer and
+        it works, which is what made it look random rather than wrong.
+
+        One use, consumed by the next :meth:`session_lost`. Not a mode: a session genuinely
+        taken *after* the user reclaimed it still pauses, because that is a new event and
+        they have not asked for that one back.
+        """
+        logger.info("Next expiry is expected: the user asked for the session back")
+        self._reclaiming = True
+
     def session_lost(self, detail: str) -> SessionExpiredError:
         """Mark the session dead and return the error that fits how it died.
 
@@ -207,6 +227,9 @@ class AuthManager:
         only some of them look like the login page.
         """
         self._transition(SessionState.EXPIRED)
+        if self._reclaiming:
+            self._reclaiming = False
+            return SessionExpiredError(f"{detail}; signing back in at the user's request")
         if self.looks_evicted():
             return SessionTakenError(
                 f"{detail}; the session ended while the app was still using it, "

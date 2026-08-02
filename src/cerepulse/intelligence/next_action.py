@@ -209,7 +209,7 @@ def _swipe_request(analysis: DayAnalysis, detail: str) -> NextAction:
         "Raise a swipe request",
         detail,
         severity=Severity.WARNING,
-        action=Action(ActionKind.OPEN_SWIPE_REQUEST, "Open SpineHR"),
+        action=Action(ActionKind.OPEN_SWIPE_REQUEST, "Open SpineHR", on=analysis.day),
     )
 
 
