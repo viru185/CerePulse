@@ -76,6 +76,9 @@ class TodayView(QWidget):
         super().__init__(parent)
         self._palette = palette
         self._analysis: DayAnalysis | None = None
+        #: Whether the screen was reached by drilling in from another one, which is what
+        #: keeps the context bar up even on today's own date.
+        self._drilled_in = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -181,7 +184,7 @@ class TodayView(QWidget):
 
         # Reading back through a week is the common case, and a calendar popup makes it
         # three clicks a day. These make it one.
-        self._previous_day = QPushButton("‹")
+        self._previous_day = QPushButton("◀")
         self._previous_day.setFixedWidth(30)
         self._previous_day.setToolTip("Previous day")
         self._previous_day.clicked.connect(lambda: self._step_day(-1))
@@ -198,7 +201,7 @@ class TodayView(QWidget):
         self._picker.dateChanged.connect(self._on_date_picked)
         top.addWidget(self._picker)
 
-        self._next_day = QPushButton("›")
+        self._next_day = QPushButton("▶")
         self._next_day.setFixedWidth(30)
         self._next_day.setToolTip("Next day")
         self._next_day.clicked.connect(lambda: self._step_day(1))
@@ -291,7 +294,11 @@ class TodayView(QWidget):
 
     def set_back_target(self, origin: str | None) -> None:
         """Name where the exit leads. ``None`` means the only way out is back to today."""
-        self._back.setText(f"← Back to {origin}" if origin else "Back to today")
+        # Recorded as a flag rather than re-read from the button's own text later. Inferring
+        # it from a leading arrow character made a glyph load-bearing, so changing the arrow
+        # silently changed when the context bar appears.
+        self._drilled_in = origin is not None
+        self._back.setText(f"◀ Back to {origin}" if origin else "Back to today")
 
     def show_awaiting_today(self, day: date, last_synced: datetime | None = None) -> None:
         """State plainly that today has not arrived in the data yet.
@@ -330,8 +337,7 @@ class TodayView(QWidget):
 
         # The bar is also the way back when the user drilled in from another screen, so it
         # stays up for today's own date when there is somewhere to return to.
-        drilled_in = self._back.text().startswith("←")
-        self._context_bar.setVisible(not is_today or drilled_in)
+        self._context_bar.setVisible(not is_today or self._drilled_in)
         self._viewing.setText("" if is_today else f"Viewing {fmt.long_day_label(analysis.day)}")
 
         self._render_presence(analysis, is_today=is_today)

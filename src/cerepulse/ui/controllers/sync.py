@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import date, datetime
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -337,23 +336,6 @@ class SyncController(QObject):
             on_success=on_success,
             on_error=self.failed.emit,
         )
-
-    def export_calendar(self, target: Path, on_success: Success, on_error: Failure) -> None:
-        """Gather and write the .ics off-thread. The save location is chosen by the caller."""
-        from cerepulse.export.ics import build_calendar
-
-        employee = self.employee_code
-
-        def run() -> int:
-            today = date.today()
-            taken = self._context.attendance.leave_days(
-                employee, start=date(today.year, 1, 1), end=date(today.year, 12, 31)
-            )
-            events = self._context.leave.calendar_events(employee, leave_taken=taken, today=today)
-            target.write_text(build_calendar(events), encoding="utf-8", newline="")
-            return len(events)
-
-        self._runner.submit("export-ics", run, on_success=on_success, on_error=on_error)
 
 
 __all__ = ["SyncController"]

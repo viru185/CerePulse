@@ -95,9 +95,33 @@ LIGHT = Palette(
     overlay="#F4F4F5",
 )
 
-#: Native on Windows 11, with a tabular-figures variant for anything numeric.
-FONT_FAMILY = '"Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif'
+#: Native on Windows 11.
+#:
+#: Only the *first* name here does anything. Qt style sheets do not implement CSS font
+#: fallback: ``font-family`` resolves to one family and the rest of the list is decoration
+#: (``system-ui`` is not even a generic Qt recognises). That is why the ‹ › buttons rendered
+#: blank — Segoe UI Variable Text lacks those code points and there was no way to fall back
+#: to Segoe UI, which has them. Real fallback comes from :func:`apply_font`.
+FONT_FAMILY = '"Segoe UI Variable Text", "Segoe UI", sans-serif'
 MONO_FAMILY = '"Cascadia Mono", "Consolas", monospace'
+
+#: The chain Qt actually walks, in order, for a code point the previous family lacks.
+FONT_FALLBACKS = ("Segoe UI Variable Text", "Segoe UI", "Segoe UI Symbol", "Arial")
+
+
+def apply_font(application: object) -> None:
+    """Give the whole application a font with a real fallback chain.
+
+    ``QFont.setFamilies`` is the only thing in Qt that behaves the way a CSS font stack
+    reads: each family is tried in turn for every character. Setting this on the
+    ``QApplication`` means a glyph missing from the primary family is drawn from the next
+    one instead of coming out as a blank box.
+    """
+    from PySide6.QtGui import QFont
+
+    font = QFont()
+    font.setFamilies(list(FONT_FALLBACKS))
+    application.setFont(font)  # type: ignore[attr-defined]
 
 
 class Space:

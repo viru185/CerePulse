@@ -201,8 +201,8 @@ def test_tooltip_counts_down_while_still_clocked_in() -> None:
     text = Tray.tooltip_text(analysis, now=datetime(2026, 7, 28, 13, 0))
 
     assert "Leave at 6:00 PM" in text
-    assert "5:00 to go" in text
-    assert "Worked 4:00" in text
+    assert "5h to go" in text
+    assert "Worked 4h" in text
 
 
 def test_tooltip_says_you_can_go_once_the_target_is_met() -> None:

@@ -262,7 +262,7 @@ def test_every_headline_metric_can_explain_itself() -> None:
 
 def test_worked_explanation_shows_the_segments() -> None:
     analysis = analyze_day(punches(*FULL_DAY), day=DAY)
-    assert analysis.explanations["worked"].formula == "4:00 + 4:00 = 8:00"
+    assert analysis.explanations["worked"].formula == "4h + 4h = 8h"
 
 
 def test_explanations_carry_repair_notes() -> None:
@@ -293,12 +293,10 @@ def test_the_target_gets_the_right_article() -> None:
     )
 
     assert (
-        "an 8:00 target"
-        in next(i for i in eight.insights if i.kind is InsightKind.EARLY_EXIT).detail
+        "an 8h target" in next(i for i in eight.insights if i.kind is InsightKind.EARLY_EXIT).detail
     )
     assert (
-        "a 7:00 target"
-        in next(i for i in seven.insights if i.kind is InsightKind.EARLY_EXIT).detail
+        "a 7h target" in next(i for i in seven.insights if i.kind is InsightKind.EARLY_EXIT).detail
     )
 
 
@@ -338,7 +336,7 @@ def test_an_in_progress_day_reports_free_break_headroom() -> None:
     )
     headroom = next(i for i in analysis.insights if i.kind is InsightKind.BREAK_HEADROOM)
 
-    assert "0:40" in headroom.title
+    assert "40m" in headroom.title
     assert "6:00 PM" in headroom.detail
 
 

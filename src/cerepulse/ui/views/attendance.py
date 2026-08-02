@@ -167,7 +167,7 @@ class AttendanceView(QWidget):
 
         # Stepping is what people actually do; the dropdown was the only way to move a month
         # and it makes reading three months in sequence six clicks instead of two.
-        previous = QPushButton("‹")
+        previous = QPushButton("◀")
         previous.setFixedWidth(30)
         previous.setToolTip("Previous month")
         previous.clicked.connect(lambda: self._step_month(-1))
@@ -178,7 +178,7 @@ class AttendanceView(QWidget):
         self._period.currentIndexChanged.connect(self._emit_month)
         row.addWidget(self._period)
 
-        self._next = QPushButton("›")
+        self._next = QPushButton("▶")
         self._next.setFixedWidth(30)
         self._next.setToolTip("Next month")
         self._next.clicked.connect(lambda: self._step_month(1))
@@ -348,8 +348,8 @@ class AttendanceView(QWidget):
                 _status_text(day.status),
                 fmt.clock_time(day.first_in),
                 fmt.clock_time(day.last_out),
-                day.total_hours.as_clock() if day.total_hours else fmt.EMPTY,
-                day.late_mark.as_clock() if day.late_mark else "",
+                fmt.duration(day.total_hours) if day.total_hours else fmt.EMPTY,
+                fmt.duration(day.late_mark) if day.late_mark else "",
                 _swipe_text(entry.requests),
                 day.remarks,
             )
@@ -531,14 +531,14 @@ class _DayDrawer(QWidget):
         day, analysis = entry.day, entry.analysis
         lines = [
             f"In {fmt.clock_time(day.first_in)}     Out {fmt.clock_time(day.last_out)}",
-            f"Span {day.total_hours.as_clock() if day.total_hours else fmt.EMPTY}",
+            f"Span {fmt.duration(day.total_hours) if day.total_hours else fmt.EMPTY}",
         ]
         if analysis is not None:
             lines.append(f"Worked {analysis.worked}     Break {analysis.break_taken}")
         elif entry.rollup is not None and entry.rollup.estimated:
             lines.append(f"Worked ≈{entry.rollup.worked}  (estimated)")
         if day.late_mark:
-            lines.append(f"Late {day.late_mark.as_clock()}")
+            lines.append(f"Late {day.late_mark}")
         return "\n".join(lines)
 
     def _note_text(self, entry: _Row) -> str:

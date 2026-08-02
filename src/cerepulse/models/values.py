@@ -90,12 +90,32 @@ class Duration:
         return self.minutes != 0
 
     def as_clock(self) -> str:
-        """Render as ``H:MM`` for display, with a leading sign when negative."""
+        """Render as ``H:MM``, with a leading sign when negative.
+
+        No longer the default. It still matches how the portal writes ``Tot. Hrs.``, which
+        is what makes it the right form for round-tripping and for tests that pin the
+        parser, but ``8:30`` sitting next to a real ``6:24 PM`` reads as another clock time
+        rather than as a length of time.
+        """
         sign = "-" if self.is_negative else ""
         return f"{sign}{self.hours}:{self.remainder_minutes:02d}"
 
+    def as_words(self) -> str:
+        """Render as ``8h 30m`` — unmistakably an interval rather than a time of day.
+
+        Whole hours drop the minutes and sub-hour spans drop the hours, because ``8h 00m``
+        and ``0h 45m`` both make the reader parse a component that carries nothing. Zero is
+        ``0m``: it is a measured nothing, and an empty string would read as missing data.
+        """
+        sign = "-" if self.is_negative else ""
+        if self.hours and self.remainder_minutes:
+            return f"{sign}{self.hours}h {self.remainder_minutes:02d}m"
+        if self.hours:
+            return f"{sign}{self.hours}h"
+        return f"{sign}{self.remainder_minutes}m"
+
     def __str__(self) -> str:
-        return self.as_clock()
+        return self.as_words()
 
 
 ZERO = Duration(0)

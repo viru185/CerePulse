@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
@@ -10,7 +9,6 @@ from loguru import logger
 
 from cerepulse.core.config import AppConfig
 from cerepulse.core.errors import TransportError
-from cerepulse.export.ics import CalendarEvent
 from cerepulse.intelligence.attention import StatusChange, status_changes
 from cerepulse.intelligence.insights import Insight
 from cerepulse.intelligence.leave import LeaveOutlook, LeavePolicy, analyze_leave, leave_insights
@@ -179,51 +177,6 @@ class LeaveService:
             rule=self.sandwich_rule(),
             holidays={holiday.day for holiday in self._holidays.find_all() if holiday.day >= now},
         )
-
-    def calendar_events(
-        self,
-        employee_code: str,
-        *,
-        leave_taken: Iterable[date] = (),
-        today: date | None = None,
-    ) -> list[CalendarEvent]:
-        """Everything worth having in a personal calendar, as all-day events.
-
-        Holidays and leave already taken are facts the portal holds. Expiry deadlines are
-        included because they are the one thing it never tells anyone, and a date in a
-        calendar is the only form of that warning that survives closing this app.
-
-        ``leave_taken`` is passed in rather than read here: those dates come from the
-        attendance grid, which is not this service's to reach into.
-        """
-        now = today or date.today()
-        events = [
-            CalendarEvent(
-                day=holiday.day,
-                summary=holiday.name or "Company holiday",
-                category="HOLIDAY",
-            )
-            for holiday in self._holidays.find_all()
-        ]
-        events += [CalendarEvent(day=day, summary="Leave", category="LEAVE") for day in leave_taken]
-
-        outlooks = analyze_leave(
-            self._leave.find_balances(employee_code), today=now, policy=self._policy
-        )
-        events += [
-            CalendarEvent(
-                day=outlook.expires_on,
-                summary=f"{outlook.balance.leave_type} expires",
-                description=(
-                    f"{outlook.balance.available_balance:g} day(s) of "
-                    f"{outlook.balance.leave_type} lapse on this date."
-                ),
-                category="DEADLINE",
-            )
-            for outlook in outlooks
-            if outlook.expires_on is not None and outlook.has_balance
-        ]
-        return events
 
     def leave_ledger(self, employee_code: str) -> list[LeaveTransaction]:
         """Every stored ledger movement, newest first.

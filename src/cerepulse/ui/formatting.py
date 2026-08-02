@@ -29,25 +29,23 @@ def clock_time(moment: time | None) -> str:
 
 
 def duration(value: Duration | None, *, signed: bool = False) -> str:
-    """``9:03``, or ``+1:03`` / ``-0:45`` when a direction matters."""
+    """``9h 03m``, or ``+1h 03m`` / ``-45m`` when a direction matters.
+
+    Every length of time on every screen comes through here or through ``str(Duration)``,
+    which now renders the same way. ``9:03`` beside an out-time of ``6:24 PM`` read as two
+    clock times, and telling them apart meant knowing which column you were in.
+    """
     if value is None:
         return EMPTY
-    text = value.as_clock()
+    text = value.as_words()
     if signed and not value.is_negative and value.minutes > 0:
         return f"+{text}"
     return text
 
 
-def duration_words(value: Duration | None) -> str:
-    """``9h 03m`` — for prose, where a colon would read as a clock time."""
-    if value is None:
-        return EMPTY
-    sign = "-" if value.is_negative else ""
-    if value.hours and value.remainder_minutes:
-        return f"{sign}{value.hours}h {value.remainder_minutes:02d}m"
-    if value.hours:
-        return f"{sign}{value.hours}h"
-    return f"{sign}{value.remainder_minutes}m"
+#: Kept as a name because a lot of prose calls it; the distinction it used to draw — words
+#: for sentences, colons for tables — no longer exists now that both read as words.
+duration_words = duration
 
 
 def countdown(target: datetime | None, *, now: datetime) -> str:
@@ -58,7 +56,7 @@ def countdown(target: datetime | None, *, now: datetime) -> str:
     if remaining <= timedelta(0):
         return "now"
     minutes = int(remaining.total_seconds() // 60)
-    return Duration(minutes).as_clock()
+    return Duration(minutes).as_words()
 
 
 def day_label(value: date | None) -> str:

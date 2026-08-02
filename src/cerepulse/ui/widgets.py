@@ -873,7 +873,7 @@ def _heat_tooltip(entry: DayRollup, flagged: bool) -> str:
         state = entry.status.value.replace("_", " ")
         return f"{label} — {state}"
 
-    body = f"{label} — {entry.worked.as_clock()} worked"
+    body = f"{label} — {entry.worked} worked"
     if not entry.is_working_day:
         body += f" ({entry.status.value.replace('_', ' ')})"
     if entry.estimated:

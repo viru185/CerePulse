@@ -42,11 +42,11 @@ class WeekView(QWidget):
 
         header = QHBoxLayout()
         header.setSpacing(Space.SNUG)
-        previous = QPushButton("‹ Previous")
+        previous = QPushButton("◀ Previous")
         previous.clicked.connect(lambda: self._step(-7))
         self._label = SectionTitle("")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._next = QPushButton("Next ›")
+        self._next = QPushButton("Next ▶")
         self._next.clicked.connect(lambda: self._step(7))
         # A shortcut back, because the way out of five clicks into the past should not be
         # five clicks forward.

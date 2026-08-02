@@ -79,7 +79,6 @@ TASK_LABELS = {
     "history": "Fetching history",
     "scopes": "Checking what is up to date",
     "sync-day": "Fetching that day",
-    "export-ics": "Writing the calendar file",
     "sign-in": "Signing in",
     "sign-out": "Signing out",
     "clear-cache": "Clearing cached data",

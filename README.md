@@ -37,8 +37,7 @@ needs-attention filter, and a month heatmap tinted by hours worked. A day alread
 a request is handled, not outstanding.
 
 **Plans your leave** — the cheapest days to book for the longest break, using the company
-holiday calendar and the balance you actually hold. Exports holidays, leave and expiry
-deadlines to `.ics` for any calendar app.
+holiday calendar and the balance you actually hold.
 
 **Talks like a person** — a light remark when you have earned one, and never when you have
 not. Warnings, expiring leave and missing punches stay plain at every setting.

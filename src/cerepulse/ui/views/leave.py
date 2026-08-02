@@ -51,7 +51,6 @@ class LeaveViewWidget(QWidget):
     """Balance cards, expiry insights, break suggestions, and the transaction ledger."""
 
     refresh_requested = Signal()
-    export_requested = Signal()
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -65,11 +64,8 @@ class LeaveViewWidget(QWidget):
         header = QHBoxLayout()
         header.addWidget(SectionTitle("Leave balances"))
         header.addStretch(1)
-        export = QPushButton("Export to calendar…")
-        export.clicked.connect(self.export_requested)
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self.refresh_requested)
-        header.addWidget(export)
         header.addWidget(refresh)
         layout.addLayout(header)
 

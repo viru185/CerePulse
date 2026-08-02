@@ -50,10 +50,10 @@ def test_clock_strips_the_leading_zero() -> None:
 
 
 def test_duration_can_be_signed() -> None:
-    assert fmt.duration(Duration(63)) == "1:03"
-    assert fmt.duration(Duration(63), signed=True) == "+1:03"
-    assert fmt.duration(Duration(-63), signed=True) == "-1:03"
-    assert fmt.duration(Duration(0), signed=True) == "0:00"
+    assert fmt.duration(Duration(63)) == "1h 03m"
+    assert fmt.duration(Duration(63), signed=True) == "+1h 03m"
+    assert fmt.duration(Duration(-63), signed=True) == "-1h 03m"
+    assert fmt.duration(Duration(0), signed=True) == "0m"
 
 
 def test_duration_words_reads_as_prose() -> None:
@@ -64,7 +64,7 @@ def test_duration_words_reads_as_prose() -> None:
 
 def test_countdown_says_now_rather_than_a_negative() -> None:
     target = datetime(2026, 7, 28, 18, 0)
-    assert fmt.countdown(target, now=datetime(2026, 7, 28, 17, 0)) == "1:00"
+    assert fmt.countdown(target, now=datetime(2026, 7, 28, 17, 0)) == "1h"
     assert fmt.countdown(target, now=datetime(2026, 7, 28, 18, 30)) == "now"
 
 

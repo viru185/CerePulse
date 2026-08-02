@@ -12,7 +12,6 @@ it, so the window is useful immediately rather than after a round trip to the po
 from __future__ import annotations
 
 from datetime import date
-from pathlib import Path
 
 from loguru import logger
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -158,7 +157,6 @@ class MainWindow(QMainWindow):
         )
         self.today.sync_day_requested.connect(self._sync_day)
         self.leave.refresh_requested.connect(lambda: self._sync.refresh_leave())
-        self.leave.export_requested.connect(self._export_calendar)
         self.requests.refresh_requested.connect(lambda: self._sync.refresh_leave())
         self.requests.open_portal.connect(
             lambda: open_url(self._context.client.url_for(pages.SWIPE_REQUESTS))
@@ -473,30 +471,6 @@ class MainWindow(QMainWindow):
             self.attendance.banner.show_message(
                 f"Fetched punch detail for {count} day(s).", Severity.SUCCESS
             )
-
-    def _export_calendar(self) -> None:
-        """Ask where to write the .ics, then gather and write it off-thread.
-
-        The file dialog runs first, on the GUI thread, because a save location is the user's
-        decision and asking for it from a worker would be a race.
-        """
-        from PySide6.QtWidgets import QFileDialog
-
-        default = str(Path.home() / f"cerepulse-{date.today():%Y-%m-%d}.ics")
-        chosen, _filter = QFileDialog.getSaveFileName(
-            self, "Export to calendar", default, "Calendar files (*.ics)"
-        )
-        if not chosen:
-            return
-
-        target = Path(chosen)
-        self._sync.export_calendar(
-            target,
-            on_success=lambda count: self.leave.banner.show_message(
-                f"Exported {count} event(s) to {target.name}.", Severity.SUCCESS
-            ),
-            on_error=lambda exc: self.leave.banner.show_message(str(exc), Severity.CRITICAL),
-        )
 
     # --- rendering ------------------------------------------------------------------
 
