@@ -2,6 +2,11 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.10.0-beta.1] - 2026-08-02
+
+### Bug Fixes
+- Arm the session truce, and stop the portal hiding three quarters of every request list
+
 ## [0.9.0-beta.1] - 2026-08-02
 
 ### Bug Fixes
