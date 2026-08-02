@@ -26,8 +26,13 @@ def _attach_parent_console() -> bool:
 
         if not ctypes.windll.kernel32.AttachConsole(-1):
             return False
-        sys.stdout = open("CONOUT$", "w", encoding="utf-8", buffering=1)
-        sys.stderr = open("CONOUT$", "w", encoding="utf-8", buffering=1)
+        # Only the streams that are actually missing. A redirected run
+        # (`CerePulse.exe paths > out.txt`) inherits a real handle for stdout, and taking
+        # it over with CONOUT$ would send the output to the terminal instead of the file
+        # the user asked for.
+        for name in ("stdout", "stderr"):
+            if getattr(sys, name, None) is None:
+                setattr(sys, name, open("CONOUT$", "w", encoding="utf-8", buffering=1))
     except Exception:  # noqa: BLE001 — no console is the normal case, not an error
         return False
     return True
