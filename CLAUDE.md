@@ -82,7 +82,14 @@ half-day marker to the weekday (`14-Jun-26 Sun2nd Half`) and `Apply Days` append
 (`5.50 OD`). Unlike the swipe grid these carry the portal's own `App. Id`, so identity does
 not have to be synthesised.
 
-**9. The day-detail postback target is a grid row, not a date.** `GridView1$ctl17$LnkDate`
+**9. A swipe request cannot be filed, or even pre-filled, from a link.** "Add New" is
+`__doPostBack('ctl00$BodyContentPlaceHolder$Menu1','Add New')` against the list page itself.
+There is no entry URL in any capture or in `menu.json`, the Type / Category / Request Date
+controls do not exist in the HTML until that postback renders them, and `__VIEWSTATEENCRYPTED`
+is set. A browser opened with `open_url` cannot post a postback. The ceiling is: land on the
+list with a real `?mnusr=` token and put the date on the clipboard as `14-Jul-26`.
+
+**10. The day-detail postback target is a grid row, not a date.** `GridView1$ctl17$LnkDate`
 means "the seventeenth row of whatever month is on screen". The attendance page opens on the
 current month, so `fetch_day_detail` **must select the day's own month first** — otherwise a
 June day requested in August posts June's row index against August's grid and comes back
@@ -148,6 +155,15 @@ decisions and the sync backlog depends on telling them apart.
 **Replay expired sessions exactly once.** A retry loop turns a rejected credential into an
 authentication storm against the employer's HR system. A second expiry is surfaced.
 
+**Standing down has to have a way back.** The truce measures a theft by how long since the
+app's own last request — but a paused app makes none, so that clock ends up timing the
+user's trip to the browser, and coming back promptly read as a *second* eviction. The app
+paused again and Refresh looked broken; leaving it longer than the idle timeout always
+worked, which made it look random rather than wrong. `expect_reclaim` authorises exactly one
+sign-in, spent by the next expiry. Every Refresh control must route through
+`MainWindow.refresh`: the ones wired straight to a service could not end a pause, and one of
+them sat on the screen the portal is opened from.
+
 **A taken session is nobody's to swallow.** `SessionTakenError` subclasses
 `SessionExpiredError` so existing handlers keep working, and that is exactly how the 0.9
 truce shipped disarmed: `_step_value` recorded the eviction as a step failure, so it never
@@ -172,6 +188,11 @@ carries the sample size behind every figure; it needs `MIN_SAMPLE` days before i
 a habit or a record at all; and the break figure comes only from punch logs, because the
 grid has no break column to derive one from. Days the portal marks worked but holds nothing
 for are dropped, not scored zero — the same reasoning as `unmeasured_days`.
+
+**Today's cards share one grammar.** The value is what has been *done*; the caption names the
+target and then the verdict — left, over, or met. Worked and Break used to be framed in
+opposite directions, which made two figures side by side impossible to read as a pair, and
+an overrun break reported the word "None" while never stating by how much.
 
 **Voice appends, never substitutes.** `intelligence/voice.py` may only add a sentence to an
 insight's detail. It cannot change a number, reword a warning, or drop a line, so no tone
