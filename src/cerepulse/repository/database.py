@@ -10,6 +10,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Self
@@ -40,22 +41,69 @@ class Database:
             self.path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            connection = sqlite3.connect(
-                str(self.path),
-                # Sync runs on a worker thread while the GUI thread reads.
-                check_same_thread=False,
-                isolation_level=None,  # explicit transactions via `with connection`
-            )
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute("PRAGMA busy_timeout=5000")
+            connection = self._open()
+        except sqlite3.DatabaseError as exc:
+            if not _is_corruption(exc) or not isinstance(self.path, Path):
+                raise RepositoryError(
+                    f"Could not open the local cache at {self.path}: {exc}"
+                ) from exc
+            # Every byte in here can be fetched again, and refusing to start is a far worse
+            # outcome than re-syncing. The damaged file is kept rather than deleted, since a
+            # corrupt database is evidence about how it got that way.
+            self._quarantine(exc)
+            try:
+                connection = self._open()
+            except sqlite3.Error as retry_exc:
+                raise RepositoryError(
+                    f"Could not open the local cache at {self.path}: {retry_exc}"
+                ) from retry_exc
         except sqlite3.Error as exc:
             raise RepositoryError(f"Could not open the local cache at {self.path}: {exc}") from exc
 
         self._connection = connection
         migrate(connection)
         return self
+
+    def _open(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(
+            str(self.path),
+            # Sync runs on a worker thread while the GUI thread reads.
+            check_same_thread=False,
+            isolation_level=None,  # explicit transactions via `with connection`
+        )
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("PRAGMA busy_timeout=5000")
+        except sqlite3.Error:
+            # sqlite3.connect() succeeds against a damaged file — it is the first statement
+            # that fails — and on Windows the open handle then blocks any attempt to move
+            # the file aside. Closing here is what makes recovery possible at all.
+            connection.close()
+            raise
+        return connection
+
+    def _quarantine(self, exc: sqlite3.DatabaseError) -> None:
+        """Move a damaged cache aside, sidecars and all, so a fresh one can be created.
+
+        The ``-wal`` and ``-shm`` files have to go with it. Leaving a write-ahead log next
+        to a newly created database is how a merely damaged cache becomes an unopenable one.
+        """
+        assert isinstance(self.path, Path)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        logger.error("Local cache is damaged ({}); starting a fresh one", exc)
+
+        for suffix in ("", "-wal", "-shm"):
+            source = Path(f"{self.path}{suffix}")
+            if not source.exists():
+                continue
+            target = Path(f"{self.path}.corrupt-{stamp}{suffix}")
+            try:
+                source.replace(target)
+                logger.info("Kept the damaged file as {}", target.name)
+            except OSError as move_error:  # pragma: no cover — the retry will report it
+                logger.warning("Could not move {}: {}", source.name, move_error)
 
     def close(self) -> None:
         if self._connection is not None:
@@ -125,6 +173,26 @@ class Database:
 
     def vacuum(self) -> None:
         self.connection.execute("VACUUM")
+
+
+#: SQLite's wording for a file it cannot make sense of. Matched on text because the codes
+#: that distinguish them (SQLITE_CORRUPT, SQLITE_NOTADB) are not exposed on the exception.
+_CORRUPTION_SIGNS = (
+    "malformed",
+    "not a database",
+    "file is encrypted",
+    "database disk image",
+)
+
+
+def _is_corruption(exc: sqlite3.DatabaseError) -> bool:
+    """Whether the file is damaged, as opposed to merely busy or unreadable.
+
+    A locked or permission-denied database must not be quarantined — it is fine, and moving
+    it aside would destroy a working cache over a transient problem.
+    """
+    message = str(exc).lower()
+    return any(sign in message for sign in _CORRUPTION_SIGNS)
 
 
 def open_database(path: Path | str) -> Database:

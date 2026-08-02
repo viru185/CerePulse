@@ -37,6 +37,8 @@ class SyncReport:
     finished_at: datetime | None = None
     month_refreshed: bool = False
     detail_days_fetched: int = 0
+    #: Cached days dropped for falling outside the configured history window.
+    days_pruned: int = 0
     leave_refreshed: bool = False
     swipes_refreshed: bool = False
     holidays_refreshed: bool = False
@@ -148,6 +150,16 @@ class SyncCoordinator:
                 lambda: self._attendance.backfill_detail(employee_code, period_year, period_month),
             )
             report.detail_days_fetched = fetched or 0
+
+        # Last, and never allowed to fail the sync: the cache otherwise grows for the life
+        # of the install, and the far end of it holds months no screen can even reach —
+        # the portal serves only the running year, so the picker cannot offer them.
+        report.days_pruned = (
+            self._step_value(
+                report, "cache cleanup", lambda: self._attendance.prune_history(employee_code)
+            )
+            or 0
+        )
 
         report.reauthenticated = self._auth.state is not state_before
         report.finished_at = datetime.now()

@@ -529,6 +529,101 @@ def _hour_label(moment: datetime) -> str:
     return moment.strftime("%I%p").lstrip("0").replace("AM", "am").replace("PM", "pm")
 
 
+class BarChart(QWidget):
+    """A labelled bar per value, with an optional reference line across them.
+
+    Painted here rather than drawn with QtCharts. The packaging spec excludes QtCharts
+    deliberately — dropping the unused Qt modules roughly halves the build — and pulling a
+    whole charting framework back in for two bar charts would trade about fifteen megabytes
+    for something this file already knows how to do. The segment bar, the timeline and the
+    heatmap are all hand-painted for the same reason.
+
+    Bars that meet the reference are drawn in the "good" colour and those that fall short in
+    the work colour, so the comparison survives being read in greyscale or by someone who
+    cannot separate the two hues — the height already carries it.
+    """
+
+    HEIGHT = 150
+    LABEL_ROW = 16
+    GAP = 6
+
+    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self._bars: tuple[tuple[str, float, str], ...] = ()
+        self._reference: float | None = None
+        self._reference_label = ""
+        self.setMinimumHeight(self.HEIGHT)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_bars(
+        self,
+        bars: Sequence[tuple[str, float, str]],
+        *,
+        reference: float | None = None,
+        reference_label: str = "",
+    ) -> None:
+        """``bars`` is (label, value, tooltip-ish caption) in display order."""
+        self._bars = tuple(bars)
+        self._reference = reference
+        self._reference_label = reference_label
+        self.setVisible(bool(self._bars))
+        self.setToolTip("\n".join(f"{label}: {caption}" for label, _value, caption in self._bars))
+        self.update()
+
+    def paintEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        if not self._bars:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+
+        plot_bottom = self.height() - self.LABEL_ROW
+        ceiling = max([value for _l, value, _c in self._bars] + [self._reference or 0.0])
+        if ceiling <= 0:
+            return
+
+        slot = self.width() / len(self._bars)
+        width = max(6.0, slot - self.GAP)
+
+        for index, (label, value, _caption) in enumerate(self._bars):
+            height = (value / ceiling) * (plot_bottom - 4)
+            left = index * slot + (slot - width) / 2
+            colour = (
+                self._palette.good
+                if self._reference is not None and value >= self._reference
+                else self._palette.work
+            )
+            bar = QRectF(left, plot_bottom - height, width, max(1.0, height))
+            path = QPainterPath()
+            path.addRoundedRect(bar, 3, 3)
+            painter.fillPath(path, QColor(colour))
+
+            painter.setPen(QColor(self._palette.text_faint))
+            painter.drawText(
+                QRectF(index * slot, plot_bottom + 2, slot, self.LABEL_ROW - 2),
+                Qt.AlignmentFlag.AlignCenter,
+                label,
+            )
+
+        if self._reference is not None and self._reference > 0:
+            y = plot_bottom - (self._reference / ceiling) * (plot_bottom - 4)
+            pen = QPen(QColor(self._palette.text_muted), 1)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.drawLine(0, int(y), self.width(), int(y))
+            if self._reference_label:
+                painter.setPen(QColor(self._palette.text_muted))
+                painter.drawText(
+                    QRectF(0, y - 14, self.width(), 12),
+                    Qt.AlignmentFlag.AlignRight,
+                    self._reference_label,
+                )
+
+
 class NextActionCard(QFrame):
     """The instruction, above everything that merely describes.
 

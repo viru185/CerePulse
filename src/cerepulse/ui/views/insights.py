@@ -42,7 +42,7 @@ from cerepulse.models.values import Duration
 from cerepulse.services.attendance import TrendsView
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette
-from cerepulse.ui.widgets import Banner, Card, SectionTitle, card_row, data_table
+from cerepulse.ui.widgets import Banner, BarChart, Card, SectionTitle, card_row, data_table
 
 #: The trailing blank is a spacer. Every real column here is a short number, so without one
 #: to absorb the leftover width either the last column is stranded against the far edge of
@@ -62,6 +62,9 @@ MONTH_COLUMNS = (
 )
 ANOMALY_COLUMNS = ("Date", "What", "Detail")
 
+#: Monday first, matching ``WeekdayHabit.weekday``.
+_WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
 
 class InsightsView(QWidget):
     """Forecast, habits, month-over-month and anomalies, from cached history only."""
@@ -73,6 +76,7 @@ class InsightsView(QWidget):
         super().__init__(parent)
         self._palette = palette
         self._today = date.today()
+        self._target = Duration(0)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -96,7 +100,10 @@ class InsightsView(QWidget):
         self.footing = Banner()
         layout.addWidget(self.footing)
 
-        layout.addWidget(SectionTitle("How this month lands"))
+        # Four groups, in the order the questions actually get asked. Predictions leads
+        # because it is the only part of this screen anyone can still act on; the rest is
+        # the record, and a record is read after the forecast, not before it.
+        layout.addWidget(SectionTitle("Predictions — how this month lands"))
         self.projected = Card("Projected")
         self.headroom = Card("Banked so far")
         self.needed = Card("Needed daily")
@@ -105,7 +112,7 @@ class InsightsView(QWidget):
         self._forecast_note = _caption()
         layout.addWidget(self._forecast_note)
 
-        layout.addWidget(SectionTitle("Your normal day"))
+        layout.addWidget(SectionTitle("Habits — your normal day"))
         self.typical_in = Card("Typical in")
         self.typical_out = Card("Typical out")
         self.typical_worked = Card("Typical worked")
@@ -126,7 +133,13 @@ class InsightsView(QWidget):
         weekday_host.setLayout(self._weekdays)
         layout.addWidget(weekday_host)
 
-        layout.addWidget(SectionTitle("Streaks and records"))
+        # The same weekday figures the grid above lists, as shape. A table answers "how long
+        # is a Tuesday"; the chart answers "which day is the long one", which is the question
+        # the numbers are usually being scanned for.
+        self.weekday_chart = BarChart(palette)
+        layout.addWidget(self.weekday_chart)
+
+        layout.addWidget(SectionTitle("Performance — streaks and records"))
         self.streak = Card("On-target streak")
         self.since_short = Card("Since a short day")
         self.longest = Card("Longest day")
@@ -135,7 +148,9 @@ class InsightsView(QWidget):
         self._record_note = _caption()
         layout.addWidget(self._record_note)
 
-        layout.addWidget(SectionTitle("Month by month"))
+        layout.addWidget(SectionTitle("Trends — month by month"))
+        self.month_chart = BarChart(palette)
+        layout.addWidget(self.month_chart)
         self.months = _table(MONTH_COLUMNS)
         layout.addWidget(self.months)
 
@@ -167,6 +182,7 @@ class InsightsView(QWidget):
     def show_trends(self, view: TrendsView) -> None:
         report = view.report
         self._today = view.today
+        self._target = view.work_target
         self._render_footing(view)
         self._render_forecast(report.forecast)
         self._render_habits(report.habits)
@@ -282,6 +298,31 @@ class InsightsView(QWidget):
             )
 
         self._render_weekdays(habits)
+        self._render_weekday_chart(habits)
+
+    def _render_weekday_chart(self, habits: Habits) -> None:
+        """Typical hours per weekday, against the target.
+
+        Only the weekdays that carry a sample. Drawing an empty Saturday bar beside five
+        real ones implies a zero-hour Saturday rather than a day nobody works.
+        """
+        if not habits.has_enough:
+            self.weekday_chart.set_bars(())
+            return
+
+        self.weekday_chart.set_bars(
+            [
+                (
+                    _WEEKDAY_NAMES[entry.weekday],
+                    float(entry.typical_worked.minutes),
+                    f"{fmt.duration(entry.typical_worked)} across {entry.sample} day(s)",
+                )
+                for entry in habits.weekdays
+                if entry.sample
+            ],
+            reference=float(self._target.minutes) if self._target.minutes else None,
+            reference_label=f"target {fmt.duration(self._target)}",
+        )
 
     def _render_weekdays(self, habits: Habits) -> None:
         while self._weekdays.count():
@@ -344,7 +385,39 @@ class InsightsView(QWidget):
         card.set_value(record.value)
         card.set_caption(fmt.day_label(record.day))
 
+    def _render_month_chart(self, months: tuple[MonthSummary, ...]) -> None:
+        """Worked hours per month, oldest to newest, against the per-month target.
+
+        Chronological here even though the table is newest-first: a trend read right to left
+        is not a trend anyone can see. The partial current month is included but captioned,
+        because leaving it out makes the run of bars stop a month short of today for no
+        visible reason.
+        """
+        if not months:
+            self.month_chart.set_bars(())
+            return
+
+        target = max((summary.target.minutes for summary in months), default=0)
+        self.month_chart.set_bars(
+            [
+                (
+                    summary.label.split()[0][:3],
+                    float(summary.worked.minutes),
+                    f"{fmt.duration(summary.worked)} of {fmt.duration(summary.target)}"
+                    + (
+                        " (so far)"
+                        if (summary.year, summary.month) == (self._today.year, self._today.month)
+                        else ""
+                    ),
+                )
+                for summary in months
+            ],
+            reference=float(target) if target else None,
+            reference_label="full month",
+        )
+
     def _render_months(self, months: tuple[MonthSummary, ...]) -> None:
+        self._render_month_chart(months)
         # Newest first: the interesting comparison is with the month just gone, not with
         # whatever happens to be oldest in the cache.
         rows = list(reversed(months))

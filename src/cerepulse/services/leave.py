@@ -15,6 +15,7 @@ from cerepulse.intelligence.attention import StatusChange, status_changes
 from cerepulse.intelligence.insights import Insight
 from cerepulse.intelligence.leave import LeaveOutlook, LeavePolicy, analyze_leave, leave_insights
 from cerepulse.intelligence.optimizer import BreakPlan, suggest_breaks
+from cerepulse.intelligence.sandwich import SandwichAssessment, SandwichRule, assess
 from cerepulse.models.leave import Holiday, LeaveBalance, LeaveCategory, LeaveTransaction
 from cerepulse.models.swipe import SwipeRequest
 from cerepulse.repository.leave import (
@@ -24,6 +25,16 @@ from cerepulse.repository.leave import (
     SyncMetadataRepository,
 )
 from cerepulse.services.portal import PortalGateway
+
+
+def _parse_rule(value: str) -> SandwichRule:
+    """A typo resolves to OFF, so a mistyped setting cannot invent a policy."""
+    try:
+        return SandwichRule(value.strip().lower())
+    except ValueError:
+        logger.warning("Unknown sandwich rule {!r}; treating it as off", value)
+        return SandwichRule.OFF
+
 
 LEAVE_SCOPE = "leave"
 SWIPE_SCOPE = "swipe_requests"
@@ -52,6 +63,10 @@ class LeaveView:
     from_cache: bool
     #: The cheapest breaks the current balance can buy, in date order.
     breaks: list[BreakPlan] = field(default_factory=list)
+    #: What each of those breaks costs once the configured sandwich rule is applied,
+    #: aligned with ``breaks``. Every entry reports no sandwiches while the rule is off,
+    #: which is what keeps an unconfirmed policy off the screen entirely.
+    sandwiches: list[SandwichAssessment] = field(default_factory=list)
 
 
 class LeaveService:
@@ -107,13 +122,15 @@ class LeaveService:
 
         now = today or date.today()
         outlooks = analyze_leave(balances, today=now, policy=self._policy)
+        breaks = self.suggest_breaks(outlooks, today=now)
         return LeaveView(
             balances=balances,
             outlooks=outlooks,
             insights=leave_insights(outlooks),
             last_synced=self._sync_meta.last_synced(LEAVE_SCOPE),
             from_cache=from_cache,
-            breaks=self.suggest_breaks(outlooks, today=now),
+            breaks=breaks,
+            sandwiches=[self.assess_sandwich(plan, today=now) for plan in breaks],
         )
 
     def suggest_breaks(
@@ -141,6 +158,26 @@ class LeaveService:
             end=now + timedelta(days=horizon_days),
             holidays={holiday.day for holiday in self._holidays.find_all() if holiday.day >= now},
             max_leave=budget,
+        )
+
+    def sandwich_rule(self) -> SandwichRule:
+        """The configured sandwich rule. ``OFF`` unless the user has asserted otherwise."""
+        return _parse_rule(self._config.leave_rules.sandwich_rule)
+
+    def assess_sandwich(self, plan: BreakPlan, *, today: date | None = None) -> SandwichAssessment:
+        """What a break plan really costs once the configured sandwich rule is applied.
+
+        Off by default, and off means silent: the assessment reports the booked days and no
+        sandwiches at all, so the UI has nothing to render rather than a zero to explain.
+        Nothing in SpineHR states whether the employer applies this, and a warning that
+        might not apply would have people leaving leave unbooked over a rule that does not
+        exist.
+        """
+        now = today or date.today()
+        return assess(
+            set(plan.leave_days),
+            rule=self.sandwich_rule(),
+            holidays={holiday.day for holiday in self._holidays.find_all() if holiday.day >= now},
         )
 
     def calendar_events(

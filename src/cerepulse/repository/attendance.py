@@ -17,6 +17,8 @@ import sqlite3
 from collections.abc import Iterable
 from datetime import date, datetime
 
+from loguru import logger
+
 from cerepulse.core.errors import RepositoryError
 from cerepulse.models.attendance import AttendanceDay, AttendanceMonth, Punch
 from cerepulse.repository.database import Database
@@ -257,6 +259,23 @@ class AttendanceRepository:
             (employee_code, f"{year:04d}-{month:02d}"),
         ).fetchall()
         return [date.fromisoformat(row["day"]) for row in rows]
+
+    def prune_before(self, employee_code: str, cutoff: date) -> int:
+        """Delete cached days before ``cutoff``. Returns how many rows went.
+
+        Punches go with them by foreign key. Nothing here is irreplaceable — every row can
+        be fetched again — but the cache otherwise grows for the life of the install, and
+        the months at the far end are ones no screen can reach: the portal serves only the
+        running year, so the picker cannot even offer them.
+        """
+        with self.database.transaction() as connection:
+            deleted = connection.execute(
+                "DELETE FROM attendance_day WHERE employee_code = ? AND day < ?",
+                (employee_code, cutoff.isoformat()),
+            ).rowcount
+        if deleted:
+            logger.info("Pruned {} cached day(s) before {}", deleted, cutoff)
+        return int(deleted)
 
     def cached_months(self, employee_code: str) -> list[tuple[int, int]]:
         """Every month with cached data, newest first — what offline history can show."""

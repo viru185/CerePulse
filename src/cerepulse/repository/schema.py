@@ -23,7 +23,7 @@ from loguru import logger
 from cerepulse.core.errors import MigrationError
 
 #: Bumped whenever a migration is added. Checked against the database on open.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _migration_001(connection: sqlite3.Connection) -> None:
@@ -151,8 +151,22 @@ def _migration_002(connection: sqlite3.Connection) -> None:
     connection.execute("ALTER TABLE attendance_day ADD COLUMN detail_synced_at TEXT")
 
 
+def _migration_003(connection: sqlite3.Connection) -> None:
+    """Remember what a scope's content looked like, not just when it was fetched.
+
+    A past month is byte-identical on every refresh for the rest of the year, and rewriting
+    its thirty-one rows each time is work nobody asked for. With a digest to compare against,
+    an unchanged month costs one comparison instead of a table's worth of upserts.
+    """
+    connection.execute("ALTER TABLE sync_metadata ADD COLUMN content_hash TEXT")
+
+
 #: Ordered migrations. Append only; never edit one that has shipped.
-MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (_migration_001, _migration_002)
+MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
+    _migration_001,
+    _migration_002,
+    _migration_003,
+)
 
 
 def current_version(connection: sqlite3.Connection) -> int:

@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from cerepulse.core.config import AppConfig
+from cerepulse.intelligence.sandwich import SandwichRule
 from cerepulse.ui.widgets import Banner
 
 #: Control widths, so nothing stretches to fill the card. Spin boxes need room for their
@@ -143,7 +144,8 @@ class SettingsView(QWidget):
         grid.addWidget(self._build_appearance(), 2, 1)
         grid.addWidget(self._build_history(), 3, 0)
         grid.addWidget(self._build_cache(), 3, 1)
-        grid.addWidget(self._build_updates(), 4, 0, 1, 2)
+        grid.addWidget(self._build_leave_rules(), 4, 0, 1, 2)
+        grid.addWidget(self._build_updates(), 5, 0, 1, 2)
 
         page.addStretch(1)
 
@@ -264,6 +266,23 @@ class SettingsView(QWidget):
         card.body.addLayout(row)
         return card.finish()
 
+    def _build_leave_rules(self) -> Card:
+        card = Card(
+            "Leave rules",
+            "Rules CerePulse cannot read anywhere. Nothing in SpineHR states them, so "
+            "these are what you tell the app your employer does — not what it has found "
+            "out. Leave them alone if you are not sure.",
+        )
+        self._sandwich = QComboBox()
+        for rule in SandwichRule:
+            self._sandwich.addItem(rule.label, rule.value)
+        self._sandwich.setToolTip(
+            "Many employers charge the weekend or holiday between two leave days against "
+            "your balance. CerePulse cannot tell whether yours does, so it assumes not."
+        )
+        card.add("Sandwich leave", self._sandwich)
+        return card.finish()
+
     def _build_history(self) -> Card:
         card = Card(
             "History",
@@ -372,6 +391,9 @@ class SettingsView(QWidget):
             box.setChecked(bool(getattr(notifications, field, True)))
         self._sync_notification_state(notifications.enabled)
 
+        rule = self._sandwich.findData(config.leave_rules.sandwich_rule)
+        self._sandwich.setCurrentIndex(rule if rule >= 0 else 0)
+
     def _save(self) -> None:
         config = self._config
         updated = replace(
@@ -409,6 +431,7 @@ class SettingsView(QWidget):
                 quiet_hours_end=self._quiet_end.time().toString("HH:mm"),
                 **{field: box.isChecked() for field, box in self._alerts.items()},
             ),
+            leave_rules=replace(config.leave_rules, sandwich_rule=self._sandwich.currentData()),
         )
         self._config = updated
         self.config_saved.emit(updated)

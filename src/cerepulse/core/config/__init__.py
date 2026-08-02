@@ -5,6 +5,7 @@ from __future__ import annotations
 from cerepulse.core.config.loader import ENV_PREFIX, load_config, save_config
 from cerepulse.core.config.models import (
     AppConfig,
+    LeaveRulesConfig,
     LoggingConfig,
     NetworkConfig,
     NotificationConfig,
@@ -18,6 +19,7 @@ from cerepulse.core.config.models import (
 __all__ = [
     "ENV_PREFIX",
     "AppConfig",
+    "LeaveRulesConfig",
     "LoggingConfig",
     "NetworkConfig",
     "NotificationConfig",

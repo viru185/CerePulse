@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from cerepulse.intelligence.leave import LeaveOutlook
 from cerepulse.intelligence.optimizer import BreakPlan
+from cerepulse.intelligence.sandwich import SandwichAssessment
 from cerepulse.models.leave import LeaveCategory, LeaveTransaction
 from cerepulse.services.leave import LeaveView as LeaveData
 from cerepulse.ui import formatting as fmt
@@ -55,6 +56,7 @@ class LeaveViewWidget(QWidget):
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._palette = palette
+        self._sandwiches: list[SandwichAssessment] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 24)
@@ -115,6 +117,7 @@ class LeaveViewWidget(QWidget):
         self._render_total(data.outlooks)
         self._render_cards(data.outlooks)
         self._insights.set_insights(data.insights)
+        self._sandwiches = data.sandwiches
         self._render_breaks(data.breaks)
 
     def _render_breaks(self, plans: list[BreakPlan]) -> None:
@@ -131,10 +134,14 @@ class LeaveViewWidget(QWidget):
             return
 
         for row, plan in enumerate(plans):
+            # None while the sandwich rule is off, which is the point: the column shows the
+            # plain cost and says nothing about a policy nobody has confirmed.
+            sandwich = self._sandwiches[row] if row < len(self._sandwiches) else None
+            charged = sandwich if sandwich is not None and sandwich.applies else None
             values = (
                 plan.label,
                 str(plan.total_days),
-                str(plan.cost),
+                f"{plan.cost}  (+{charged.extra_cost} sandwiched)" if charged else str(plan.cost),
                 f"{plan.efficiency:.1f}×",
                 _booking_text(plan),
             )
@@ -146,15 +153,25 @@ class LeaveViewWidget(QWidget):
                     )
                 if column == 3:
                     item.setForeground(QColor(self._palette.good))
-                item.setToolTip(_plan_tooltip(plan))
+                if column == 2 and charged:
+                    item.setForeground(QColor(self._palette.rest))
+                    item.setToolTip(_sandwich_tooltip(charged))
+                else:
+                    item.setToolTip(_plan_tooltip(plan))
                 self.breaks.setItem(row, column, item)
 
         best = max(plans, key=lambda plan: plan.efficiency)
-        self._breaks_note.setText(
+        note = (
             f"Value is days off per day of leave spent. The best here turns "
             f"{_days(best.cost)} into {best.total_days}. Nothing is booked — "
             f"apply in SpineHR."
         )
+        if any(entry.applies for entry in self._sandwiches):
+            note += (
+                "  Costs include the sandwich rule you configured in Settings; CerePulse "
+                "has not read that rule anywhere, so check it against your own policy."
+            )
+        self._breaks_note.setText(note)
 
     def _render_total(self, outlooks: list[LeaveOutlook]) -> None:
         """Everything available, and how much of it is on a deadline.
@@ -230,6 +247,21 @@ class LeaveViewWidget(QWidget):
 #: Beyond this, the dates stop being a list to act on and become a wall of text that
 #: doubles the width of the table. The full list stays available on hover.
 INLINE_DATES = 4
+
+
+def _sandwich_tooltip(assessment: SandwichAssessment) -> str:
+    lines = [
+        f"{assessment.booked_days} booked, {assessment.extra_cost} charged for the gap "
+        f"= {assessment.total_cost} total.",
+        "",
+    ]
+    lines += [
+        f"{sandwich.label} — sandwiched by leave on "
+        + " and ".join(f"{day:%d %b}".replace(" 0", " ") for day in sandwich.caused_by)
+        for sandwich in assessment.sandwiches
+    ]
+    lines += ["", "Configured in Settings. CerePulse has not verified this policy."]
+    return "\n".join(lines)
 
 
 def _days(count: float) -> str:

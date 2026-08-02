@@ -15,7 +15,7 @@ the analysis every second would be wasteful and would make the numbers flicker.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from PySide6.QtCore import QDate, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -179,6 +179,14 @@ class TodayView(QWidget):
         top.addWidget(self._hero_label)
         top.addStretch(1)
 
+        # Reading back through a week is the common case, and a calendar popup makes it
+        # three clicks a day. These make it one.
+        self._previous_day = QPushButton("‹")
+        self._previous_day.setFixedWidth(30)
+        self._previous_day.setToolTip("Previous day")
+        self._previous_day.clicked.connect(lambda: self._step_day(-1))
+        top.addWidget(self._previous_day)
+
         # Any date, without going via Attendance first. The upper bound is today: the
         # portal has nothing for tomorrow, and offering it invites an empty screen that
         # looks like a failure.
@@ -189,6 +197,12 @@ class TodayView(QWidget):
         self._picker.setToolTip("Jump to another date")
         self._picker.dateChanged.connect(self._on_date_picked)
         top.addWidget(self._picker)
+
+        self._next_day = QPushButton("›")
+        self._next_day.setFixedWidth(30)
+        self._next_day.setToolTip("Next day")
+        self._next_day.clicked.connect(lambda: self._step_day(1))
+        top.addWidget(self._next_day)
 
         self._copy = QPushButton("Copy summary")
         self._copy.clicked.connect(self._copy_summary)
@@ -254,11 +268,22 @@ class TodayView(QWidget):
             return
         self.date_selected.emit(picked)
 
+    def _step_day(self, delta: int) -> None:
+        """Move one day. Stops at today, since the portal holds nothing for tomorrow."""
+        current = self._analysis.day if self._analysis is not None else date.today()
+        target = current + timedelta(days=delta)
+        if target > date.today():
+            return
+        self.date_selected.emit(target)
+
     def _show_date(self, day: date) -> None:
         """Point the picker at the day on screen without asking to load it again."""
         self._picker.blockSignals(True)
         self._picker.setDate(QDate(day.year, day.month, day.day))
         self._picker.blockSignals(False)
+        # Nothing to step forward into on today itself; a live button that does nothing
+        # reads as broken.
+        self._next_day.setEnabled(day < date.today())
 
     def _on_next_action(self, action: object) -> None:
         if action is not None:

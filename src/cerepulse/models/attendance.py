@@ -13,6 +13,7 @@ intelligence layer; these models hold only what the portal actually reports.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import date, time
 from enum import Enum
@@ -148,3 +149,34 @@ class AttendanceMonth:
             if day.day == when:
                 return day
         return None
+
+    def content_digest(self) -> str:
+        """A stable digest of everything the grid reports for this month.
+
+        Lets a sync skip writing a month that has not changed. A past month is identical on
+        every refresh for the rest of the year, and rewriting its thirty-one rows each time
+        is work nobody asked for.
+
+        Punches are excluded on purpose. The grid never carries them, so a month whose punch
+        detail has since been fetched still digests the same — which is correct, because the
+        digest answers "has the grid changed", and the punch log is not the grid's to change.
+        """
+        blake = hashlib.blake2s(digest_size=16)
+        blake.update(f"{self.employee_code}|{self.year:04d}-{self.month:02d}".encode())
+        for day in sorted(self.days, key=lambda item: item.day):
+            blake.update(
+                "|".join(
+                    (
+                        day.day.isoformat(),
+                        day.status.value,
+                        str(day.first_in or ""),
+                        str(day.last_out or ""),
+                        str(day.total_hours.minutes),
+                        str(day.late_mark.minutes),
+                        str(day.ot_hours.minutes),
+                        f"{day.portion:g}",
+                        day.remarks,
+                    )
+                ).encode()
+            )
+        return blake.hexdigest()

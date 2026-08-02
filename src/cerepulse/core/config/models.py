@@ -83,6 +83,20 @@ class NotificationConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class LeaveRulesConfig:
+    """Leave rules the portal does not publish, so the user has to assert them.
+
+    Every field here is a *configured belief*, not something CerePulse has read anywhere.
+    The sandwich rule ships off for that reason: warning someone their weekend will be
+    charged, under a policy their employer may not have, would have them leaving leave
+    unbooked over a rule that does not exist.
+    """
+
+    #: off | both_sides | either_side — see ``intelligence/sandwich.py``.
+    sandwich_rule: str = "off"
+
+
+@dataclass(frozen=True, slots=True)
 class LoggingConfig:
     level: str = "INFO"
 
@@ -110,6 +124,7 @@ class AppConfig:
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     updates: UpdateConfig = field(default_factory=UpdateConfig)
+    leave_rules: LeaveRulesConfig = field(default_factory=LeaveRulesConfig)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
@@ -186,4 +201,5 @@ _SECTION_TYPES: dict[str, Any] = {
     "notifications": NotificationConfig,
     "logging": LoggingConfig,
     "updates": UpdateConfig,
+    "leave_rules": LeaveRulesConfig,
 }

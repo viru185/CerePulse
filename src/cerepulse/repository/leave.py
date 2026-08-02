@@ -203,16 +203,34 @@ class SyncMetadataRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def mark_synced(self, scope: str, *, at: datetime | None = None) -> None:
+    def mark_synced(
+        self, scope: str, *, at: datetime | None = None, content_hash: str | None = None
+    ) -> None:
+        """Record that a scope was just fetched, and optionally what it contained.
+
+        Omitting ``content_hash`` leaves any stored digest alone rather than clearing it, so
+        a caller that does not compute one cannot silently make every future sync look like
+        a change.
+        """
         stamp = (at or datetime.now()).isoformat()
         with self.database.transaction() as connection:
             connection.execute(
                 """
-                INSERT INTO sync_metadata (scope, last_synced_at) VALUES (?, ?)
-                ON CONFLICT (scope) DO UPDATE SET last_synced_at = excluded.last_synced_at
+                INSERT INTO sync_metadata (scope, last_synced_at, content_hash)
+                VALUES (?, ?, ?)
+                ON CONFLICT (scope) DO UPDATE SET
+                    last_synced_at = excluded.last_synced_at,
+                    content_hash = COALESCE(excluded.content_hash, sync_metadata.content_hash)
                 """,
-                (scope, stamp),
+                (scope, stamp, content_hash),
             )
+
+    def content_hash(self, scope: str) -> str | None:
+        """The digest stored the last time this scope's content was written."""
+        row = self.database.execute(
+            "SELECT content_hash FROM sync_metadata WHERE scope = ?", (scope,)
+        ).fetchone()
+        return row["content_hash"] if row else None
 
     def last_synced(self, scope: str) -> datetime | None:
         row = self.database.execute(

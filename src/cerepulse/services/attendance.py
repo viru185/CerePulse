@@ -94,6 +94,9 @@ class TrendsView:
     months_available: int
     #: The day the report was built for, so the view can mark the month still in progress.
     today: date
+    #: The daily work target every figure here was measured against, so a chart can scale
+    #: itself against the same number the text beside it used.
+    work_target: Duration = Duration(0)
 
     @property
     def is_thin(self) -> bool:
@@ -283,6 +286,7 @@ class AttendanceService:
             months_cached=len({(day.day.year, day.day.month) for day in days}),
             months_available=len(self.synced_months()),
             today=now,
+            work_target=self.policy.work_target,
         )
 
     def scope_statuses(self, employee_code: str, *, year: int, month: int) -> list[ScopeStatus]:
@@ -403,16 +407,49 @@ class AttendanceService:
     # --- refreshing -----------------------------------------------------------------
 
     def refresh_month(self, employee_code: str, year: int, month: int) -> AttendanceMonth:
-        """Fetch a month's grid and persist it. Punch detail is left to the backfill."""
+        """Fetch a month's grid and persist it. Punch detail is left to the backfill.
+
+        A month whose grid has not changed is not written again. Past months are identical
+        on every refresh for the rest of the year, so the default behaviour was to rewrite
+        thirty-one rows a time to arrive at exactly what was already there.
+
+        The digest is recorded only after a successful write. Recording it first would mean
+        a failed save left the app believing the month was stored, and it would never try
+        again.
+        """
         logger.info("Refreshing attendance for {:04d}-{:02d}", year, month)
         fetched, _parsed = self._gateway.fetch_month(year, month)
 
         # The grid carries the employee code; trust it over the login username.
         code = fetched.employee_code or employee_code
         stored = AttendanceMonth(employee_code=code, year=year, month=month, days=fetched.days)
+
+        scope = attendance_scope(year, month)
+        digest = stored.content_digest()
+        if self._sync_meta.content_hash(scope) == digest:
+            logger.debug("{:04d}-{:02d} is unchanged; skipping the write", year, month)
+            self._sync_meta.mark_synced(scope)
+            return stored
+
         self._attendance.save_month(stored)
-        self._sync_meta.mark_synced(attendance_scope(year, month))
+        self._sync_meta.mark_synced(scope, content_hash=digest)
         return stored
+
+    def prune_history(self, employee_code: str, *, today: date | None = None) -> int:
+        """Drop cached days older than the configured history window.
+
+        Bounded by ``sync.history_months``, the same setting that decides how far a backfill
+        reaches — so the cache holds what the app is willing to fetch and nothing beyond it.
+        Nothing here is irreplaceable; every pruned day can be fetched again.
+        """
+        months = max(1, self._config.sync.history_months)
+        now = today or date.today()
+        # Whole months back from the first of the current one, so pruning never cuts a
+        # month in half and leaves a rollup measuring a fortnight against a month's target.
+        year, month = now.year, now.month - months
+        while month < 1:
+            year, month = year - 1, month + 12
+        return self._attendance.prune_before(employee_code, date(year, month, 1))
 
     def refresh_day_detail(self, employee_code: str, day: date) -> None:
         """Fetch and store one day's punch log."""
