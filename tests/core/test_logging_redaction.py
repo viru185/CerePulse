@@ -94,6 +94,11 @@ def test_console_sink_is_skipped_when_there_is_no_stderr(
     configure_logging(level="INFO", log_dir=tmp_path, console=True)
     logger.info("still reaches the file sink")
 
+    # The file sink runs with enqueue=True, so `info` only hands the record to a queue and a
+    # writer thread drains it. `add` creates the log file up front, so without this wait the
+    # glob below finds a file that is still empty — which is how this test flaked.
+    logger.complete()
+
     written = list(tmp_path.glob("*.log"))
     assert written, "the file sink must still be installed"
     assert "still reaches the file sink" in written[0].read_text(encoding="utf-8")
