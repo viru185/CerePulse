@@ -198,6 +198,22 @@ class AuthManager:
         self._transition(SessionState.AUTHENTICATED)
         return True
 
+    def session_lost(self, detail: str) -> SessionExpiredError:
+        """Mark the session dead and return the error that fits how it died.
+
+        Returns rather than raises so the caller can chain it onto the evidence it found
+        (``raise auth.session_lost(...) from exc``). Callers outside :meth:`check_response`
+        exist because the portal has more than one way of saying "you are signed out", and
+        only some of them look like the login page.
+        """
+        self._transition(SessionState.EXPIRED)
+        if self.looks_evicted():
+            return SessionTakenError(
+                f"{detail}; the session ended while the app was still using it, "
+                "so SpineHR is signed in somewhere else"
+            )
+        return SessionExpiredError(detail)
+
     def check_response(self, response: httpx.Response) -> httpx.Response:
         """Reject a response that is not really the page we asked for.
 
@@ -208,13 +224,7 @@ class AuthManager:
         a missing table.
         """
         if _is_login_redirect(response):
-            self._transition(SessionState.EXPIRED)
-            if self.looks_evicted():
-                raise SessionTakenError(
-                    "The session ended while the app was still using it; "
-                    "SpineHR is signed in somewhere else"
-                )
-            raise SessionExpiredError("The portal redirected to the login page")
+            raise self.session_lost("The portal redirected to the login page")
         if is_privilege_error(response):
             raise PrivilegeError(
                 "The portal refused the page for lack of privileges. Its navigation "

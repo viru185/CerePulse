@@ -97,12 +97,6 @@ LIGHT = Palette(
 
 #: Native on Windows 11.
 #:
-#: Only the *first* name here does anything. Qt style sheets do not implement CSS font
-#: fallback: ``font-family`` resolves to one family and the rest of the list is decoration
-#: (``system-ui`` is not even a generic Qt recognises). That is why the ‹ › buttons rendered
-#: blank — Segoe UI Variable Text lacks those code points and there was no way to fall back
-#: to Segoe UI, which has them. Real fallback comes from :func:`apply_font`.
-FONT_FAMILY = '"Segoe UI Variable Text", "Segoe UI", sans-serif'
 MONO_FAMILY = '"Cascadia Mono", "Consolas", monospace'
 
 #: The chain Qt actually walks, in order, for a code point the previous family lacks.
@@ -188,10 +182,14 @@ def _system_prefers_dark() -> bool:
 def stylesheet(palette: Palette) -> str:
     """Build the application stylesheet for a palette."""
     return f"""
+    /* No font-family here on purpose. A style-sheet font *overrides* the one set through
+       QApplication::setFont, and a QSS font-family carries no fallback chain — so naming
+       it on the QWidget rule (which matches everything) silently discarded the fallback
+       list `apply_font` builds, including the family that actually holds the ◀ ▶ glyphs.
+       `QFont.setFamilies` owns the font; this sheet only sizes it. */
     QWidget {{
         background-color: {palette.surface};
         color: {palette.text};
-        font-family: {FONT_FAMILY};
         font-size: 13px;
     }}
 
@@ -321,6 +319,14 @@ def stylesheet(palette: Palette) -> str:
         border: 1px solid {palette.border};
         border-radius: 8px;
         padding: 7px 14px;
+    }}
+    /* The ◀ ▶ steppers. The default 7px/14px padding plus a 1px border is 30px of chrome,
+       and these were set to a fixed 30px wide — leaving exactly zero pixels for the glyph,
+       which is why they drew as empty rounded squares. They are square by design, so they
+       get padding that fits inside one. */
+    QPushButton#StepButton {{
+        padding: 4px 0px;
+        font-size: 14px;
     }}
     QPushButton:hover  {{ border-color: {palette.work}; }}
     QPushButton:disabled {{ color: {palette.text_faint}; border-color: {palette.border}; }}

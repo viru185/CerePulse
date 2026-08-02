@@ -46,6 +46,7 @@ class SyncReport:
     days_pruned: int = 0
     leave_refreshed: bool = False
     swipes_refreshed: bool = False
+    applications_refreshed: bool = False
     holidays_refreshed: bool = False
     reauthenticated: bool = False
     #: Whether cache TTLs were bypassed. Reported so the UI can say "fetched" rather than
@@ -128,7 +129,10 @@ class SyncCoordinator:
         """Refresh everything for one month, continuing past individual failures.
 
         Each step is independent: a leave outage should not cost the user their attendance
-        refresh, so failures are collected rather than raised.
+        refresh, so failures are collected rather than raised. The exception is a session
+        taken elsewhere, which :meth:`_step_value` re-raises — it abandons the run rather
+        than making four more requests against a session the app no longer owns, each one
+        of which would also be a request taken back off whoever does.
 
         ``force`` bypasses every cache TTL. Without it a Refresh click can legitimately
         fetch nothing, which is what made the button feel broken — the flag existed in the
@@ -155,6 +159,9 @@ class SyncCoordinator:
         )
         report.leave_refreshed = self._step(
             report, "leave", lambda: self._leave.refresh_leave(employee_code)
+        )
+        report.applications_refreshed = self._step(
+            report, "applications", lambda: self._leave.refresh_applications(employee_code)
         )
         report.forced = force
 
@@ -219,6 +226,8 @@ class SyncCoordinator:
             self.run(lambda: self._leave.refresh_leave(employee_code))
         elif scope is Scope.SWIPE_REQUESTS:
             self.run(lambda: self._leave.refresh_swipe_requests(employee_code))
+        elif scope is Scope.APPLICATIONS:
+            self.run(lambda: self._leave.refresh_applications(employee_code))
         elif scope is Scope.HOLIDAYS:
             self.run(self._leave.refresh_holidays)
         return 0
@@ -242,9 +251,21 @@ class SyncCoordinator:
         return len(report.failures) == before
 
     def _step_value(self, report: SyncReport, name: str, operation: Callable[[], T]) -> T | None:
-        """As :meth:`_step`, but returns the operation's result (None if it failed)."""
+        """As :meth:`_step`, but returns the operation's result (None if it failed).
+
+        An eviction is the one failure a step does not get to absorb. Collecting failures
+        is right when they are independent — a leave outage should not cost the attendance
+        refresh — but a taken session is not independent of anything: every remaining step
+        would fail the same way, and recording them as four separate failures means the one
+        thing that must reach the UI, so the app can stand down, never does. It shipped
+        that way in 0.9 precisely because :class:`SessionTakenError` subclasses
+        :class:`SessionExpiredError` to keep older handlers working, and this handler was
+        older than the truce.
+        """
         try:
             return self.run(operation)
+        except SessionTakenError:
+            raise
         except (TransportError, SessionExpiredError) as exc:
             logger.warning("Sync step {!r} failed: {}", name, exc)
             report.failures.append(f"{name}: {exc}")

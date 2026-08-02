@@ -26,6 +26,7 @@ from cerepulse.repository.attendance import AttendanceRepository
 from cerepulse.repository.database import Database, open_database
 from cerepulse.repository.employee import Employee, EmployeeRepository
 from cerepulse.repository.leave import (
+    ApplicationRepository,
     HolidayRepository,
     LeaveRepository,
     SwipeRequestRepository,
@@ -184,6 +185,7 @@ def build_app(
         gateway=gateway,
         leave=leave_repo,
         swipes=swipe_repo,
+        applications=ApplicationRepository(database),
         holidays=holiday_repo,
         sync_meta=sync_repo,
         config=resolved,

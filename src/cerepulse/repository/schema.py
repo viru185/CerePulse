@@ -23,7 +23,7 @@ from loguru import logger
 from cerepulse.core.errors import MigrationError
 
 #: Bumped whenever a migration is added. Checked against the database on open.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 
 def _migration_001(connection: sqlite3.Connection) -> None:
@@ -161,11 +161,53 @@ def _migration_003(connection: sqlite3.Connection) -> None:
     connection.execute("ALTER TABLE sync_metadata ADD COLUMN content_hash TEXT")
 
 
+def _migration_004(connection: sqlite3.Connection) -> None:
+    """Keep the request's type, which the grid has always carried and nobody read.
+
+    "Type" is what separates a swipe correction from the other regularisations the same
+    grid shape is used for — the portal serves leave, outdoor duty and comp-off through the
+    same list page under a different token.
+    """
+    connection.execute("ALTER TABLE swipe_request ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
+
+
+def _migration_005(connection: sqlite3.Connection) -> None:
+    """Store filed leave, outdoor-duty and comp-off applications.
+
+    The muster says a June week was outdoor duty and the ledger says a comp-off was credited,
+    but neither says whether what was *applied for* was ever approved — which is the question
+    the Records screen exists to answer and the one thing it could not.
+
+    Keyed on the portal's own ``App. Id``. Unlike the swipe grid these lists carry one, so
+    identity does not have to be rebuilt from the fields and a re-sync cannot duplicate a
+    row whose remark was edited.
+    """
+    connection.executescript("""
+        CREATE TABLE application (
+            employee_code TEXT NOT NULL,
+            app_id        TEXT NOT NULL,
+            kind          TEXT NOT NULL,
+            start_date    TEXT NOT NULL,
+            end_date      TEXT NOT NULL,
+            days          REAL NOT NULL DEFAULT 0,
+            remark        TEXT NOT NULL DEFAULT '',
+            status        TEXT NOT NULL,
+            leave_type    TEXT NOT NULL DEFAULT '',
+            synced_at     TEXT NOT NULL,
+            PRIMARY KEY (employee_code, app_id)
+        );
+
+        CREATE INDEX idx_application_start ON application (employee_code, start_date);
+    """)
+
+
 #: Ordered migrations. Append only; never edit one that has shipped.
 MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migration_001,
     _migration_002,
     _migration_003,
+    _migration_004,
+    _migration_005,
 )
 
 

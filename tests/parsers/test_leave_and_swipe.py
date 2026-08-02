@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from cerepulse.core.errors import ParserError
 from cerepulse.models.leave import LeaveCategory
 from cerepulse.models.swipe import SwipeStatus
 from cerepulse.parsers.leave import (
@@ -14,7 +15,7 @@ from cerepulse.parsers.leave import (
     parse_holidays,
     parse_leave_register,
 )
-from cerepulse.parsers.swipe import parse_swipe_requests
+from cerepulse.parsers.swipe import STATUS_SELECT_ID, parse_swipe_requests
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -138,5 +139,21 @@ def test_unknown_status_does_not_raise() -> None:
     assert SwipeStatus.parse("Escalated") is SwipeStatus.UNKNOWN
 
 
-def test_no_swipe_grid_yields_nothing() -> None:
-    assert parse_swipe_requests("<html><body></body></html>") == []
+def test_a_lapsed_request_is_a_status_the_portal_has(swipe_html: str) -> None:
+    """One of the five options on its own status filter, so it can come back on any fetch."""
+    assert SwipeStatus.parse("Lapsed") is SwipeStatus.LAPSED
+    assert not SwipeStatus.LAPSED.is_decided, "lapsing is not a decision anyone made"
+
+
+def test_a_page_with_the_filter_but_no_grid_is_genuinely_empty() -> None:
+    """The status views the app now fetches are mostly empty, and that is not an error."""
+    page = f'<html><body><select id="{STATUS_SELECT_ID}"></select></body></html>'
+    assert parse_swipe_requests(page) == []
+
+
+def test_a_page_that_is_not_the_swipe_page_at_all_raises() -> None:
+    """It used to return [], which `save_all([])` then wrote and `mark_synced` blessed —
+    an empty cache indistinguishable from an employee who has never filed anything, with
+    the TTL suppressing any retry."""
+    with pytest.raises(ParserError):
+        parse_swipe_requests("<html><body></body></html>")

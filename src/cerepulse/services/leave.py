@@ -8,15 +8,17 @@ from datetime import date, datetime, timedelta
 from loguru import logger
 
 from cerepulse.core.config import AppConfig
-from cerepulse.core.errors import TransportError
+from cerepulse.core.errors import CerePulseError, SessionExpiredError
 from cerepulse.intelligence.attention import StatusChange, status_changes
 from cerepulse.intelligence.insights import Insight
 from cerepulse.intelligence.leave import LeaveOutlook, LeavePolicy, analyze_leave, leave_insights
 from cerepulse.intelligence.optimizer import BreakPlan, suggest_breaks
 from cerepulse.intelligence.sandwich import SandwichAssessment, SandwichRule, assess
+from cerepulse.models.application import Application
 from cerepulse.models.leave import Holiday, LeaveBalance, LeaveCategory, LeaveTransaction
 from cerepulse.models.swipe import SwipeRequest
 from cerepulse.repository.leave import (
+    ApplicationRepository,
     HolidayRepository,
     LeaveRepository,
     SwipeRequestRepository,
@@ -36,6 +38,7 @@ def _parse_rule(value: str) -> SandwichRule:
 
 LEAVE_SCOPE = "leave"
 SWIPE_SCOPE = "swipe_requests"
+APPLICATION_SCOPE = "applications"
 HOLIDAY_SCOPE = "holidays"
 
 #: Holidays are published once a year, so re-fetching them hourly is waste.
@@ -80,10 +83,12 @@ class LeaveService:
         sync_meta: SyncMetadataRepository,
         config: AppConfig,
         policy: LeavePolicy | None = None,
+        applications: ApplicationRepository | None = None,
     ) -> None:
         self._gateway = gateway
         self._leave = leave
         self._swipes = swipes
+        self._applications = applications
         self._holidays = holidays
         self._sync_meta = sync_meta
         self._config = config
@@ -113,7 +118,9 @@ class LeaveService:
                 self.refresh_leave(employee_code)
                 balances = self._leave.find_balances(employee_code)
                 from_cache = False
-            except TransportError as exc:
+            except SessionExpiredError:
+                raise
+            except CerePulseError as exc:
                 if not balances:
                     raise
                 logger.warning("Leave refresh failed, serving cached balances: {}", exc)
@@ -201,6 +208,42 @@ class LeaveService:
     ) -> list[SwipeRequest]:
         return self.load_swipe_requests_with_changes(employee_code, force_refresh=force_refresh)[0]
 
+    def cached_swipe_requests(self, employee_code: str) -> list[SwipeRequest]:
+        """What is stored, with no fetch and no TTL check. For painting before the network."""
+        return self._swipes.find_all(employee_code)
+
+    # --- leave, outdoor-duty and comp-off applications --------------------------------
+
+    def load_applications(
+        self, employee_code: str, *, force_refresh: bool = False
+    ) -> list[Application]:
+        """Filed applications, refreshed when stale and served from cache when not."""
+        if self._applications is None:
+            return []
+        stale = self._sync_meta.is_stale(
+            APPLICATION_SCOPE, max_age_minutes=self._config.sync.cache_ttl_minutes
+        )
+        if force_refresh or stale:
+            try:
+                self.refresh_applications(employee_code)
+            except SessionExpiredError:
+                raise
+            except CerePulseError as exc:
+                logger.warning("Application refresh failed, serving cache: {}", exc)
+        return self._applications.find_all(employee_code)
+
+    def cached_applications(self, employee_code: str) -> list[Application]:
+        return self._applications.find_all(employee_code) if self._applications else []
+
+    def refresh_applications(self, employee_code: str) -> None:
+        if self._applications is None:
+            return
+        logger.info("Refreshing leave, outdoor-duty and comp-off applications")
+        fetched = self._gateway.fetch_applications()
+        self._applications.save_all(employee_code, fetched)
+        self._sync_meta.mark_synced(APPLICATION_SCOPE)
+        logger.info("{} application(s) cached", len(fetched))
+
     def load_swipe_requests_with_changes(
         self, employee_code: str, *, force_refresh: bool = False
     ) -> tuple[list[SwipeRequest], list[StatusChange]]:
@@ -217,7 +260,10 @@ class LeaveService:
         if force_refresh or stale:
             try:
                 changes = self.refresh_swipe_requests(employee_code)
-            except TransportError as exc:
+            except SessionExpiredError:
+                # Not ours to absorb: the app has to hear about a dead session.
+                raise
+            except CerePulseError as exc:
                 logger.warning("Swipe-request refresh failed, serving cache: {}", exc)
         return self._swipes.find_all(employee_code), changes
 
@@ -250,7 +296,9 @@ class LeaveService:
             try:
                 self.refresh_holidays()
                 holidays = self._holidays.find_all()
-            except TransportError as exc:
+            except SessionExpiredError:
+                raise
+            except CerePulseError as exc:
                 logger.warning("Holiday refresh failed, serving cache: {}", exc)
         return holidays
 

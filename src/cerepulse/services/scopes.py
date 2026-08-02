@@ -27,6 +27,7 @@ class Scope(Enum):
     DAY_DETAIL = "day_detail"
     LEAVE = "leave"
     SWIPE_REQUESTS = "swipe_requests"
+    APPLICATIONS = "applications"
     HOLIDAYS = "holidays"
 
     @property
@@ -36,6 +37,7 @@ class Scope(Enum):
             Scope.DAY_DETAIL: "Punch detail",
             Scope.LEAVE: "Leave balances",
             Scope.SWIPE_REQUESTS: "Swipe requests",
+            Scope.APPLICATIONS: "Applications",
             Scope.HOLIDAYS: "Holidays",
         }[self]
 
@@ -49,6 +51,9 @@ class Scope(Enum):
             ),
             Scope.LEAVE: "Balances and the ledger behind them.",
             Scope.SWIPE_REQUESTS: "Requests you have filed and where they stand.",
+            Scope.APPLICATIONS: (
+                "Leave, outdoor duty and comp-off you have applied for, and their approval."
+            ),
             Scope.HOLIDAYS: "The company calendar. Published once a year, so it is checked daily.",
         }[self]
 

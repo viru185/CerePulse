@@ -51,7 +51,7 @@ from cerepulse.ui.assets import app_icon
 from cerepulse.ui.controllers import NavigationController, SyncController, UpdateController
 from cerepulse.ui.login_dialog import LoginDialog
 from cerepulse.ui.theme import Palette, palette_for, stylesheet
-from cerepulse.ui.views.about import AboutView
+from cerepulse.ui.views.about import AboutView, open_logs
 from cerepulse.ui.views.attendance import AttendanceView
 from cerepulse.ui.views.insights import InsightsView
 from cerepulse.ui.views.records import RecordsView, open_url
@@ -64,6 +64,13 @@ from cerepulse.update import Channel
 
 SCREENS = ("Today", "Week", "Attendance", "Insights", "Records", "Settings", "About")
 TODAY_SCREEN = SCREENS.index("Today")
+
+SIDEBAR_WIDTH = 196
+#: Room the sidebar status button actually has for text: the sidebar, less its 8px margins,
+#: less the 14px padding and 1px border each side that ``#SidebarButton`` carries. Taken
+#: from the geometry rather than read off the widget, because the first status is set before
+#: the layout has ever run and ``width()`` would still be reporting a default.
+STATUS_TEXT_WIDTH = SIDEBAR_WIDTH - 16 - 30
 
 
 class MainWindow(QMainWindow):
@@ -94,6 +101,9 @@ class MainWindow(QMainWindow):
         #: timeline can be rebuilt whenever any one of them lands.
         self._swipes: list[object] = []
         self._ledger: list[object] = []
+        self._applications: list[object] = []
+        #: The unelided sidebar status, kept because the button only holds the short form.
+        self._status_text = ""
 
         self.setWindowTitle(about.NAME)
         self.setWindowIcon(app_icon())
@@ -145,6 +155,9 @@ class MainWindow(QMainWindow):
         ):
             self._stack.addWidget(view)
 
+        for banner in (self.today.banner, self.records.banner, self.insights.banner):
+            banner.logs_requested.connect(open_logs)
+
         self.today.refresh_requested.connect(lambda: self.refresh(force=True))
         self.today.insight_action.connect(self._handle_insight_action)
         self.today.action_triggered.connect(self._handle_action)
@@ -178,7 +191,7 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(196)
+        sidebar.setFixedWidth(SIDEBAR_WIDTH)
 
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(8, 16, 8, 12)
@@ -210,10 +223,25 @@ class MainWindow(QMainWindow):
         # to do something about it.
         self._status = QPushButton("Starting…")
         self._status.setObjectName("SidebarButton")
-        self._status.setToolTip("What has been synced, and when")
         self._status.clicked.connect(self._open_sync_panel)
         layout.addWidget(self._status)
+        self._set_status("Starting…")
         return sidebar
+
+    def _set_status(self, text: str) -> None:
+        """Set the sidebar status, elided to fit, with the whole of it as the tooltip.
+
+        The button has about 152 px of text width — roughly 23 characters — and the strings
+        it is given run to 36: "Synced 12 min ago · 4 day(s) pending" arrived clipped mid
+        word. A QPushButton neither wraps nor elides on its own, and the tooltip used to be
+        a fixed sentence, so the clipped part was simply unrecoverable. Every caller goes
+        through here; setting the text directly is what let nine call sites each be wrong.
+        """
+        self._status_text = text
+        metrics = self._status.fontMetrics()
+        shown = metrics.elidedText(text, Qt.TextElideMode.ElideRight, STATUS_TEXT_WIDTH)
+        self._status.setText(shown)
+        self._status.setToolTip(f"{text}\n\nClick for what has been synced, and when")
 
     def _build_controllers(self) -> None:
         self._navigation = NavigationController(self._stack, self._nav, SCREENS, self)
@@ -245,6 +273,7 @@ class MainWindow(QMainWindow):
         self._sync.leave_ready.connect(self._apply_leave)
         self._sync.ledger_ready.connect(self._apply_ledger)
         self._sync.swipes_ready.connect(self._apply_swipes)
+        self._sync.applications_ready.connect(self._apply_applications)
         self._sync.swipes_decided.connect(self._on_swipes_decided)
         self._sync.trends_ready.connect(self.insights.show_trends)
         self._sync.periods_ready.connect(self._adopt_periods)
@@ -346,7 +375,7 @@ class MainWindow(QMainWindow):
         )
 
     def _sign_in_silently(self) -> None:
-        self._status.setText("Signing in…")
+        self._set_status("Signing in…")
         self._sync.sign_in_silently(self._on_signed_in, self.prompt_sign_in)
 
     def prompt_sign_in(self) -> None:
@@ -371,7 +400,7 @@ class MainWindow(QMainWindow):
 
         dialog.submitted.connect(attempt)
         if dialog.exec() == LoginDialog.DialogCode.Rejected and not self._month_view:
-            self._status.setText("Not signed in — showing cached data only.")
+            self._set_status("Not signed in — showing cached data only.")
 
     def _on_signed_in(self, employee_code: str) -> None:
         self._employee_code = employee_code
@@ -435,7 +464,7 @@ class MainWindow(QMainWindow):
                 return
             self._resume()
         if not quiet:
-            self._status.setText("Refreshing…")
+            self._set_status("Refreshing…")
         self._sync.refresh(force=force)
 
     def _open_portal(self, page: str) -> None:
@@ -449,7 +478,7 @@ class MainWindow(QMainWindow):
         outside it, so this creates a second session and the portal ends ours. Standing
         down first is what stops the two fighting over it.
         """
-        self._status.setText("Opening SpineHR…")
+        self._set_status("Opening SpineHR…")
 
         def ready(handover: object) -> None:
             open_url(handover.url)  # type: ignore[attr-defined]
@@ -482,7 +511,7 @@ class MainWindow(QMainWindow):
         self._auto.stop()
         logger.info("Paused: the portal session is in use elsewhere")
 
-        self._status.setText("Paused — signed in elsewhere")
+        self._set_status("Paused — signed in elsewhere")
         self.today.banner.show_message(
             message
             or (
@@ -519,7 +548,7 @@ class MainWindow(QMainWindow):
         self._sync_panel.raise_()
 
     def _sync_day(self, day: date) -> None:
-        self._status.setText(f"Fetching {fmt.day_label(day)}…")
+        self._set_status(f"Fetching {fmt.day_label(day)}…")
         self._sync.sync_day(day)
 
     def _on_scopes_ready(self, statuses: list[object]) -> None:
@@ -529,7 +558,7 @@ class MainWindow(QMainWindow):
 
     def _on_scope_started(self, scope: Scope) -> None:
         self._busy_scope = scope
-        self._status.setText(f"Fetching {scope.label.lower()}…")
+        self._set_status(f"Fetching {scope.label.lower()}…")
         if self._sync_panel is not None and self._sync_panel.isVisible():
             self._sync_panel.show_statuses(self._scopes, busy=scope)  # type: ignore[arg-type]
 
@@ -594,6 +623,9 @@ class MainWindow(QMainWindow):
             week,
             self._context.attendance.policy.work_target,
             attention=view.attention,
+            # Already computed for the month rollup, so the week's timelines cost nothing
+            # beyond passing them along.
+            analyses=view.analyses,
         )
 
     def _apply_day(self, analysis: DayAnalysis, is_today: bool) -> None:
@@ -606,7 +638,7 @@ class MainWindow(QMainWindow):
     def _render_status(self, view: MonthView) -> None:
         synced = fmt.relative_time(view.last_synced)
         pending = f" · {view.pending_detail} day(s) pending" if view.pending_detail else ""
-        self._status.setText(f"Synced {synced}{pending}")
+        self._set_status(f"Synced {synced}{pending}")
 
         if view.from_cache and view.last_synced is None:
             self.today.banner.show_message(
@@ -630,13 +662,17 @@ class MainWindow(QMainWindow):
         self._ledger = list(transactions)
         self._rebuild_records()
 
+    def _apply_applications(self, applications: list[object]) -> None:
+        self._applications = list(applications)
+        self._rebuild_records()
+
     def _rebuild_records(self) -> None:
         """Reassemble the one timeline from whichever caches have reported so far.
 
-        The three sources arrive on their own schedules — the month with a sync, the
-        requests and the ledger behind it — so this is called by each of them rather than
-        waiting for all three. A partial timeline is more useful than none, and every
-        source that lands after simply rebuilds it.
+        The four sources arrive on their own schedules — the month with a sync, then the
+        requests, the ledger and the filed applications behind it — so this is called by
+        each of them rather than waiting for all four. A partial timeline is more useful
+        than none, and every source that lands after simply rebuilds it.
         """
         from cerepulse.intelligence.records import build_records
 
@@ -646,6 +682,7 @@ class MainWindow(QMainWindow):
                 requests=self._swipes,  # type: ignore[arg-type]
                 transactions=self._ledger,  # type: ignore[arg-type]
                 holidays=self._month_view.holidays if self._month_view else [],
+                applications=self._applications,  # type: ignore[arg-type]
             )
         )
 
@@ -837,14 +874,22 @@ class MainWindow(QMainWindow):
         if not label:
             return
         waiting = f" · {queued} waiting" if queued else ""
-        self._status.setText(f"{label}…{waiting}")
+        self._set_status(f"{label}…{waiting}")
 
     def _on_degraded(self, scope: str, exc: BaseException) -> None:
         """A part of a screen is missing, but the screen still works.
 
         These used to be debug lines and nothing else, so a leave ledger that never loaded
         looked exactly like a leave ledger with no rows.
+
+        Losing the session is not a degradation of one scope, whichever scope happened to
+        notice first — nothing else will load either. It goes to the same place a failed
+        sync does, or the app reports a missing swipe list and keeps trying everything else
+        against a session somebody else is using.
         """
+        if isinstance(exc, SessionExpiredError | AuthenticationError):
+            self._on_error(exc)
+            return
         logger.warning("Could not load {}: {}", scope, exc)
         banner = {
             "insights": self.insights.banner,
@@ -852,7 +897,10 @@ class MainWindow(QMainWindow):
             "swipe requests": self.records.banner,
         }.get(scope, self.today.banner)
         banner.show_message(
-            f"Could not load {scope}: {_message_for(exc)}", Severity.WARNING, key=scope
+            f"Could not load {scope}: {_message_for(exc)}",
+            Severity.WARNING,
+            key=scope,
+            offer_logs=True,
         )
 
     def _on_error(self, exc: BaseException) -> None:
@@ -867,6 +915,9 @@ class MainWindow(QMainWindow):
             _message_for(exc),
             Severity.WARNING if isinstance(exc, TransportError) else Severity.CRITICAL,
             key="error",
+            # The generic message is the one that says "check the logs" and, until now,
+            # left the user to find out where those are.
+            offer_logs=not isinstance(exc, CerePulseError),
         )
 
 

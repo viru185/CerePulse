@@ -53,6 +53,7 @@ from cerepulse.ui.widgets import (
     StatusChip,
     card_row,
     data_table,
+    step_button,
 )
 
 COLUMNS = ("Date", "Day", "Status", "In", "Out", "Worked", "Late", "Swipe", "Remarks")
@@ -149,10 +150,19 @@ class AttendanceView(QWidget):
 
         left = QVBoxLayout()
         left.setSpacing(Space.SNUG)
+
+        # The legend sits beside the calendar rather than under it. A calendar cell is
+        # square and capped, so seven of them stop at about 400 px however wide the window
+        # is — and stacking the legend below left that leftover strip empty while making the
+        # column taller. Side by side, the strip is the legend's and the table starts sooner.
+        calendar = QHBoxLayout()
+        calendar.setSpacing(Space.GAP)
         self.heatmap = MonthHeatmap(palette)
         self.heatmap.day_selected.connect(self.show_day)
-        left.addWidget(self.heatmap)
-        left.addWidget(self._build_legend())
+        calendar.addWidget(self.heatmap)
+        calendar.addWidget(self._build_legend(), 1)
+        left.addLayout(calendar)
+
         left.addWidget(SectionTitle("Days"))
         self.table = self._build_table()
         left.addWidget(self.table, 1)
@@ -170,10 +180,7 @@ class AttendanceView(QWidget):
 
         # Stepping is what people actually do; the dropdown was the only way to move a month
         # and it makes reading three months in sequence six clicks instead of two.
-        previous = QPushButton("◀")
-        previous.setFixedWidth(30)
-        previous.setToolTip("Previous month")
-        previous.clicked.connect(lambda: self._step_month(-1))
+        previous = step_button("◀", "Previous month", lambda: self._step_month(-1))
         row.addWidget(previous)
 
         self._period = QComboBox()
@@ -181,10 +188,7 @@ class AttendanceView(QWidget):
         self._period.currentIndexChanged.connect(self._emit_month)
         row.addWidget(self._period)
 
-        self._next = QPushButton("▶")
-        self._next.setFixedWidth(30)
-        self._next.setToolTip("Next month")
-        self._next.clicked.connect(lambda: self._step_month(1))
+        self._next = step_button("▶", "Next month", lambda: self._step_month(1))
         row.addWidget(self._next)
 
         self._filter = QComboBox()
@@ -209,17 +213,21 @@ class AttendanceView(QWidget):
     def _build_legend(self) -> QWidget:
         host = QWidget()
         layout = QVBoxLayout(host)
-        layout.setContentsMargins(0, Space.ROW + 2, 0, 0)
+        layout.setContentsMargins(0, Space.ROW, 0, 0)
         layout.setSpacing(3)
         for text in (
             "Deeper fill = more hours",
             "Green = target met",
             "Red outline = needs attention",
+            "Dashed outline = outdoor duty",
             "Click a day for its detail",
         ):
             label = QLabel(text)
             label.setObjectName("CardCaption")
+            label.setWordWrap(True)
             layout.addWidget(label)
+        # Now that this sits beside the calendar rather than under it, the stretch does
+        # something: it holds the lines at the top of the strip instead of centring them.
         layout.addStretch(1)
         return host
 

@@ -64,6 +64,19 @@ jobs:
       - name: Install InnoSetup
         run: choco install innosetup --no-progress -y
 
+      # Before the build, not after. CHANGELOG.md is bundled into the app and is what the
+      # What's New dialog reads; regenerating it after PyInstaller has already packaged it
+      # meant every release since 0.4.0 shipped with 0.4.0's notes and showed the user a
+      # placeholder. The release-body step below writes a different file for a different
+      # purpose and stays where it is.
+      - name: Refresh the bundled changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --tag ${{ github.event.inputs.tag || github.ref_name }}
+        env:
+          OUTPUT: CHANGELOG.md
+
       - name: Build installer and portable zip
         run: uv run python tools/build_all.py --clean
 

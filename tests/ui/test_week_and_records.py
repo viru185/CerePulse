@@ -10,19 +10,21 @@ nothing and proved nothing.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time
 
 from PySide6.QtWidgets import QApplication, QLabel
 
 from cerepulse.intelligence.attention import Attention, AttentionKind
+from cerepulse.intelligence.day import DayAnalysis, analyze_day
 from cerepulse.intelligence.month import DayRollup, WeekAnalysis
 from cerepulse.intelligence.policy import ShiftPolicy
 from cerepulse.intelligence.records import Record, RecordKind
-from cerepulse.models.attendance import DayStatus
+from cerepulse.models.attendance import DayStatus, Punch, PunchDirection
 from cerepulse.models.values import Duration
 from cerepulse.ui.theme import DARK
 from cerepulse.ui.views.records import RecordsView
 from cerepulse.ui.views.week import WeekView
+from cerepulse.ui.widgets import DayTimeline
 
 MONDAY = date(2026, 7, 20)
 TARGET = Duration(8 * 60)
@@ -164,6 +166,94 @@ def test_a_holiday_and_an_absence_do_not_look_alike(qapp: QApplication) -> None:
     wording = _text(view)
     assert "Holiday" in wording
     assert "Absent" in wording
+
+
+# --- week: one scale for all seven ---------------------------------------------------------
+
+
+def analysis_for(offset: int, *, start_hour: int, end_hour: int) -> DayAnalysis:
+    """A real analysis of a real pair of punches, rather than a hand-built stand-in."""
+    when = MONDAY.replace(day=MONDAY.day + offset)
+    return analyze_day(
+        [
+            Punch(at=time(start_hour, 0), direction=PunchDirection.IN),
+            Punch(at=time(end_hour, 0), direction=PunchDirection.OUT),
+        ],
+        day=when,
+    )
+
+
+def test_a_day_with_punches_gets_a_timeline_rather_than_a_proportion_bar(
+    qapp: QApplication,
+) -> None:
+    """A bar can say how much of the day there was. Only a timeline says when it happened,
+    and on a week screen that is most of what there is to notice."""
+    view = WeekView(DARK)
+    view.show_week(
+        week(rollup(0), worked=480, target=480),
+        TARGET,
+        analyses={MONDAY: analysis_for(0, start_hour=9, end_hour=18)},
+    )
+
+    row = view._days.itemAt(0).widget()
+    assert row.findChildren(DayTimeline), "the punches are cached; draw them"
+
+
+def test_all_seven_days_share_one_scale(qapp: QApplication) -> None:
+    """Left to itself each timeline fits its own day, so a 9-to-6 Monday and a 1-to-10
+    Tuesday draw as identical bars — hiding the difference the stack exists to show."""
+    view = WeekView(DARK)
+    view.show_week(
+        week(rollup(0), rollup(1), worked=960, target=960),
+        TARGET,
+        analyses={
+            MONDAY: analysis_for(0, start_hour=9, end_hour=18),
+            MONDAY.replace(day=MONDAY.day + 1): analysis_for(1, start_hour=13, end_hour=22),
+        },
+    )
+
+    timelines = [
+        line
+        for index in range(view._days.count())
+        for line in view._days.itemAt(index).widget().findChildren(DayTimeline)
+    ]
+    assert len(timelines) == 2
+    spans = {(line._start.hour, line._end.hour) for line in timelines}
+    assert len(spans) == 1, "two different days must be drawn against the same ruler"
+
+
+def test_the_hour_axis_is_hidden_when_no_day_has_punches(qapp: QApplication) -> None:
+    """A ruler under seven proportion bars measures nothing."""
+    view = WeekView(DARK)
+    view.show_week(week(rollup(0), worked=480, target=480), TARGET)
+
+    assert not view._axis.isVisibleTo(view)
+
+
+def test_the_shared_domain_is_clamped_against_one_outlier() -> None:
+    """One 3 AM deployment must not squash the other six days into an inch. It still
+    draws — just against the same ruler as everything else."""
+    from cerepulse.ui.widgets import DOMAIN_EARLIEST, DOMAIN_LATEST, shared_domain
+
+    ordinary = (datetime(2026, 7, 20, 9, 0), datetime(2026, 7, 20, 18, 0))
+    nightshift = (datetime(2026, 7, 21, 3, 0), datetime(2026, 7, 21, 23, 30))
+
+    first, last = shared_domain([ordinary, nightshift])
+    assert first >= DOMAIN_EARLIEST
+    assert last <= DOMAIN_LATEST
+
+
+def test_the_shared_domain_covers_an_ordinary_week() -> None:
+    from cerepulse.ui.widgets import shared_domain
+
+    first, last = shared_domain(
+        [
+            (datetime(2026, 7, 20, 9, 50), datetime(2026, 7, 20, 18, 51)),
+            (datetime(2026, 7, 21, 8, 15), datetime(2026, 7, 21, 17, 5)),
+        ]
+    )
+    assert first <= 8, "the earliest start must be inside the range"
+    assert last >= 19, "the latest end must be inside the range"
 
 
 # --- week: what needs doing ----------------------------------------------------------------

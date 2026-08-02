@@ -41,6 +41,7 @@ class SyncController(QObject):
     leave_ready = Signal(object)  # LeaveView
     ledger_ready = Signal(object)  # list[LeaveTransaction]
     swipes_ready = Signal(object)  # list[SwipeRequest]
+    applications_ready = Signal(object)  # list[Application]
     #: Requests decided since the previous fetch. Empty on every sync that changed nothing.
     swipes_decided = Signal(object)  # list[StatusChange]
     trends_ready = Signal(object)  # TrendsView
@@ -81,7 +82,13 @@ class SyncController(QObject):
     # --- months -----------------------------------------------------------------------
 
     def load_from_cache(self) -> None:
-        """Render whatever is stored, so the window is useful before any round trip."""
+        """Render whatever is stored, so the window is useful before any round trip.
+
+        All of it, not just the month. This loaded the month alone, so Records opened empty
+        on every launch and stayed empty until a full sync succeeded — meaning offline, or
+        after any sync failure, the app showed no requests at all while holding a cache full
+        of them. Reading three tables costs nothing next to the round trip it replaces.
+        """
         year, month = self.period
         self._runner.submit(
             "load-cache",
@@ -90,6 +97,24 @@ class SyncController(QObject):
             ),
             on_success=self.month_ready.emit,
             on_error=lambda exc: logger.debug("No cached month yet: {}", exc),
+        )
+        self._runner.submit(
+            "load-cache-swipes",
+            lambda: self._context.leave.cached_swipe_requests(self.employee_code),
+            on_success=self.swipes_ready.emit,
+            on_error=lambda exc: logger.debug("No cached swipe requests yet: {}", exc),
+        )
+        self._runner.submit(
+            "load-cache-ledger",
+            lambda: self._context.leave.leave_ledger(self.employee_code),
+            on_success=self.ledger_ready.emit,
+            on_error=lambda exc: logger.debug("No cached leave ledger yet: {}", exc),
+        )
+        self._runner.submit(
+            "load-cache-applications",
+            lambda: self._context.leave.cached_applications(self.employee_code),
+            on_success=self.applications_ready.emit,
+            on_error=lambda exc: logger.debug("No cached applications yet: {}", exc),
         )
 
     def refresh(self, *, force: bool = False) -> None:
@@ -145,7 +170,7 @@ class SyncController(QObject):
         def done(count: int) -> None:
             self.scope_finished.emit(scope, count)
             self.reload_month()
-            if scope in (Scope.LEAVE, Scope.SWIPE_REQUESTS):
+            if scope in (Scope.LEAVE, Scope.SWIPE_REQUESTS, Scope.APPLICATIONS):
                 self.refresh_leave()
             self.report_scopes()
 
@@ -235,6 +260,12 @@ class SyncController(QObject):
             lambda: self._context.leave.load_swipe_requests_with_changes(self.employee_code),
             on_success=self._on_swipes,
             on_error=lambda exc: self.degraded.emit("swipe requests", exc),
+        )
+        self._runner.submit(
+            "applications",
+            lambda: self._context.leave.load_applications(self.employee_code),
+            on_success=self.applications_ready.emit,
+            on_error=lambda exc: self.degraded.emit("applications", exc),
         )
 
     def open_in_browser(self, landing: str, on_ready: Success, on_error: Failure) -> None:

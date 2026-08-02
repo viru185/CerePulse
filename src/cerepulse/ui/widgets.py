@@ -10,8 +10,9 @@ from __future__ import annotations
 from calendar import monthrange
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, timedelta
+from html import escape
 
-from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -122,25 +123,59 @@ class Banner(QLabel):
         Severity.CRITICAL: "BannerError",
     }
 
+    #: Href of the built-in "open the logs" action. Not a real URL — external links are
+    #: turned off and this is matched by hand, so nothing a message contains can navigate
+    #: anywhere. Portal text reaches these banners, and it is not trusted markup.
+    LOGS_LINK = "cerepulse:logs"
+
+    #: Raised when the banner's own log link is clicked. A signal rather than a direct call
+    #: because a widget in `ui/widgets` has no business knowing where logs live.
+    logs_requested = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("Banner")
         self.setWordWrap(True)
         self.setVisible(False)
+        self.setTextFormat(Qt.TextFormat.RichText)
+        self.setOpenExternalLinks(False)
+        self.linkActivated.connect(self._on_link)
         self._messages: dict[str, tuple[str, Severity]] = {}
+        self._with_logs: set[str] = set()
 
     def show_message(
-        self, text: str, severity: Severity = Severity.INFO, *, key: str = "general"
+        self,
+        text: str,
+        severity: Severity = Severity.INFO,
+        *,
+        key: str = "general",
+        offer_logs: bool = False,
     ) -> None:
+        """Show a message, optionally with a link to the logs.
+
+        ``offer_logs`` is for the failures whose explanation is only in the log file. Saying
+        "check the logs" without a way to reach them is an instruction the user cannot
+        follow — the path was in a tooltip on a button on a screen nobody had a reason to
+        open.
+        """
         self._messages[key] = (text, severity)
+        self._with_logs.discard(key)
+        if offer_logs:
+            self._with_logs.add(key)
         self._render()
+
+    def _on_link(self, href: str) -> None:
+        if href == self.LOGS_LINK:
+            self.logs_requested.emit()
 
     def clear_message(self, key: str | None = None) -> None:
         """Drop one source's message, or all of them when ``key`` is omitted."""
         if key is None:
             self._messages.clear()
+            self._with_logs.clear()
         else:
             self._messages.pop(key, None)
+            self._with_logs.discard(key)
         self._render()
 
     def _render(self) -> None:
@@ -148,9 +183,18 @@ class Banner(QLabel):
             self.setVisible(False)
             return
 
-        text, severity = min(self._messages.values(), key=lambda entry: self._RANK.get(entry[1], 9))
+        shown = min(self._messages.items(), key=lambda entry: self._RANK.get(entry[1][1], 9))
+        key, (text, severity) = shown
         others = len(self._messages) - 1
-        self.setText(f"{text}  ·  +{others} more" if others else text)
+
+        # Escaped, then decorated. The messages carry portal text and exception strings, so
+        # rendering them as markup would let the vendor's HTML into our own widget.
+        body = escape(text)
+        if others:
+            body += f"  ·  +{others} more"
+        if key in self._with_logs:
+            body += f'  ·  <a href="{self.LOGS_LINK}">Open the logs</a>'
+        self.setText(body)
         # Everything current is on the tooltip, so a hidden second problem is still
         # reachable rather than merely counted.
         self.setToolTip("\n".join(message for message, _ in self._messages.values()))
@@ -365,12 +409,19 @@ class DayTimeline(QWidget):
         now: datetime | None = None,
         status_label: str = "",
         status_colour: str | None = None,
+        domain: tuple[int, int] | None = None,
     ) -> None:
         """Render a day.
 
         ``status_label`` is for the days that have no punches and never will — leave, a
         holiday, outdoor duty. Those used to draw an empty track reading "No punches
         recorded", which is true and tells the user nothing about a week in Bengaluru.
+
+        ``domain`` is a pair of clock hours imposed from outside, for when several of these
+        are stacked and have to be read against each other. Left to itself each timeline
+        scales to its own day, which is right in isolation and wrong in a column: a nine-to-
+        six Monday and a noon-to-nine Tuesday would draw as identical bars, hiding the very
+        difference the stack exists to show.
         """
         self._segments = segments
         self._leave_at = leave_at
@@ -384,15 +435,20 @@ class DayTimeline(QWidget):
             self.update()
             return
 
-        latest = max(
-            [segments[-1].end] + [moment for moment in (leave_at, now) if moment is not None]
-        )
-        start = segments[0].start.replace(minute=0, second=0, microsecond=0)
-        end = (latest + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-        if (end - start) < timedelta(hours=self.MIN_HOURS):
-            end = start + timedelta(hours=self.MIN_HOURS)
+        if domain is not None:
+            midnight = segments[0].start.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._start = midnight + timedelta(hours=domain[0])
+            self._end = midnight + timedelta(hours=domain[1])
+        else:
+            latest = max(
+                [segments[-1].end] + [moment for moment in (leave_at, now) if moment is not None]
+            )
+            start = segments[0].start.replace(minute=0, second=0, microsecond=0)
+            end = (latest + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+            if (end - start) < timedelta(hours=self.MIN_HOURS):
+                end = start + timedelta(hours=self.MIN_HOURS)
+            self._start, self._end = start, end
 
-        self._start, self._end = start, end
         self.setToolTip("\n".join(self._describe()))
         self.update()
 
@@ -435,7 +491,16 @@ class DayTimeline(QWidget):
         return QSize(self.width(), self.HEIGHT_COMPACT if self._compact else self.HEIGHT_FULL)
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802 — Qt override
-        return self.sizeHint()
+        """Only the height is a real minimum. The width is whatever it is given.
+
+        This used to return :meth:`sizeHint` whole, which reports the *current* width — so
+        the widget declared its present width as the least it could ever accept. Inside a
+        resizable scroll area a content minimum can only ratchet upwards from there: the
+        moment the vertical scrollbar claimed its ten pixels, the content no longer fitted
+        its own stated minimum, a horizontal scrollbar appeared, and nothing could ever
+        retire it. The timeline scales to any width; it has no minimum worth naming.
+        """
+        return QSize(0, self.sizeHint().height())
 
     def resizeEvent(self, event: object) -> None:  # noqa: N802 — Qt override
         # Crossing the threshold changes the height the hints report, so the layout has to
@@ -618,6 +683,75 @@ class DayTimeline(QWidget):
             )
 
 
+#: Bounds for a shared timeline domain. Wide enough that an ordinary office day never
+#: touches the edges, narrow enough that one 3 AM deployment does not squash the other six
+#: days into an inch.
+DOMAIN_EARLIEST = 6
+DOMAIN_LATEST = 23
+#: Least span worth drawing. Below it the bands are wider than the day they describe.
+DOMAIN_MIN_HOURS = 6
+
+
+def shared_domain(spans: Sequence[tuple[datetime, datetime]]) -> tuple[int, int]:
+    """One clock-hour range covering every day given, for stacking timelines.
+
+    Rounded outward to whole hours so the axis labels land on the hours themselves, and
+    clamped, because the point of a shared scale is comparison and a single outlier that
+    triples the span defeats it — the outlier still draws, just against the same ruler as
+    everything else.
+    """
+    if not spans:
+        return DOMAIN_EARLIEST, DOMAIN_EARLIEST + DOMAIN_MIN_HOURS
+
+    first = min(start.hour for start, _ in spans)
+    last = max(end.hour + (1 if end.minute or end.second else 0) for _, end in spans)
+    first = max(DOMAIN_EARLIEST, min(first, DOMAIN_LATEST - DOMAIN_MIN_HOURS))
+    last = min(DOMAIN_LATEST, max(last, first + DOMAIN_MIN_HOURS))
+    return first, last
+
+
+class HourAxis(QWidget):
+    """The hour ruler for a column of :class:`DayTimeline` rows, drawn once beneath them.
+
+    One axis per row would be six repetitions of the same numbers and, worse, would let each
+    row carry its own scale without saying so. Drawn once under all of them, it is visibly
+    one ruler — which is the claim the stacked rows are making.
+    """
+
+    HEIGHT = 18
+
+    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self._domain = (DOMAIN_EARLIEST, DOMAIN_EARLIEST + DOMAIN_MIN_HOURS)
+        self.setFixedHeight(self.HEIGHT)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_domain(self, domain: tuple[int, int]) -> None:
+        self._domain = domain
+        self.update()
+
+    def paintEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        first, last = self._domain
+        span = max(1, last - first)
+        # One label every hour is unreadable at seven days' width; every other hour, or
+        # every third for a long span, keeps them apart at any window size.
+        step = 1 if span <= 8 else (2 if span <= 14 else 3)
+
+        painter = QPainter(self)
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+        painter.setPen(QColor(self._palette.text_faint))
+
+        for hour in range(first, last + 1, step):
+            x = (hour - first) / span * self.width()
+            label = f"{(hour - 1) % 12 + 1}{'am' if hour < 12 else 'pm'}"
+            box = QRectF(x - 20, 2, 40, self.HEIGHT - 4)
+            painter.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
+        painter.end()
+
+
 class DayJourney(QWidget):
     """The day's punches as a list of events, breaks included.
 
@@ -639,6 +773,10 @@ class DayJourney(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
 
+    #: A gap at or under this is an ordinary break. Past it, the day has a hole in it and
+    #: the row says so rather than calling four hours "Break".
+    LONG_BREAK = 90
+
     def set_segments(self, segments: Sequence[WorkSegment]) -> None:
         while self._layout.count():
             item = self._layout.takeAt(0)
@@ -647,23 +785,24 @@ class DayJourney(QWidget):
                 widget.deleteLater()
 
         self.setVisible(bool(segments))
+        rows: list[_JourneyRow] = []
         previous: WorkSegment | None = None
         for segment in segments:
             if previous is not None:
                 gap = _gap_between(previous, segment)
                 if gap.minutes > 0:
-                    self._layout.addWidget(
+                    long_break = gap.minutes > self.LONG_BREAK
+                    rows.append(
                         _JourneyRow(
                             self._palette,
-                            when="",
-                            title=f"Break · {gap}",
-                            detail=(
-                                f"{_clock_short(previous.end)} – {_clock_short(segment.start)}"
-                            ),
-                            colour=self._palette.rest,
+                            when=f"{_clock_short(previous.end)} – {_clock_short(segment.start)}",
+                            title=f"{'Away' if long_break else 'Break'} · {gap}",
+                            detail="",
+                            colour=self._palette.bad if long_break else self._palette.rest,
+                            primary=False,
                         )
                     )
-            self._layout.addWidget(
+            rows.append(
                 _JourneyRow(
                     self._palette,
                     when=f"{_clock_short(segment.start)} – {_clock_short(segment.end)}",
@@ -679,9 +818,24 @@ class DayJourney(QWidget):
             )
             previous = segment
 
+        # The spine has to know where it ends, which is only knowable once every row exists.
+        for index, row in enumerate(rows):
+            row.set_position(first=index == 0, last=index == len(rows) - 1)
+            self._layout.addWidget(row)
+
 
 class _JourneyRow(QWidget):
-    """One event: a colour stripe, what it was, and when."""
+    """One event on the day's spine: a marker, what it was, and when.
+
+    Rows used to carry a short stripe each, separated by their own padding, so the day read
+    as a list of unrelated lines rather than one continuous journey. The spine here is drawn
+    edge to edge and the rows are stacked with no spacing, so the segments join up; the
+    marker is filled for work and hollow for a break, which is the same distinction the
+    colour makes, said twice for anyone who cannot rely on the colour.
+    """
+
+    GUTTER = 18
+    DOT = 7
 
     def __init__(
         self,
@@ -692,33 +846,70 @@ class _JourneyRow(QWidget):
         detail: str,
         colour: str,
         muted: bool = False,
+        primary: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self._palette = palette
+        self._colour = colour
+        self._primary = primary
+        self._first = False
+        self._last = False
+
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, Space.TIGHT // 2, 0, Space.TIGHT // 2)
+        layout.setContentsMargins(self.GUTTER, Space.TIGHT // 2, 0, Space.TIGHT // 2)
         layout.setSpacing(Space.ROW)
 
-        stripe = QFrame()
-        stripe.setFixedWidth(3)
-        stripe.setStyleSheet(f"background-color: {colour}; border-radius: 2px;")
-        layout.addWidget(stripe)
+        stamp = QLabel(when)
+        stamp.setFixedWidth(118)
+        stamp.setStyleSheet(
+            f"color: {palette.text if primary else palette.text_muted};"
+            f" font-weight: {600 if primary else 400};"
+            " font-variant-numeric: tabular-nums;"
+        )
+        layout.addWidget(stamp)
 
         heading = QLabel(title)
-        heading.setStyleSheet(f"color: {colour}; font-weight: 600;")
+        heading.setStyleSheet(
+            f"color: {colour}; font-weight: {600 if primary else 400};"
+            f" font-size: {13 if primary else 12}px;"
+        )
         layout.addWidget(heading)
 
         if detail:
             note = QLabel(detail)
             note.setObjectName("CardCaption")
-            layout.addWidget(note)
+            note.setWordWrap(True)
+            layout.addWidget(note, 1)
+        else:
+            layout.addStretch(1)
 
-        layout.addStretch(1)
+        if muted:
+            stamp.setStyleSheet(f"color: {palette.text_muted}; font-variant-numeric: tabular-nums;")
 
-        stamp = QLabel(when)
-        stamp.setObjectName("CardCaption" if muted else "")
-        stamp.setStyleSheet(f"color: {palette.text_muted};")
-        layout.addWidget(stamp)
+    def set_position(self, *, first: bool, last: bool) -> None:
+        """Tell the row where it sits, so the spine stops at the ends instead of overhanging."""
+        self._first = first
+        self._last = last
+        self.update()
+
+    def paintEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        centre = self.GUTTER / 2 - 2
+        middle = self.height() / 2
+        painter.setPen(QPen(QColor(self._palette.border), 2))
+        painter.drawLine(
+            QPointF(centre, 0 if not self._first else middle),
+            QPointF(centre, self.height() if not self._last else middle),
+        )
+
+        radius = self.DOT / 2 if self._primary else self.DOT / 2 - 1
+        painter.setPen(QPen(QColor(self._colour), 2))
+        painter.setBrush(QColor(self._colour) if self._primary else QColor(self._palette.surface))
+        painter.drawEllipse(QPointF(centre, middle), radius, radius)
+        painter.end()
 
 
 def _rounded(rect: QRectF, radius: float) -> QPainterPath:
@@ -938,6 +1129,7 @@ class TargetBar(QWidget):
         self._bar.setFixedHeight(self.HEIGHT)
         self._caption = QLabel()
         self._caption.setObjectName("CardCaption")
+        self._caption.setWordWrap(True)
         layout.addWidget(self._bar)
         layout.addWidget(self._caption)
 
@@ -1089,7 +1281,10 @@ class _HeatCell(QLabel):
         super().__init__(str(when.day), parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(MonthHeatmap.MIN_CELL, MonthHeatmap.MIN_CELL)
-        self.setMaximumHeight(MonthHeatmap.MAX_CELL)
+        # Both dimensions. Capping only the height let seven stretch-1 Expanding columns
+        # pull each cell to ~120px wide against 28 tall — a two-digit number adrift in a
+        # letterbox, and a bigger void than the layout change that was meant to close one.
+        self.setMaximumSize(MonthHeatmap.MAX_CELL, MonthHeatmap.MAX_CELL)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -1125,7 +1320,10 @@ class _FutureCell(QLabel):
         super().__init__(str(when.day), parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(MonthHeatmap.MIN_CELL, MonthHeatmap.MIN_CELL)
-        self.setMaximumHeight(MonthHeatmap.MAX_CELL)
+        # Both dimensions. Capping only the height let seven stretch-1 Expanding columns
+        # pull each cell to ~120px wide against 28 tall — a two-digit number adrift in a
+        # letterbox, and a bigger void than the layout change that was meant to close one.
+        self.setMaximumSize(MonthHeatmap.MAX_CELL, MonthHeatmap.MAX_CELL)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setStyleSheet(
             f"background: transparent; color: {palette.text_faint};"
@@ -1393,5 +1591,26 @@ def _tint(colour: str, alpha: int) -> str:
 
 def link_button(text: str, on_click: Callable[[], None]) -> QPushButton:
     button = QPushButton(text)
+    button.clicked.connect(on_click)
+    return button
+
+
+#: Width of a step button. Wide enough that the glyph is not clipped by the stylesheet's
+#: own padding, which is what made these render as blank squares at 30px.
+STEP_BUTTON_WIDTH = 34
+
+
+def step_button(glyph: str, tooltip: str, on_click: Callable[[], None]) -> QPushButton:
+    """A square ◀ / ▶ stepper.
+
+    Shared rather than repeated at four call sites because the thing that broke them is
+    invisible locally: the width and the stylesheet's padding have to be chosen together,
+    and setting one without knowing the other is how every one of them ended up with no
+    room to draw in.
+    """
+    button = QPushButton(glyph)
+    button.setObjectName("StepButton")
+    button.setFixedWidth(STEP_BUTTON_WIDTH)
+    button.setToolTip(tooltip)
     button.clicked.connect(on_click)
     return button

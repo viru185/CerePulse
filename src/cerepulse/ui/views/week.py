@@ -29,12 +29,24 @@ from PySide6.QtWidgets import (
 )
 
 from cerepulse.intelligence.attention import Attention
+from cerepulse.intelligence.day import DayAnalysis
 from cerepulse.intelligence.month import DayRollup, WeekAnalysis
+from cerepulse.intelligence.segments import WorkSegment
 from cerepulse.models.attendance import DayStatus
 from cerepulse.models.values import Duration
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette, Space
-from cerepulse.ui.widgets import Card, EmptyState, SectionTitle, StatusChip, TargetBar, card_row
+from cerepulse.ui.widgets import (
+    Card,
+    DayTimeline,
+    EmptyState,
+    HourAxis,
+    SectionTitle,
+    StatusChip,
+    TargetBar,
+    card_row,
+    shared_domain,
+)
 
 
 class WeekView(QWidget):
@@ -85,6 +97,15 @@ class WeekView(QWidget):
         days_host.setLayout(self._days)
         layout.addWidget(days_host)
 
+        # One ruler under all seven rows. Drawn here rather than inside each row so it is
+        # visibly a single scale — which is exactly the claim the stacked timelines make.
+        # Indented to line up with where the timelines start, not with the row's left edge.
+        axis_row = QHBoxLayout()
+        axis_row.setContentsMargins(62 + 86 + Space.ROW * 2, 0, 76 + Space.ROW, 0)
+        self._axis = HourAxis(palette)
+        axis_row.addWidget(self._axis)
+        layout.addLayout(axis_row)
+
         layout.addWidget(SectionTitle("Needs doing"))
         self._attention = QVBoxLayout()
         self._attention.setSpacing(Space.TIGHT)
@@ -125,6 +146,7 @@ class WeekView(QWidget):
         target_per_day: Duration,
         *,
         attention: dict[date, Attention] | None = None,
+        analyses: dict[date, DayAnalysis] | None = None,
     ) -> None:
         self._week_start = analysis.week_start
         end = analysis.week_start + timedelta(days=6)
@@ -136,7 +158,7 @@ class WeekView(QWidget):
         self._render_verdict(analysis)
         self._render_cards(analysis)
         self._render_progress(analysis)
-        self._render_days(analysis, target_per_day)
+        self._render_days(analysis, target_per_day, analyses or {})
         self._render_attention(analysis, attention or {})
 
     def _render_verdict(self, analysis: WeekAnalysis) -> None:
@@ -233,10 +255,39 @@ class WeekView(QWidget):
             f"{fmt.duration(analysis.full_target)}{today}",
         )
 
-    def _render_days(self, analysis: WeekAnalysis, target_per_day: Duration) -> None:
+    def _render_days(
+        self,
+        analysis: WeekAnalysis,
+        target_per_day: Duration,
+        analyses: dict[date, DayAnalysis],
+    ) -> None:
+        """Every day as a row, the ones with punches carrying a timeline on a shared scale.
+
+        One scale for all seven, and one axis under them, is the whole point: a bar that
+        rescales per row says a late Tuesday and an early Monday are the same shape. The
+        domain is computed from the days that have punches, so the days that do not — leave,
+        a holiday, outdoor duty — cost nothing and still line up beneath the same ruler.
+        """
         _clear(self._days)
+
+        spans = [
+            (day.segments[0].start, day.segments[-1].end)
+            for rollup in analysis.days
+            if (day := analyses.get(rollup.day)) is not None and day.segments
+        ]
+        domain = shared_domain(spans)
+        self._axis.set_domain(domain)
+        self._axis.setVisible(bool(spans))
+
         for rollup in analysis.days:
-            row = _DayRow(rollup, target_per_day, self._palette)
+            detail = analyses.get(rollup.day)
+            row = _DayRow(
+                rollup,
+                target_per_day,
+                self._palette,
+                segments=detail.segments if detail else (),
+                domain=domain,
+            )
             row.clicked.connect(lambda day=rollup.day: self.day_selected.emit(day))
             self._days.addWidget(row)
 
@@ -269,7 +320,14 @@ class _DayRow(QWidget):
     BAR_HEIGHT = 10
 
     def __init__(
-        self, rollup: DayRollup, target: Duration, palette: Palette, parent: QWidget | None = None
+        self,
+        rollup: DayRollup,
+        target: Duration,
+        palette: Palette,
+        *,
+        segments: tuple[WorkSegment, ...] = (),
+        domain: tuple[int, int] | None = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -291,13 +349,22 @@ class _DayRow(QWidget):
         # rather than leaving a 700-pixel sliver with one number at the end of it.
         middle = QVBoxLayout()
         middle.setSpacing(2)
-        bar = QWidget()
-        bar.setFixedHeight(self.BAR_HEIGHT)
-        bar.setStyleSheet(_bar_style(rollup, target, palette))
-        middle.addWidget(bar)
+        if segments:
+            # When the punches are cached the row shows *when* the day happened, not merely
+            # how much of it there was. A proportion bar cannot tell a 7 AM start from a
+            # 1 PM one, and on a week screen that is most of what there is to notice.
+            timeline = DayTimeline(palette)
+            timeline.set_day(segments, domain=domain)
+            middle.addWidget(timeline)
+        else:
+            bar = QWidget()
+            bar.setFixedHeight(self.BAR_HEIGHT)
+            bar.setStyleSheet(_bar_style(rollup, target, palette))
+            middle.addWidget(bar)
 
         note = QLabel(_day_note(rollup))
         note.setObjectName("CardCaption")
+        note.setWordWrap(True)
         middle.addWidget(note)
         layout.addLayout(middle, 1)
 

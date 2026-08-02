@@ -1,0 +1,29 @@
+<!-- Synthetic stand-in for OutdoorDutyList.aspx, matching the live capture's shape.
+
+     The comp-off list is the same page under a different odtype token; the leave list adds
+     one "Leave Type" column before LeaveCategory. Note two cells that carry more than their
+     heading admits: From Date appends a half-day marker to the weekday, and Apply Days
+     appends the type. -->
+<html>
+<body>
+  <select name="ctl00$BodyContentPlaceHolder$cboReports" id="ctl00_BodyContentPlaceHolder_cboReports">
+    <option selected="selected" value="Recent Applications">Recent Applications</option>
+    <option value="Approved Applications">Approved Applications</option>
+    <option value="Rejected Applications">Rejected Applications</option>
+    <option value="Lapsed Applications">Lapsed Applications</option>
+    <option value="History">History</option>
+  </select>
+  <table id="ctl00_BodyContentPlaceHolder_GridView1">
+    <tr>
+      <th></th><th>Edit</th><th>App. Id</th><th>From Date</th><th>To Date</th>
+      <th>Apply Days</th><th>Remarks</th><th>Status</th><th>LeaveCategory</th>
+    </tr>
+    <tr><td></td><td></td><td>6856</td><td>14-Jun-26 Sun2nd Half</td><td>19-Jun-26 Fri</td>
+        <td>5.50 OD</td><td>EAE Training in Bengaluru.</td><td>Approved</td><td></td></tr>
+    <tr><td></td><td></td><td>7301</td><td>05-Aug-26 Wed</td><td>05-Aug-26 Wed</td>
+        <td>1.00 OD</td><td>Client site visit</td><td>In Process</td><td></td></tr>
+    <tr><td></td><td></td><td>7150</td><td>21-Jul-26 Tue</td><td></td>
+        <td>0.50 OD</td><td>Half day off site</td><td>Rejected</td><td></td></tr>
+  </table>
+</body>
+</html>

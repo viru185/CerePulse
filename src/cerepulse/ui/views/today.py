@@ -47,6 +47,7 @@ from cerepulse.ui.widgets import (
     StatusChip,
     TargetBar,
     card_row,
+    step_button,
 )
 
 #: Insight kinds each next action has already said, so repeating them as a chip directly
@@ -86,6 +87,10 @@ class TodayView(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        # Every other scrolling screen sets this; Today was the one that did not, and so it
+        # was the one that grew a horizontal scrollbar. Nothing on this screen is meant to
+        # extend past the window — anything that would should wrap instead.
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         outer.addWidget(scroll)
 
         content = QWidget()
@@ -130,6 +135,7 @@ class TodayView(QWidget):
         body.addWidget(self._timeline)
         self._legend = QLabel()
         self._legend.setObjectName("CardCaption")
+        self._legend.setWordWrap(True)
         body.addWidget(self._legend)
 
         body.addWidget(SectionTitle("How the day went"))
@@ -185,10 +191,7 @@ class TodayView(QWidget):
 
         # Reading back through a week is the common case, and a calendar popup makes it
         # three clicks a day. These make it one.
-        self._previous_day = QPushButton("◀")
-        self._previous_day.setFixedWidth(30)
-        self._previous_day.setToolTip("Previous day")
-        self._previous_day.clicked.connect(lambda: self._step_day(-1))
+        self._previous_day = step_button("◀", "Previous day", lambda: self._step_day(-1))
         top.addWidget(self._previous_day)
 
         # Any date, without going via Attendance first. The upper bound is today: the
@@ -202,10 +205,7 @@ class TodayView(QWidget):
         self._picker.dateChanged.connect(self._on_date_picked)
         top.addWidget(self._picker)
 
-        self._next_day = QPushButton("▶")
-        self._next_day.setFixedWidth(30)
-        self._next_day.setToolTip("Next day")
-        self._next_day.clicked.connect(lambda: self._step_day(1))
+        self._next_day = step_button("▶", "Next day", lambda: self._step_day(1))
         top.addWidget(self._next_day)
 
         self._copy = QPushButton("Copy summary")
@@ -229,6 +229,9 @@ class TodayView(QWidget):
 
         self._hero_caption = QLabel()
         self._hero_caption.setObjectName("HeroCaption")
+        # The awaiting-today sentence runs to 135 characters. Without this it simply pushed
+        # the window wider than the screen rather than taking a second line.
+        self._hero_caption.setWordWrap(True)
         layout.addWidget(self._hero_caption)
 
         self._progress = TargetBar(self._palette)

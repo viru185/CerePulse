@@ -167,6 +167,44 @@ def test_the_banner_leads_with_the_worst_of_several_problems(qapp: QApplication)
     assert "Leave ledger unavailable" in banner.toolTip()
 
 
+def test_a_banner_can_offer_the_logs(qapp: QApplication) -> None:
+    """ "Check the logs for details" is an instruction nobody could follow: the path lived
+    in a tooltip on a button on a screen there was no reason to open."""
+    opened: list[bool] = []
+    banner = Banner()
+    banner.logs_requested.connect(lambda: opened.append(True))
+    banner.show_message("Something went wrong.", Severity.CRITICAL, offer_logs=True)
+
+    assert Banner.LOGS_LINK in banner.text()
+    banner.linkActivated.emit(Banner.LOGS_LINK)
+    assert opened == [True]
+
+
+def test_a_banner_without_the_offer_has_no_link(qapp: QApplication) -> None:
+    banner = Banner()
+    banner.show_message("Offline", Severity.WARNING)
+    assert "<a href" not in banner.text()
+
+
+def test_message_text_is_escaped_rather_than_rendered(qapp: QApplication) -> None:
+    """Portal text and exception strings reach these banners. Now that the banner renders
+    rich text so it can carry a link, the vendor's markup must not come with it."""
+    banner = Banner()
+    banner.show_message("<b>Tot. Hrs.</b> & more", Severity.WARNING)
+
+    assert "&lt;b&gt;" in banner.text()
+    assert "&amp;" in banner.text()
+
+
+def test_clearing_a_message_also_clears_its_log_offer(qapp: QApplication) -> None:
+    banner = Banner()
+    banner.show_message("Broke", Severity.CRITICAL, key="error", offer_logs=True)
+    banner.clear_message("error")
+    banner.show_message("Broke again", Severity.CRITICAL, key="error")
+
+    assert "<a href" not in banner.text()
+
+
 def test_one_source_clearing_does_not_erase_another(qapp: QApplication) -> None:
     """A clean sync used to wipe the sign-in error sitting above it."""
     banner = Banner()

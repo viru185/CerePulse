@@ -151,6 +151,117 @@ def test_day_detail_selects_the_days_own_month_first(monkeypatch: pytest.MonkeyP
     assert selected == [(2026, 6)], "the June day must be asked for against June's grid"
 
 
+# --- swipe requests across every status --------------------------------------------------
+
+
+def _swipe_page(status: str, rows: str = "") -> str:
+    """The swipe list as the portal renders it: one status showing, the rest on the filter."""
+    options = "".join(
+        f'<option {"selected" if value == status else ""} value="{value}">{value}</option>'
+        for value in ("In Process", "Approved", "Rejected", "Lapsed", "History")
+    )
+    grid = (
+        f'<table id="ctl00_BodyContentPlaceHolder_GridView1">'
+        f"<tr><th></th><th>Edit</th><th>For Date</th><th>Mode</th><th>In time</th>"
+        f"<th>Out time</th><th>Remark</th><th>Approve Date</th><th>Status</th>"
+        f"<th>Type</th><th>Swipe Category</th></tr>{rows}</table>"
+        if rows
+        else ""
+    )
+    return (
+        '<html><body><form id="form1">'
+        '<input type="hidden" name="__VIEWSTATE" value="STATE" />'
+        f'<select name="ctl00$BodyContentPlaceHolder$cboReports" '
+        f'id="ctl00_BodyContentPlaceHolder_cboReports">{options}</select>'
+        f"{grid}</form></body></html>"
+    )
+
+
+def _row(day: str, status: str, remark: str) -> str:
+    return (
+        f"<tr><td></td><td></td><td>{day}</td><td>In</td><td>9:00 AM</td><td></td>"
+        f"<td>{remark}</td><td></td><td>{status}</td><td>Swipe</td><td>SwipeReq</td></tr>"
+    )
+
+
+def test_swipe_requests_are_fetched_from_every_status_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The grid shows one status at a time and opens on In Process.
+
+    Fetching the page alone therefore returned pending requests and nothing else — which is
+    why Records could not show an approval and why "your request was decided" could never
+    fire: a decided request *leaves* the In Process grid instead of changing status in it.
+    """
+    from cerepulse.models.swipe import SwipeStatus
+    from cerepulse.services.portal import SWIPE_STATUS_SELECT
+
+    portal = gateway()
+    asked: list[str] = []
+
+    pages = {
+        "In Process": _swipe_page("In Process", _row("24-Jul-26 Fri", "In Process", "WFH")),
+        "Approved": _swipe_page("Approved", _row("10-Jul-26 Fri", "Approved", "Night work")),
+        "Rejected": _swipe_page("Rejected", _row("03-Jul-26 Fri", "Rejected", "Forgot")),
+        "Lapsed": _swipe_page("Lapsed"),  # empty, and legitimately so
+    }
+
+    monkeypatch.setattr(portal, "_url", lambda *_a: "/Leave/SwipeRequestList.aspx")
+    monkeypatch.setattr(portal._auth, "check_response", lambda response: response)
+    monkeypatch.setattr(
+        portal._client, "get", lambda *_a, **_k: httpx.Response(200, text=pages["In Process"])
+    )
+
+    def post(_url: str, data: dict[str, str], **_kwargs: object) -> httpx.Response:
+        asked.append(data[SWIPE_STATUS_SELECT])
+        return httpx.Response(200, text=pages[data[SWIPE_STATUS_SELECT]])
+
+    monkeypatch.setattr(portal._client, "post", post)
+    requests = portal.fetch_swipe_requests()
+
+    assert asked == ["Approved", "Rejected", "Lapsed"], "the default view costs no postback"
+    assert {request.status for request in requests} == {
+        SwipeStatus.IN_PROCESS,
+        SwipeStatus.APPROVED,
+        SwipeStatus.REJECTED,
+    }
+    assert [request.for_date.day for request in requests] == [24, 10, 3], "newest first"
+
+
+def test_a_request_listed_under_two_statuses_keeps_the_decided_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Requests have no id, so identity is rebuilt from the fields. A request cannot
+    un-approve itself back to pending, so the decided reading wins."""
+    from cerepulse.models.swipe import SwipeStatus
+    from cerepulse.services.portal import SWIPE_STATUS_SELECT
+
+    portal = gateway()
+    same = ("10-Jul-26 Fri", "Night work")
+    pages = {
+        "In Process": _swipe_page("In Process", _row(same[0], "In Process", same[1])),
+        "Approved": _swipe_page("Approved", _row(same[0], "Approved", same[1])),
+        "Rejected": _swipe_page("Rejected"),
+        "Lapsed": _swipe_page("Lapsed"),
+    }
+
+    monkeypatch.setattr(portal, "_url", lambda *_a: "/Leave/SwipeRequestList.aspx")
+    monkeypatch.setattr(portal._auth, "check_response", lambda response: response)
+    monkeypatch.setattr(
+        portal._client, "get", lambda *_a, **_k: httpx.Response(200, text=pages["In Process"])
+    )
+    monkeypatch.setattr(
+        portal._client,
+        "post",
+        lambda _url, data, **_k: httpx.Response(200, text=pages[data[SWIPE_STATUS_SELECT]]),
+    )
+
+    requests = portal.fetch_swipe_requests()
+
+    assert len(requests) == 1
+    assert requests[0].status is SwipeStatus.APPROVED
+
+
 # --- available periods ----------------------------------------------------------------
 
 

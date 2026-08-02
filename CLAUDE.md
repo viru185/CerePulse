@@ -28,7 +28,7 @@ uv run python tools/preview_icons.py   # compare icon candidates at 16/32px
 uv run python tools/build_all.py       # app folder + portable zip + installer
 ```
 
-## The five protocol facts that matter
+## The protocol facts that matter
 
 These were reverse-engineered from HTTP captures. Nothing in the vendor documentation says
 any of it, and each one silently breaks the app if forgotten.
@@ -61,7 +61,28 @@ follow redirects for this reason.
 **5. Day detail costs one postback per day.** The monthly grid carries no punches. Fetching
 a month's detail is ~20 async postbacks, which is why `backfill_detail` is paced and bounded.
 
-**6. The day-detail postback target is a grid row, not a date.** `GridView1$ctl17$LnkDate`
+**6. Every request list shows one status at a time.** The swipe list, and the leave,
+outdoor-duty and comp-off lists, all render a single `cboReports` selection and open on one
+that is frequently empty — In Process for swipes, Recent Applications for the rest. A plain
+GET therefore describes a quarter of the data while looking like all of it. Worse, a decided
+request *leaves* the pending grid rather than changing status inside it, so diffing two
+fetches of the default view can never see an approval: the 0.6 "notify me when a request is
+decided" feature could not fire, by construction. `_status_views` posts back once per state.
+
+**7. `Approve Date` really is the approval date.** It looked like a lapse deadline — seven
+still-pending July requests all carrying 31-Jul-26 — but a capture taken after the fact shows
+all seven Approved on exactly that date. It is one approver clearing a month's backlog in a
+sitting. The lesson is the general one: capture, then decide. Guessing the meaning from the
+column name is how it nearly got renamed to something false.
+
+**8. Leave, outdoor duty and comp-off are one page.** `OutdoorDutyList.aspx` serves outdoor
+duty and comp-off under different `odtype` tokens, and `LeaveList.aspx` is the same grid plus
+a `Leave Type` column. Two cells carry more than their heading says: `From Date` appends a
+half-day marker to the weekday (`14-Jun-26 Sun2nd Half`) and `Apply Days` appends the type
+(`5.50 OD`). Unlike the swipe grid these carry the portal's own `App. Id`, so identity does
+not have to be synthesised.
+
+**9. The day-detail postback target is a grid row, not a date.** `GridView1$ctl17$LnkDate`
 means "the seventeenth row of whatever month is on screen". The attendance page opens on the
 current month, so `fetch_day_detail` **must select the day's own month first** — otherwise a
 June day requested in August posts June's row index against August's grid and comes back
@@ -127,8 +148,23 @@ decisions and the sync backlog depends on telling them apart.
 **Replay expired sessions exactly once.** A retry loop turns a rejected credential into an
 authentication storm against the employer's HR system. A second expiry is surfaced.
 
+**A taken session is nobody's to swallow.** `SessionTakenError` subclasses
+`SessionExpiredError` so existing handlers keep working, and that is exactly how the 0.9
+truce shipped disarmed: `_step_value` recorded the eviction as a step failure, so it never
+reached the UI and the app kept hammering a session the browser now owned. Every layer that
+catches broadly — sync steps, the cache-on-failure guards in `services/leave.py`, the
+per-scope `degraded` path — re-raises it. And an evicted session has a third shape beyond the
+302 and the re-rendered login form: a landing page with no menu on it. `PortalGateway.menu`
+reports that as a session error, not a `ParserError`, because a live session always gets a
+menu.
+
 **Parsers raise `ParserError` rather than returning empty.** A vendor UI change must surface
-as a diagnostic, not as a silently blank screen.
+as a diagnostic, not as a silently blank screen. `parse_swipe_requests` broke this rule and
+the cost was invisible: a failed fetch returned `[]`, `save_all([])` wrote nothing,
+`mark_synced` blessed it, and the TTL then suppressed retrying — the screen showed "no
+requests" over a portal holding nineteen. The distinction that makes it safe is the status
+filter: a page with the filter and no grid is genuinely empty, a page with neither is not the
+page we asked for.
 
 **Trends report their own footing, and refuse to overstate.** `intelligence/trends.py` uses
 medians throughout, so one 3 AM deployment night cannot become "your typical start"; it

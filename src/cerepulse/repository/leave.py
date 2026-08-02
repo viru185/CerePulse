@@ -5,13 +5,16 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import date, datetime
 
+from cerepulse.models.application import Application
 from cerepulse.models.leave import Holiday, LeaveBalance, LeaveTransaction
 from cerepulse.models.swipe import SwipeRequest
 from cerepulse.repository.database import Database
 from cerepulse.repository.mappers import (
+    application_to_row,
     holiday_to_row,
     leave_balance_to_row,
     leave_transaction_to_row,
+    row_to_application,
     row_to_holiday,
     row_to_leave_balance,
     row_to_leave_transaction,
@@ -129,16 +132,17 @@ class SwipeRequestRepository:
                 """
                 INSERT INTO swipe_request (
                     employee_code, for_date, direction, in_time, out_time,
-                    remark, status, approve_date, category, synced_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    remark, status, approve_date, category, kind, synced_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (employee_code, for_date, direction) DO UPDATE SET
-                    in_time      = excluded.in_time,
-                    out_time     = excluded.out_time,
-                    remark       = excluded.remark,
-                    status       = excluded.status,
-                    approve_date = excluded.approve_date,
-                    category     = excluded.category,
-                    synced_at    = excluded.synced_at
+                    in_time    = excluded.in_time,
+                    out_time   = excluded.out_time,
+                    remark     = excluded.remark,
+                    status     = excluded.status,
+                    approve_date  = excluded.approve_date,
+                    category   = excluded.category,
+                    kind       = excluded.kind,
+                    synced_at  = excluded.synced_at
                 """,
                 rows,
             )
@@ -160,6 +164,52 @@ class SwipeRequestRepository:
             (employee_code, f"{year:04d}-{month:02d}"),
         ).fetchall()
         return [row_to_swipe_request(row) for row in rows]
+
+
+class ApplicationRepository:
+    """Filed leave, outdoor-duty and comp-off applications, and where each one stands."""
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def save_all(
+        self,
+        employee_code: str,
+        applications: Iterable[Application],
+        *,
+        synced_at: datetime | None = None,
+    ) -> None:
+        stamp = (synced_at or datetime.now()).isoformat()
+        rows = [
+            application_to_row(application, employee_code=employee_code, synced_at=stamp)
+            for application in applications
+        ]
+        with self.database.transaction() as connection:
+            connection.executemany(
+                """
+                INSERT INTO application (
+                    employee_code, app_id, kind, start_date, end_date,
+                    days, remark, status, leave_type, synced_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (employee_code, app_id) DO UPDATE SET
+                    kind       = excluded.kind,
+                    start_date = excluded.start_date,
+                    end_date   = excluded.end_date,
+                    days       = excluded.days,
+                    remark     = excluded.remark,
+                    status     = excluded.status,
+                    leave_type = excluded.leave_type,
+                    synced_at  = excluded.synced_at
+                """,
+                rows,
+            )
+
+    def find_all(self, employee_code: str) -> list[Application]:
+        rows = self.database.execute(
+            "SELECT * FROM application WHERE employee_code = ? ORDER BY start_date DESC",
+            (employee_code,),
+        ).fetchall()
+        return [row_to_application(row) for row in rows]
 
 
 class HolidayRepository:

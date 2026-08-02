@@ -59,7 +59,50 @@ TARGETS: tuple[tuple[str, str, str], ...] = (
     ("swipe_requests", "Apply", "Time > Swipe"),
     ("leave_register", "My Leave Register", "Leave > My Info"),
     ("leave_list", "Apply", "Leave > Leave"),
+    # Outdoor duty and comp-off are the same page under different `odtype` tokens, which is
+    # why they are reached by menu label rather than URL — the token is not ours to invent.
+    ("outdoor_duty_list", "Apply", "Leave > Outdoor Duty"),
+    ("comp_off_list", "Apply", "Leave > Comp. Off"),
     ("holiday_list", "Holiday List", "Self Service > Quick Info"),
+)
+
+#: Pages whose grid shows one selection at a time, as
+#: (output name, menu label, menu section, select name, values).
+#:
+#: The swipe list opens on In Process and hides everything else behind its own dropdown, so
+#: a single capture of it describes a quarter of the data and reads as if it were all of it.
+#: Leave, outdoor duty and comp-off are the same page shape as the swipe list — the same
+#: `cboReports` control, differing only in its option labels ("Recent Applications" rather
+#: than "In Process"). All four open on a view that is empty as often as not.
+SELECTED_TARGETS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
+    (
+        "swipe_requests",
+        "Apply",
+        "Time > Swipe",
+        "ctl00$BodyContentPlaceHolder$cboReports",
+        ("Approved", "Rejected", "Lapsed", "History"),
+    ),
+    (
+        "leave_list",
+        "Apply",
+        "Leave > Leave",
+        "ctl00$BodyContentPlaceHolder$cboReports",
+        ("Approved Applications", "History"),
+    ),
+    (
+        "outdoor_duty_list",
+        "Apply",
+        "Leave > Outdoor Duty",
+        "ctl00$BodyContentPlaceHolder$cboReports",
+        ("Approved Applications", "History"),
+    ),
+    (
+        "comp_off_list",
+        "Apply",
+        "Leave > Comp. Off",
+        "ctl00$BodyContentPlaceHolder$cboReports",
+        ("Approved Applications", "History"),
+    ),
 )
 
 #: Pages whose grid is empty until a filter is submitted, as
@@ -138,6 +181,14 @@ def run_capture(*, out_dir: str, secrets_path: str, config: AppConfig) -> int:
             reports.append(
                 _capture_filtered(client, auth, menu, name, label, section, target, destination)
             )
+
+        for name, label, section, select, values in SELECTED_TARGETS:
+            for value in values:
+                reports.append(
+                    _capture_selected(
+                        client, auth, menu, name, label, section, select, value, destination
+                    )
+                )
 
         reports.append(_capture_day_detail(client, auth, menu, destination))
         auth.logout()
@@ -278,6 +329,57 @@ def _capture_filtered(
 
     report = PageReport(
         name=name,
+        url=entry.url,
+        status=response.status_code,
+        bytes=len(body),
+        file=target_file.name,
+        tables=body.lower().count("<table"),
+    )
+    logger.info("  {} bytes, {} tables", report.bytes, report.tables)
+    return report
+
+
+def _capture_selected(
+    client: HttpClient,
+    auth: AuthManager,
+    menu: MenuIndex,
+    name: str,
+    label: str,
+    section: str,
+    select: str,
+    value: str,
+    destination: Path,
+) -> PageReport:
+    """Change a page's dropdown and capture what it re-renders.
+
+    Distinct from :func:`_capture_filtered`: a ``<select>`` with an ``onchange`` handler
+    raises its event through ``__doPostBack``, so it needs the event target set rather than
+    a button's name/value pair — the same distinction that made every non-default month fail
+    to load in 0.1.1.
+    """
+    slug = value.lower().replace(" ", "_")
+    logger.info("Capturing {} ({}={})", name, select.rsplit("$", 1)[-1], value)
+    try:
+        entry = menu.require(label, section=section)
+        page = auth.check_response(client.get(entry.url, follow_redirects=True))
+        state = WebFormsState.from_html(page.text)
+        response = auth.check_response(
+            client.post(
+                entry.url,
+                data=state.postback(select, **{select: value}),
+                follow_redirects=True,
+            )
+        )
+    except CerePulseError as exc:
+        logger.error("  failed: {}", exc)
+        return PageReport(name=f"{name}_{slug}", url="", status=0, bytes=0, error=str(exc))
+
+    body = response.text
+    target_file = destination / f"{name}_{slug}.html"
+    target_file.write_text(body, encoding="utf-8")
+
+    report = PageReport(
+        name=f"{name}_{slug}",
         url=entry.url,
         status=response.status_code,
         bytes=len(body),

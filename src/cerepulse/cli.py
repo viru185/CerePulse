@@ -116,6 +116,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"config:     {paths.config_file()}")
         print(f"database:   {paths.database_file()}")
         print(f"logs:       {paths.logs_dir()}")
+        # The directory is not the answer to "where is the log" — logs rotate daily and a
+        # fortnight of them sit in there. Naming the current one saves the sorting step.
+        current = sorted(paths.logs_dir().glob("cerepulse_*.log"))
+        print(f"latest log: {current[-1] if current else '(none yet)'}")
         print(f"portable:   {paths.is_portable()}")
         return 0
 

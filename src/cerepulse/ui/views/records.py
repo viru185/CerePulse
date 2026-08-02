@@ -349,6 +349,12 @@ class _RecordRow(QWidget):
             text.addWidget(detail)
         layout.addLayout(text, 1)
 
+        # Where it stands, at the end of the row rather than buried in the title. Only the
+        # entries that *are* requests get one — a holiday has no approval state, and a blank
+        # chip on every other row would read as one that failed to load.
+        if record.status:
+            layout.addWidget(StatusChip(record.status, _kind_colour(record, palette)))
+
     def mouseReleaseEvent(self, event: object) -> None:  # noqa: N802 — Qt override
         self.clicked.emit()
         super().mouseReleaseEvent(event)  # type: ignore[arg-type]

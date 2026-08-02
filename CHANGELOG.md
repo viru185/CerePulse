@@ -2,17 +2,61 @@
 
 All notable changes to CerePulse are documented here.
 
-## [0.4.0] - 2026-08-02
+## [0.9.0-beta.1] - 2026-08-02
+
+### Bug Fixes
+- Make a length of time look like one, and draw the arrows
+- Stop losing outdoor duty, and stop owing August its whole month
+
+### Chores
+- 0.9.0-beta.1
 
 ### Features
-- Download in the background, install on request, roll back if wrong
-- Choose between stable and beta releases
-- Rebuild About around version, channel, data size and diagnostics
+- Draw a break as a quantity, and give the day a journey
+- Give the session up rather than fight the browser for it
+- Make the week worth opening, and merge leave and requests into records
+
+## [0.8.0-beta.1] - 2026-08-02
+
+### Features
+- Group insights, assert leave rules, and stop rewriting what has not changed
+
+## [0.6.0-beta.1] - 2026-08-01
+
+### Bug Fixes
+- Ask for a day's punches against its own month
+
+## [0.5.0-beta.2] - 2026-08-01
+
+### Bug Fixes
+- Give the install helper a console, or it waits forever
+
+## [0.5.0-beta.1] - 2026-08-01
+
+### Chores
+- 0.5.0-beta.1
+
+### Features
+- Lead with what to do, and stop calling lunch an early exit
+
+## [0.4.0] - 2026-08-01
+
+### Chores
+- 0.4.0
+
+### Documentation
+- Regenerate changelog for 0.4.0
+
+## [0.4.0-beta.1] - 2026-08-01
 
 ### Bug Fixes
 - Package a version that carries a pre-release label
-- Show the real release notes instead of "no release notes were published"
-- Order pre-release labels numerically, so beta.10 outranks beta.9
+
+### Chores
+- 0.4.0-beta.1
+
+### Features
+- Download in the background, install on request, roll back if wrong
 
 ## [0.3.0] - 2026-08-01
 

@@ -1,6 +1,17 @@
-<!-- Synthetic stand-in for SwipeRequestList.aspx. -->
+<!-- Synthetic stand-in for SwipeRequestList.aspx.
+
+     The status filter is part of the page, not decoration: the grid shows one status at a
+     time and defaults to In Process, so its presence is what tells an empty grid apart from
+     a page that never loaded. -->
 <html>
 <body>
+  <select name="ctl00$BodyContentPlaceHolder$cboReports" id="ctl00_BodyContentPlaceHolder_cboReports">
+    <option selected="selected" value="In Process">In Process</option>
+    <option value="Rejected">Rejected</option>
+    <option value="Approved">Approved</option>
+    <option value="Lapsed">Lapsed</option>
+    <option value="History">History</option>
+  </select>
   <table id="ctl00_BodyContentPlaceHolder_GridView1">
     <tr>
       <th></th><th>Edit</th><th>For Date</th><th>Mode</th><th>In time</th><th>Out time</th>

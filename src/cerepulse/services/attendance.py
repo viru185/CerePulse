@@ -309,6 +309,7 @@ class AttendanceService:
             ScopeStatus(
                 Scope.SWIPE_REQUESTS, self._sync_meta.last_synced(Scope.SWIPE_REQUESTS.value)
             ),
+            ScopeStatus(Scope.APPLICATIONS, self._sync_meta.last_synced(Scope.APPLICATIONS.value)),
             ScopeStatus(Scope.HOLIDAYS, self._sync_meta.last_synced(Scope.HOLIDAYS.value)),
         ]
 

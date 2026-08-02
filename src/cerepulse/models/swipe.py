@@ -19,6 +19,9 @@ class SwipeStatus(Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     CANCELLED = "cancelled"
+    #: Filed, never decided, and now past the date it could have been. The portal's own
+    #: state, not one the app infers — it is one of the five options on the status filter.
+    LAPSED = "lapsed"
     UNKNOWN = "unknown"
 
     @classmethod
@@ -31,8 +34,14 @@ class SwipeStatus(Enum):
             "rejected": cls.REJECTED,
             "cancelled": cls.CANCELLED,
             "canceled": cls.CANCELLED,
+            "lapsed": cls.LAPSED,
         }
         return mapping.get(value, cls.UNKNOWN)
+
+    @property
+    def is_decided(self) -> bool:
+        """Whether the request has reached a final state and needs nothing further."""
+        return self in (SwipeStatus.APPROVED, SwipeStatus.REJECTED, SwipeStatus.CANCELLED)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,8 +54,16 @@ class SwipeRequest:
     out_time: time | None
     remark: str
     status: SwipeStatus
+    #: The portal's "Approve Date" column: when the request was decided, not when it was
+    #: filed. It reads oddly — seven July requests all carry 31-Jul-26 — but that is one
+    #: approver clearing a month's backlog in a sitting, not a misread column. Confirmed
+    #: against a capture taken after the sweep, where all seven show Approved on that date.
+    #: Empty while a request is still In Process, which is what makes it worth showing.
     approve_date: date | None = None
     category: str = ""
+    #: The portal's "Type" column ("Swipe"). Distinguishes this from the other kinds of
+    #: regularisation the same grid can carry.
+    kind: str = ""
 
     @property
     def is_open(self) -> bool:

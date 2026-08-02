@@ -13,7 +13,7 @@ already on screen is the one asked for.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import date
 from typing import TypeVar
 
@@ -22,9 +22,11 @@ from lxml import html as lxml_html
 
 from cerepulse.auth.manager import AuthManager
 from cerepulse.core.errors import ParserError, PrivilegeError
+from cerepulse.models.application import Application, ApplicationKind
 from cerepulse.models.attendance import AttendanceMonth, Punch
 from cerepulse.models.leave import Holiday, LeaveBalance, LeaveTransaction
 from cerepulse.models.swipe import SwipeRequest
+from cerepulse.parsers.applications import parse_applications
 from cerepulse.parsers.attendance import ParsedDay, parse_month, parse_punches
 from cerepulse.parsers.leave import current_balances, parse_holidays, parse_leave_register
 from cerepulse.parsers.menu import MenuIndex, parse_menu
@@ -54,6 +56,30 @@ REFRESH_BUTTON = "ctl00$BodyContentPlaceHolder$btnRefresh"
 # Control on the leave register that populates its grid.
 LEAVE_VIEW_BUTTON = "ctl00$BodyContentPlaceHolder$btnView2"
 
+# Every request list — swipes, leave, outdoor duty, comp-off — shows one status at a time
+# through this control. The first entry in each tuple is what the page renders on its own,
+# so it costs no postback. The option *labels* differ between the swipe list and the other
+# three, which is the only reason there are two tuples rather than one.
+STATUS_SELECT = "ctl00$BodyContentPlaceHolder$cboReports"
+SWIPE_STATUS_SELECT = STATUS_SELECT  # kept as the name the swipe path reads
+SWIPE_STATUS_VIEWS = ("In Process", "Approved", "Rejected", "Lapsed")
+#: "History" would do in one request what these four do in four, but it is the portal's own
+#: undocumented rollup and there is no way to know what it drops. Asking for each state by
+#: name is the version whose gaps are visible.
+APPLICATION_STATUS_VIEWS = (
+    "Recent Applications",
+    "Approved Applications",
+    "Rejected Applications",
+    "Lapsed Applications",
+)
+
+# The three application lists, as (kind, menu label, menu section).
+MENU_APPLICATIONS: tuple[tuple[ApplicationKind, str, str], ...] = (
+    (ApplicationKind.LEAVE, "Apply", "Leave > Leave"),
+    (ApplicationKind.OUTDOOR_DUTY, "Apply", "Leave > Outdoor Duty"),
+    (ApplicationKind.COMP_OFF, "Apply", "Leave > Comp. Off"),
+)
+
 _EMPLOYEE_BANNER_ID = "ctl00_BodyContentPlaceHolder_lblEmpCode"
 
 T = TypeVar("T")
@@ -70,10 +96,22 @@ class PortalGateway:
     # --- navigation -----------------------------------------------------------------
 
     def menu(self, *, refresh: bool = False) -> MenuIndex:
-        """The navigation menu, fetched once per session."""
+        """The navigation menu, fetched once per session.
+
+        A landing page with no menu on it is not a vendor UI change, whatever the parser
+        thinks: every live session gets a menu, and the page only comes back bare when the
+        session behind it is gone. The portal has at least three ways of saying that — a
+        302 to login, a 200 re-rendering the login form, and this — and only the first two
+        are shapes ``check_response`` can recognise. Reporting the third as a parse failure
+        sent it down the "the portal changed" path instead of the session-recovery one,
+        where an eviction is what it actually was.
+        """
         if self._menu is None or refresh:
             response = self._auth.check_response(self._client.get(pages.HOME))
-            self._menu = parse_menu(response.text)
+            try:
+                self._menu = parse_menu(response.text)
+            except ParserError as exc:
+                raise self._auth.session_lost("The landing page came back with no menu") from exc
             logger.debug("Indexed {} menu entries", len(self._menu))
         return self._menu
 
@@ -237,7 +275,69 @@ class PortalGateway:
         return current_balances(transactions), transactions
 
     def fetch_swipe_requests(self) -> list[SwipeRequest]:
-        return parse_swipe_requests(self._fetch(*MENU_SWIPE))
+        """Every filed request, across all four of the portal's status views.
+
+        The grid shows **one status at a time**. Its selector defaults to In Process, and
+        fetching the page alone therefore returns pending requests and nothing else — which
+        is what the app did until now. Two things followed from it, both invisible: the
+        Records screen could not show an approval because it had never seen one, and the
+        "your request was decided" notification could never fire, because a decided request
+        *leaves* the In Process grid rather than changing status inside it, so diffing two
+        fetches of that one view shows a disappearance and not a decision.
+
+        Each extra view is one postback. Four are cheap next to a month of day detail, and
+        skipping any of them would put a hole in the timeline the user cannot see the shape
+        of. ``History`` is deliberately not among them: it re-lists what the other four
+        already carry.
+        """
+
+        def get() -> list[SwipeRequest]:
+            collected: dict[tuple[date, str, str], SwipeRequest] = {}
+            for page in self._status_views(MENU_SWIPE, SWIPE_STATUS_VIEWS):
+                _absorb(collected, parse_swipe_requests(page))
+            return sorted(collected.values(), key=lambda request: request.for_date, reverse=True)
+
+        return self._retrying_stale_menu(get)
+
+    def fetch_applications(self) -> list[Application]:
+        """Every filed leave, outdoor-duty and comp-off application, across all statuses.
+
+        Nothing read these before, so the Records timeline could say a June week was outdoor
+        duty — the muster records that much — but not that the application behind it was
+        approved, or that anything was ever applied for at all.
+
+        Unlike a swipe request these carry the portal's own ``App. Id``, so they are keyed on
+        it rather than on a synthetic identity rebuilt from the fields.
+        """
+
+        def get() -> list[Application]:
+            collected: dict[str, Application] = {}
+            for kind, label, section in MENU_APPLICATIONS:
+                for page in self._status_views((label, section), APPLICATION_STATUS_VIEWS):
+                    for application in parse_applications(page, kind):
+                        collected[application.app_id] = application
+            return sorted(collected.values(), key=lambda item: item.start, reverse=True)
+
+        return self._retrying_stale_menu(get)
+
+    def _status_views(self, menu: tuple[str, str], views: tuple[str, ...]) -> Iterator[str]:
+        """Yield one request list's HTML once per status its filter offers.
+
+        These grids show a single status and open on one that is often empty, so a plain GET
+        describes a fraction of the data while looking like all of it. The first view costs
+        no postback because it is the one the page already rendered.
+        """
+        url = self._url(*menu)
+        page = self._auth.check_response(self._client.get(url, follow_redirects=True)).text
+        yield page
+
+        for status in views[1:]:
+            state = WebFormsState.from_html(page)
+            payload = state.postback(STATUS_SELECT, **{STATUS_SELECT: status})
+            logger.debug("Fetching {!r} from {}", status, menu[1])
+            yield self._auth.check_response(
+                self._client.post(url, data=payload, follow_redirects=True)
+            ).text
 
     def fetch_holidays(self) -> list[Holiday]:
         return parse_holidays(self._fetch(*MENU_HOLIDAYS))
@@ -251,6 +351,23 @@ class PortalGateway:
             code=_employee_code(html) or self._auth.username,
             company_code=self._client.cookies.get("CompCode", "") or "",
         )
+
+
+def _absorb(
+    collected: dict[tuple[date, str, str], SwipeRequest], requests: list[SwipeRequest]
+) -> None:
+    """Merge one status view's rows into the accumulator, decided rows winning.
+
+    The portal gives requests no id, so identity has to be built from the fields a user
+    cannot file twice with: the day, which punch, and what they wrote. A request should
+    appear under exactly one status filter, but if the portal ever lists one under two the
+    decided reading is the true one — a request cannot un-approve itself back to pending.
+    """
+    for request in requests:
+        key = (request.for_date, request.direction, request.remark)
+        existing = collected.get(key)
+        if existing is None or (request.status.is_decided and not existing.status.is_decided):
+            collected[key] = request
 
 
 def _employee_code(html: str) -> str:

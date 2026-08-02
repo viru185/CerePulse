@@ -13,6 +13,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import date, time
 
+from cerepulse.models.application import Application, ApplicationKind
 from cerepulse.models.attendance import AttendanceDay, DayStatus, Punch, PunchDirection
 from cerepulse.models.leave import Holiday, LeaveBalance, LeaveTransaction
 from cerepulse.models.swipe import SwipeRequest, SwipeStatus
@@ -204,6 +205,7 @@ def swipe_request_to_row(
         request.status.value,
         to_iso_date(request.approve_date),
         request.category,
+        request.kind,
         synced_at,
     )
 
@@ -218,6 +220,37 @@ def row_to_swipe_request(row: sqlite3.Row) -> SwipeRequest:
         status=_swipe_status(row["status"]),
         approve_date=from_iso_date(row["approve_date"]),
         category=row["category"],
+        kind=row["kind"],
+    )
+
+
+def application_to_row(
+    application: Application, *, employee_code: str, synced_at: str
+) -> tuple[object, ...]:
+    return (
+        employee_code,
+        application.app_id,
+        application.kind.value,
+        application.start.isoformat(),
+        application.end.isoformat(),
+        application.days,
+        application.remark,
+        application.status.value,
+        application.leave_type,
+        synced_at,
+    )
+
+
+def row_to_application(row: sqlite3.Row) -> Application:
+    return Application(
+        app_id=row["app_id"],
+        kind=_application_kind(row["kind"]),
+        start=date.fromisoformat(row["start_date"]),
+        end=date.fromisoformat(row["end_date"]),
+        days=row["days"],
+        remark=row["remark"],
+        status=_swipe_status(row["status"]),
+        leave_type=row["leave_type"],
     )
 
 
@@ -249,3 +282,12 @@ def _swipe_status(value: str) -> SwipeStatus:
         return SwipeStatus(value)
     except ValueError:
         return SwipeStatus.UNKNOWN
+
+
+def _application_kind(value: str) -> ApplicationKind:
+    try:
+        return ApplicationKind(value)
+    except ValueError:
+        # A kind this build does not know reads as leave rather than vanishing: the entry
+        # still belongs on the timeline even if its label is approximate.
+        return ApplicationKind.LEAVE

@@ -212,12 +212,31 @@ def changelog_section(version: str) -> str:
     Shipped with the app so the post-update dialog works offline and without a round trip
     to GitHub — it runs four hundred milliseconds after launch, which is no time to be
     waiting on a network call.
+
+    A pre-release falls back to its base version: ``0.9.0-beta.1`` looks for ``0.9.0`` when
+    it finds nothing of its own, because a beta is usually cut before the release section
+    it belongs to has a heading. The fallback says so rather than passing the release's
+    notes off as the beta's — showing the wrong version's changes silently is worse than
+    showing none.
     """
     text = _bundled_changelog()
     if not text:
         return ""
 
-    wanted = f"## [{version.lstrip('vV')}]"
+    wanted = version.lstrip("vV")
+    found = _section(text, wanted)
+    if found:
+        return found
+
+    base = wanted.split("-", 1)[0]
+    if base == wanted:
+        return ""
+    fallback = _section(text, base)
+    return f"_Notes for {base}; this build is {wanted}._\n\n{fallback}" if fallback else ""
+
+
+def _section(text: str, version: str) -> str:
+    wanted = f"## [{version}]"
     lines = text.splitlines()
     for index, line in enumerate(lines):
         if not line.startswith(wanted):

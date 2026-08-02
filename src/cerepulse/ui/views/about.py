@@ -11,6 +11,8 @@ employer, the employee or anything out of the cache.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
@@ -150,7 +152,12 @@ class AboutView(QWidget):
         row.addWidget(test)
 
         row.addWidget(_folder_button("Open data folder", str(paths.data_root())))
-        row.addWidget(_folder_button("Open logs", str(paths.logs_dir())))
+
+        logs = QPushButton("Open logs")
+        logs.setToolTip(f"Opens the newest log in {paths.logs_dir()}")
+        logs.clicked.connect(open_logs)
+        row.addWidget(logs)
+
         row.addStretch(1)
         return row
 
@@ -184,8 +191,13 @@ class AboutView(QWidget):
         self._render_cards(self._diagnostics)
         self._render_history(update_history())
 
+        # The log directory is named here, not only in a tooltip. "Check the logs" is
+        # advice nobody can follow without knowing where they are, and the app's own
+        # `paths` command prints into os.devnull in the windowed build, so this is the
+        # only place the answer is available at all.
         self._paths.setText(
             f"Data directory: {self._diagnostics.data_root}\n"
+            f"Logs: {paths.logs_dir()}\n"
             f"Database {human_size(self._diagnostics.database_bytes)}  ·  "
             f"logs {human_size(self._diagnostics.logs_bytes)}  ·  "
             f"staged updates {human_size(self._diagnostics.updates_bytes)}"
@@ -262,3 +274,23 @@ def _folder_button(text: str, path: str) -> QPushButton:
     button.setToolTip(path)
     button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(path)))
     return button
+
+
+def newest_log() -> Path | None:
+    """The log file currently being written, or the most recent one that was.
+
+    Logs rotate daily, so a folder holds a fortnight of them and the one anybody wants is
+    almost always the newest. Opening the folder and leaving the user to sort by date is a
+    step that never had a reason to exist.
+    """
+    try:
+        logs = sorted(paths.logs_dir().glob("cerepulse_*.log"))
+    except OSError:
+        return None
+    return logs[-1] if logs else None
+
+
+def open_logs() -> None:
+    """Open the newest log file, falling back to its folder when there is none yet."""
+    target = newest_log() or paths.logs_dir()
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
