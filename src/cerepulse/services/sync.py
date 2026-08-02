@@ -20,7 +20,12 @@ from typing import TypeVar
 from loguru import logger
 
 from cerepulse.auth.manager import AuthManager
-from cerepulse.core.errors import CerePulseError, SessionExpiredError, TransportError
+from cerepulse.core.errors import (
+    CerePulseError,
+    SessionExpiredError,
+    SessionTakenError,
+    TransportError,
+)
 from cerepulse.services.attendance import AttendanceService
 from cerepulse.services.leave import LeaveService
 from cerepulse.services.portal import PortalGateway
@@ -78,9 +83,19 @@ class SyncCoordinator:
     # --- recovery -------------------------------------------------------------------
 
     def run(self, operation: Callable[[], T]) -> T:
-        """Run an operation, re-authenticating and replaying it once if the session died."""
+        """Run an operation, re-authenticating and replaying it once if the session died.
+
+        Unless the session was *taken*. The portal allows one session per user, so an app
+        that signs straight back in takes it off whatever else is using it — and if that is
+        the user's own browser, the two spend the afternoon trading it back and forth, each
+        breaking the other. The eviction case is raised rather than answered, and the app
+        pauses until asked to reconnect.
+        """
         try:
             return operation()
+        except SessionTakenError:
+            logger.info("Session taken elsewhere; standing down rather than signing back in")
+            raise
         except SessionExpiredError:
             logger.warning("Session expired; re-authenticating before replaying")
             self._auth.reauthenticate()

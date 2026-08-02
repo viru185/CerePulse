@@ -34,6 +34,7 @@ from cerepulse.core.errors import (
     AuthenticationError,
     CerePulseError,
     SessionExpiredError,
+    SessionTakenError,
     TransportError,
 )
 from cerepulse.intelligence.attention import Attention, AttentionKind
@@ -86,6 +87,9 @@ class MainWindow(QMainWindow):
         #: Populated in the background; empty until the portal has been asked once.
         self._fetchable_months: list[tuple[int, int]] = []
         self._sync_panel: SyncPanel | None = None
+        #: Set when the portal session was taken elsewhere. While paused the app serves
+        #: cache and does not touch the network until the user asks it to.
+        self._paused = False
         self._scopes: list[object] = []
         self._busy_scope: Scope | None = None
 
@@ -152,15 +156,11 @@ class MainWindow(QMainWindow):
         self.attendance.fetch_detail_requested.connect(
             lambda: self._sync.sync_scope(Scope.DAY_DETAIL)
         )
-        self.attendance.open_portal.connect(
-            lambda: open_url(self._context.client.url_for(pages.ATTENDANCE_REPORT))
-        )
+        self.attendance.open_portal.connect(lambda: self._open_portal(pages.ATTENDANCE_REPORT))
         self.today.sync_day_requested.connect(self._sync_day)
         self.leave.refresh_requested.connect(lambda: self._sync.refresh_leave())
         self.requests.refresh_requested.connect(lambda: self._sync.refresh_leave())
-        self.requests.open_portal.connect(
-            lambda: open_url(self._context.client.url_for(pages.SWIPE_REQUESTS))
-        )
+        self.requests.open_portal.connect(lambda: self._open_portal(pages.SWIPE_REQUESTS))
         self.requests.day_selected.connect(self._open_day)
         self.week.week_changed.connect(self._change_week)
         self.week.day_selected.connect(self._open_day)
@@ -429,9 +429,78 @@ class MainWindow(QMainWindow):
     # --- sync entry points ------------------------------------------------------------
 
     def refresh(self, *, force: bool = False, quiet: bool = False) -> None:
+        if self._paused:
+            # An explicit Refresh is the user asking for the session back; a background
+            # tick is not, and honouring one would take the session off their browser.
+            if quiet:
+                return
+            self._resume()
         if not quiet:
             self._status.setText("Refreshing…")
         self._sync.refresh(force=force)
+
+    def _open_portal(self, page: str) -> None:
+        """Open SpineHR in the browser, signed in, and hand the session over.
+
+        Verified against the live portal: a login form scraped here and submitted by a
+        client with none of this app's cookies is accepted, so the browser really can be
+        signed in without the user typing anything.
+
+        It is a handover, not a share — a cookie cannot be injected into a browser from
+        outside it, so this creates a second session and the portal ends ours. Standing
+        down first is what stops the two fighting over it.
+        """
+        self._status.setText("Opening SpineHR…")
+
+        def ready(handover: object) -> None:
+            open_url(handover.url)  # type: ignore[attr-defined]
+            self._stand_down(
+                "SpineHR is open in your browser and CerePulse has handed the session "
+                "over. Press Refresh when you are done with it."
+            )
+
+        def failed(exc: BaseException) -> None:
+            # Falling back to a plain link is still useful: the user signs in themselves,
+            # which costs a password but works.
+            logger.warning("Could not sign the browser in: {}", exc)
+            open_url(self._context.client.url_for(page))
+            self._stand_down(
+                f"Opened SpineHR, but CerePulse could not sign you in automatically "
+                f"({_message_for(exc)}). It has paused either way."
+            )
+
+        self._sync.open_in_browser(page, on_ready=ready, on_error=failed)
+
+    def _stand_down(self, message: str = "") -> None:
+        """Stop using the portal because something else is signed in as the same user.
+
+        SpineHR allows one session, so the alternative — signing straight back in — takes it
+        off whatever else has it. When that is the user's own browser the two trade it back
+        and forth all afternoon, each breaking the other, and the app is the one that should
+        give way: it has a cache to fall back on and the browser does not.
+        """
+        self._paused = True
+        self._auto.stop()
+        logger.info("Paused: the portal session is in use elsewhere")
+
+        self._status.setText("Paused — signed in elsewhere")
+        self.today.banner.show_message(
+            message
+            or (
+                "SpineHR is signed in somewhere else, so CerePulse has paused rather than "
+                "taking the session back. Showing cached data. Press Refresh when you are "
+                "done in the browser."
+            ),
+            Severity.WARNING,
+            key="session",
+        )
+
+    def _resume(self) -> None:
+        """Take the session back, because the user just asked for it."""
+        self._paused = False
+        self.today.banner.clear_message("session")
+        self._auto.start()
+        logger.info("Resuming: reclaiming the portal session at the user's request")
 
     def sync_history(self) -> None:
         self.settings.banner.show_message("Fetching history…", Severity.INFO)
@@ -642,9 +711,9 @@ class MainWindow(QMainWindow):
         """Where an action leads. Insight chips and the next-action card share the set."""
         kind = getattr(action, "kind", None)
         if kind is ActionKind.OPEN_SWIPE_REQUEST:
-            open_url(self._context.client.url_for(pages.SWIPE_REQUESTS))
+            self._open_portal(pages.SWIPE_REQUESTS)
         elif kind is ActionKind.OPEN_ATTENDANCE:
-            open_url(self._context.client.url_for(pages.ATTENDANCE_REPORT))
+            self._open_portal(pages.ATTENDANCE_REPORT)
 
     def _save_config(self, config: object) -> None:
         from cerepulse.core.config import save_config
@@ -767,6 +836,9 @@ class MainWindow(QMainWindow):
         )
 
     def _on_error(self, exc: BaseException) -> None:
+        if isinstance(exc, SessionTakenError):
+            self._stand_down()
+            return
         if isinstance(exc, SessionExpiredError | AuthenticationError):
             # Recovery already tried and failed; only now is a prompt warranted.
             self.prompt_sign_in()

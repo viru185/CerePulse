@@ -35,6 +35,8 @@ class HttpClient:
         self._config = config
         network = config.network
         self.base_url = config.portal.base_url.rstrip("/")
+        #: Monotonic stamp of the last request, for telling an idle timeout from an eviction.
+        self._last_request_at: float | None = None
 
         self._client = httpx.Client(
             timeout=httpx.Timeout(
@@ -67,6 +69,21 @@ class HttpClient:
         tb: TracebackType | None,
     ) -> None:
         self.close()
+
+    # --- activity -------------------------------------------------------------------
+
+    @property
+    def seconds_since_last_request(self) -> float | None:
+        """How long since this client last spoke to the portal. ``None`` before the first.
+
+        The portal ends a session after twenty minutes of inactivity, so this is what
+        separates "our session timed out, as expected" from "our session was taken while we
+        were still using it". The two look identical over HTTP — both are a redirect to the
+        login page — and they call for opposite responses.
+        """
+        if self._last_request_at is None:
+            return None
+        return time.monotonic() - self._last_request_at
 
     # --- cookies --------------------------------------------------------------------
 
@@ -102,6 +119,7 @@ class HttpClient:
 
         for attempt in range(attempts):
             started = time.monotonic()
+            self._last_request_at = started
             try:
                 response = self._client.request(method, url, **kwargs)
             except (httpx.TimeoutException, httpx.TransportError) as exc:

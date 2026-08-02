@@ -21,6 +21,7 @@ from loguru import logger
 from PySide6.QtCore import QObject, Signal
 
 from cerepulse.app import AppContext
+from cerepulse.core.errors import AuthenticationError
 from cerepulse.services.scopes import Scope
 from cerepulse.ui.workers import TaskRunner
 
@@ -235,6 +236,27 @@ class SyncController(QObject):
             on_success=self._on_swipes,
             on_error=lambda exc: self.degraded.emit("swipe requests", exc),
         )
+
+    def open_in_browser(self, landing: str, on_ready: Success, on_error: Failure) -> None:
+        """Sign a browser into the portal, off the GUI thread.
+
+        Scraping the login form is a network round trip, so it cannot happen on the GUI
+        thread. What comes back is a localhost URL for the caller to open.
+        """
+        from cerepulse.auth import handover
+        from cerepulse.core.secrets import get_password
+
+        username = self._context.config.portal.username
+
+        def run() -> object:
+            password = get_password(username)
+            if not password:
+                raise AuthenticationError(
+                    "No saved password, so CerePulse cannot sign the browser in for you."
+                )
+            return handover.prepare(self._context.client, username, password, landing=landing)
+
+        self._runner.submit("handover", run, on_success=on_ready, on_error=on_error)
 
     def _on_swipes(self, result: tuple[list[Any], list[Any]]) -> None:
         requests, changes = result

@@ -27,6 +27,7 @@ from cerepulse.core.errors import (
     PrivilegeError,
     ProtocolError,
     SessionExpiredError,
+    SessionTakenError,
 )
 from cerepulse.transport import pages
 from cerepulse.transport.client import HttpClient
@@ -34,6 +35,11 @@ from cerepulse.transport.webforms import WebFormsState
 
 #: Cookie the portal sets once forms authentication succeeds.
 AUTH_COOKIE = ".ASPXFORMSAUTH"
+
+#: How long SpineHR leaves an idle session alive. Observed, not documented. A margin is
+#: taken off it so a session that expired a few seconds early is still read as a timeout
+#: rather than as somebody else signing in.
+IDLE_TIMEOUT_SECONDS = 18 * 60
 
 #: The control that raises the login event.
 LOGIN_BUTTON = "btnLogin"
@@ -163,6 +169,21 @@ class AuthManager:
 
     # --- session upkeep -------------------------------------------------------------
 
+    def looks_evicted(self) -> bool:
+        """Whether the session died while the app was still actively using it.
+
+        The portal ends a session after :data:`IDLE_TIMEOUT_SECONDS` of inactivity, so a
+        session that dies *between* two closely spaced requests did not time out — something
+        else signed in as the same user, and SpineHR allows only one at a time. Over HTTP
+        the two are the same redirect, and this is the only signal that separates them.
+
+        Erring towards "timed out" on the boundary is deliberate: treating an ordinary
+        timeout as an eviction would pause the app for no reason, while the reverse merely
+        costs one silent sign-in.
+        """
+        idle = self._client.seconds_since_last_request
+        return idle is not None and idle < IDLE_TIMEOUT_SECONDS
+
     def validate_session(self) -> bool:
         """Cheap liveness check, run before critical workflows rather than every action."""
         if not self._client.has_cookie(AUTH_COOKIE):
@@ -188,6 +209,11 @@ class AuthManager:
         """
         if _is_login_redirect(response):
             self._transition(SessionState.EXPIRED)
+            if self.looks_evicted():
+                raise SessionTakenError(
+                    "The session ended while the app was still using it; "
+                    "SpineHR is signed in somewhere else"
+                )
             raise SessionExpiredError("The portal redirected to the login page")
         if is_privilege_error(response):
             raise PrivilegeError(

@@ -45,6 +45,22 @@ class SessionExpiredError(CerePulseError):
     user_message = "Your session expired. Reconnecting..."
 
 
+class SessionTakenError(SessionExpiredError):
+    """The session died while the app was still using it — something else signed in.
+
+    SpineHR allows one session per user, so opening the portal in a browser ends the app's.
+    That is a different situation from an ordinary idle timeout and must not be answered the
+    same way: silently signing back in would take the session straight back off the browser
+    the user is in the middle of using, and the two would trade it back and forth. The app
+    steps aside instead and waits to be asked.
+    """
+
+    user_message = (
+        "SpineHR is signed in somewhere else, so CerePulse has paused. "
+        "The portal allows one session at a time."
+    )
+
+
 # --- Protocol / parsing ------------------------------------------------------------
 
 
