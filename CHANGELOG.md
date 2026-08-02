@@ -2,10 +2,25 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.11.0-beta.1] - 2026-08-02
+
+### Documentation
+- Record what 0.11 learned about the portal and the pause
+
+### Features
+- Finish the session round trip, and make Today's two numbers agree
+
 ## [0.10.0-beta.1] - 2026-08-02
 
 ### Bug Fixes
 - Arm the session truce, and stop the portal hiding three quarters of every request list
+- Do not hijack a redirect when borrowing the parent console
+
+### Chores
+- Regenerate the changelog for 0.10.0-beta.1
+
+### Tests
+- Stop the logging redaction test racing its own sink
 
 ## [0.9.0-beta.1] - 2026-08-02
 
