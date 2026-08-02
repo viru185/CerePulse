@@ -37,7 +37,6 @@ from cerepulse.core.errors import (
     SessionTakenError,
     TransportError,
 )
-from cerepulse.intelligence.attention import Attention, AttentionKind
 from cerepulse.intelligence.day import DayAnalysis
 from cerepulse.intelligence.insights import ActionKind, Insight, Severity
 from cerepulse.intelligence.month import analyze_week, week_start_for
@@ -55,8 +54,7 @@ from cerepulse.ui.theme import Palette, palette_for, stylesheet
 from cerepulse.ui.views.about import AboutView
 from cerepulse.ui.views.attendance import AttendanceView
 from cerepulse.ui.views.insights import InsightsView
-from cerepulse.ui.views.leave import LeaveViewWidget
-from cerepulse.ui.views.requests import RequestsView, open_url
+from cerepulse.ui.views.records import RecordsView, open_url
 from cerepulse.ui.views.settings import SettingsView
 from cerepulse.ui.views.sync_panel import SyncPanel
 from cerepulse.ui.views.today import TodayView
@@ -64,7 +62,7 @@ from cerepulse.ui.views.week import WeekView
 from cerepulse.ui.workers import TaskRunner
 from cerepulse.update import Channel
 
-SCREENS = ("Today", "Week", "Attendance", "Insights", "Leave", "Requests", "Settings", "About")
+SCREENS = ("Today", "Week", "Attendance", "Insights", "Records", "Settings", "About")
 TODAY_SCREEN = SCREENS.index("Today")
 
 
@@ -92,6 +90,10 @@ class MainWindow(QMainWindow):
         self._paused = False
         self._scopes: list[object] = []
         self._busy_scope: Scope | None = None
+        #: The two record sources that arrive on their own schedules, kept so the
+        #: timeline can be rebuilt whenever any one of them lands.
+        self._swipes: list[object] = []
+        self._ledger: list[object] = []
 
         self.setWindowTitle(about.NAME)
         self.setWindowIcon(app_icon())
@@ -128,8 +130,7 @@ class MainWindow(QMainWindow):
         self.week = WeekView(self._palette)
         self.attendance = AttendanceView(self._palette)
         self.insights = InsightsView(self._palette)
-        self.leave = LeaveViewWidget(self._palette)
-        self.requests = RequestsView(self._palette)
+        self.records = RecordsView(self._palette)
         self.settings = SettingsView(self._context.config)
         self.about = AboutView()
 
@@ -138,8 +139,7 @@ class MainWindow(QMainWindow):
             self.week,
             self.attendance,
             self.insights,
-            self.leave,
-            self.requests,
+            self.records,
             self.settings,
             self.about,
         ):
@@ -158,10 +158,9 @@ class MainWindow(QMainWindow):
         )
         self.attendance.open_portal.connect(lambda: self._open_portal(pages.ATTENDANCE_REPORT))
         self.today.sync_day_requested.connect(self._sync_day)
-        self.leave.refresh_requested.connect(lambda: self._sync.refresh_leave())
-        self.requests.refresh_requested.connect(lambda: self._sync.refresh_leave())
-        self.requests.open_portal.connect(lambda: self._open_portal(pages.SWIPE_REQUESTS))
-        self.requests.day_selected.connect(self._open_day)
+        self.records.refresh_requested.connect(lambda: self._sync.refresh_leave())
+        self.records.open_portal.connect(lambda: self._open_portal(pages.SWIPE_REQUESTS))
+        self.records.day_selected.connect(self._open_day)
         self.week.week_changed.connect(self._change_week)
         self.week.day_selected.connect(self._open_day)
         self.insights.refresh_requested.connect(lambda: self._sync.refresh_trends())
@@ -244,7 +243,7 @@ class MainWindow(QMainWindow):
         self._sync.day_ready.connect(self._apply_day)
         self._sync.today_missing.connect(self.today.show_awaiting_today)
         self._sync.leave_ready.connect(self._apply_leave)
-        self._sync.ledger_ready.connect(self.leave.show_ledger)
+        self._sync.ledger_ready.connect(self._apply_ledger)
         self._sync.swipes_ready.connect(self._apply_swipes)
         self._sync.swipes_decided.connect(self._on_swipes_decided)
         self._sync.trends_ready.connect(self.insights.show_trends)
@@ -562,6 +561,7 @@ class MainWindow(QMainWindow):
         self.attendance.show_month(view)
 
         self._render_week(view)
+        self._rebuild_records()
         self._show_current_day(view)
         self._render_status(view)
         # Trends read straight from the cache the month refresh has just written, so they
@@ -588,7 +588,13 @@ class MainWindow(QMainWindow):
             today=date.today(),
             holidays=view.holidays,
         )
-        self.week.show_week(week, self._context.attendance.policy.work_target)
+        # The outstanding items come from the month view rather than being recomputed, so
+        # the week cannot disagree with the Attendance highlight about what needs doing.
+        self.week.show_week(
+            week,
+            self._context.attendance.policy.work_target,
+            attention=view.attention,
+        )
 
     def _apply_day(self, analysis: DayAnalysis, is_today: bool) -> None:
         self.today.show_analysis(analysis, is_today=is_today)
@@ -610,24 +616,38 @@ class MainWindow(QMainWindow):
             self.today.banner.clear_message("cache")
 
     def _apply_leave(self, data: LeaveData) -> None:
-        self.leave.show_leave(data)
+        self.records.show_leave(data)
         if self._tray is not None:
             # Expiry warnings are worth a toast; the policy caps them to once a day.
             self._tray.notify_insights(data.insights)
 
     def _apply_swipes(self, requests: list[object]) -> None:
-        # Taken from the month view rather than recomputed. This screen used to carry its
-        # own third definition of "needs a request", which disagreed with both the others.
-        # The whole Attention travels, not just the date, so the screen can say *why* a day
-        # was flagged in the same words the Attendance tooltip uses.
-        needing: list[Attention] = []
-        if self._month_view is not None:
-            needing = [
-                attention
-                for _day, attention in sorted(self._month_view.attention.items())
-                if attention.kind is AttentionKind.SHORT_NO_REQUEST
-            ]
-        self.requests.show_requests(requests, needing=needing)  # type: ignore[arg-type]
+        self._swipes = list(requests)
+        self.records.show_requests(requests)
+        self._rebuild_records()
+
+    def _apply_ledger(self, transactions: list[object]) -> None:
+        self._ledger = list(transactions)
+        self._rebuild_records()
+
+    def _rebuild_records(self) -> None:
+        """Reassemble the one timeline from whichever caches have reported so far.
+
+        The three sources arrive on their own schedules — the month with a sync, the
+        requests and the ledger behind it — so this is called by each of them rather than
+        waiting for all three. A partial timeline is more useful than none, and every
+        source that lands after simply rebuilds it.
+        """
+        from cerepulse.intelligence.records import build_records
+
+        self.records.show_records(
+            build_records(
+                days=list(self._month_view.month.days) if self._month_view else [],
+                requests=self._swipes,  # type: ignore[arg-type]
+                transactions=self._ledger,  # type: ignore[arg-type]
+                holidays=self._month_view.holidays if self._month_view else [],
+            )
+        )
 
     def _on_swipes_decided(self, changes: list[object]) -> None:
         """News the portal never volunteers: a request has been approved or turned down.
@@ -640,7 +660,7 @@ class MainWindow(QMainWindow):
         insight = decision_insight(changes)  # type: ignore[arg-type]
         if insight is None:
             return
-        self.requests.banner.show_message(
+        self.records.banner.show_message(
             f"{insight.title} — {insight.detail}", insight.severity, key="decided"
         )
         if self._tray is not None:
@@ -828,8 +848,8 @@ class MainWindow(QMainWindow):
         logger.warning("Could not load {}: {}", scope, exc)
         banner = {
             "insights": self.insights.banner,
-            "leave ledger": self.leave.banner,
-            "swipe requests": self.requests.banner,
+            "leave ledger": self.records.banner,
+            "swipe requests": self.records.banner,
         }.get(scope, self.today.banner)
         banner.show_message(
             f"Could not load {scope}: {_message_for(exc)}", Severity.WARNING, key=scope

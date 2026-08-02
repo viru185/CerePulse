@@ -106,6 +106,25 @@ class WeekAnalysis:
         return self.total_worked + Duration(self.days_ahead * self.policy.work_target.minutes)
 
     @property
+    def required_daily_average(self) -> Duration | None:
+        """What each remaining day must average to finish the week level.
+
+        ``None`` when there is nothing to make up or no day left to make it up in — the
+        difference between "you are fine" and "there is no longer anything you can do",
+        which the screen says in words rather than by printing a number for both.
+        """
+        if self.days_ahead <= 0 or self.delta.minutes >= 0:
+            return None
+        needed = self.policy.work_target.minutes * self.days_ahead - self.delta.minutes
+        return Duration(-(-needed // self.days_ahead))  # ceil
+
+    @property
+    def on_track(self) -> bool:
+        """Whether finishing level still only asks for ordinary days."""
+        required = self.required_daily_average
+        return required is None or required <= self.policy.shift_span
+
+    @property
     def measured(self) -> tuple[DayRollup, ...]:
         """Completed working days carrying hours — the only ones worth comparing."""
         return tuple(

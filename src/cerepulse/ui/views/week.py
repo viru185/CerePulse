@@ -1,12 +1,17 @@
-"""Week — seven days against target, with a running surplus and where it is heading.
+"""Week — am I on track, what did the week look like, and what needs doing.
 
 The week is the unit people actually think in: a short Tuesday matters less if Thursday
-made it up, and only a weekly view shows that. It also answers the question a single day
-cannot — whether Friday needs to be a long one — which is why the projection sits beside
-the totals rather than being left as arithmetic for the reader.
+made it up, and only a weekly view shows that.
 
-Days are colour-coded by status rather than only by hours. A blank row for a public holiday
-and a blank row for an absence look identical otherwise, and they mean opposite things.
+The screen answers three questions in that order, because that is the order they get asked.
+It previously answered none of them well: four cards, a row of 14-pixel slivers with one
+number stranded at the end of each, and a terminal stretch that left the bottom third of the
+window empty. A day was a label, a bar and an hours figure — less than the Attendance table
+already showed on the same data.
+
+Every day is now a row worth reading: what it was, how the worked time compares with the
+target, and why it is unusual when it is. Days nobody worked say what they were — leave, a
+holiday, outdoor duty — rather than rendering as an absence.
 """
 
 from __future__ import annotations
@@ -14,19 +19,26 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
+from cerepulse.intelligence.attention import Attention
 from cerepulse.intelligence.month import DayRollup, WeekAnalysis
 from cerepulse.models.attendance import DayStatus
 from cerepulse.models.values import Duration
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette, Space
-from cerepulse.ui.widgets import Card, SectionTitle, TargetBar, card_row
+from cerepulse.ui.widgets import Card, EmptyState, SectionTitle, StatusChip, TargetBar, card_row
 
 
 class WeekView(QWidget):
-    """A seven-day strip with per-day bars, the week's delta, and its projected finish."""
+    """A week judged, shaped, and made actionable."""
 
     week_changed = Signal(date)
     day_selected = Signal(object)  # date
@@ -36,128 +48,213 @@ class WeekView(QWidget):
         self._palette = palette
         self._week_start: date | None = None
 
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(Space.SECTION, 20, Space.SECTION, Space.SECTION)
         layout.setSpacing(Space.GAP)
 
-        header = QHBoxLayout()
-        header.setSpacing(Space.SNUG)
-        previous = QPushButton("◀ Previous")
-        previous.clicked.connect(lambda: self._step(-7))
-        self._label = SectionTitle("")
-        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._next = QPushButton("Next ▶")
-        self._next.clicked.connect(lambda: self._step(7))
-        # A shortcut back, because the way out of five clicks into the past should not be
-        # five clicks forward.
-        self._this_week = QPushButton("This week")
-        self._this_week.clicked.connect(lambda: self.week_changed.emit(_this_week_start()))
-        header.addWidget(previous)
-        header.addWidget(self._label, 1)
-        header.addWidget(self._next)
-        header.addWidget(self._this_week)
-        layout.addLayout(header)
+        layout.addLayout(self._build_header())
+
+        # The verdict, in a sentence, before any figure that supports it.
+        self._verdict = QLabel()
+        self._verdict.setWordWrap(True)
+        self._verdict.setStyleSheet("font-size: 15px; font-weight: 600;")
+        layout.addWidget(self._verdict)
 
         self.total = Card("Worked")
-        self.target = Card("Target")
+        self.target = Card("Owed so far")
         self.delta = Card("Difference")
-        self.projected = Card("Projected")
-        layout.addWidget(card_row(self.total, self.target, self.delta, self.projected))
+        self.needed = Card("Needed daily")
+        layout.addWidget(card_row(self.total, self.target, self.delta, self.needed))
 
         self._progress = TargetBar(palette)
         layout.addWidget(self._progress)
 
-        layout.addWidget(SectionTitle("Days"))
+        layout.addWidget(SectionTitle("Day by day"))
         self._days = QVBoxLayout()
-        self._days.setSpacing(Space.TIGHT + 2)
-        host = QWidget()
-        host.setLayout(self._days)
-        layout.addWidget(host)
+        self._days.setSpacing(Space.TIGHT)
+        days_host = QWidget()
+        days_host.setLayout(self._days)
+        layout.addWidget(days_host)
 
-        self._extremes = QLabel()
-        self._extremes.setObjectName("CardCaption")
-        layout.addWidget(self._extremes)
+        layout.addWidget(SectionTitle("Needs doing"))
+        self._attention = QVBoxLayout()
+        self._attention.setSpacing(Space.TIGHT)
+        attention_host = QWidget()
+        attention_host.setLayout(self._attention)
+        layout.addWidget(attention_host)
+        self._nothing_needed = EmptyState(
+            "Nothing outstanding this week.",
+            "No short days without a request, and no missing punches.",
+        )
+        layout.addWidget(self._nothing_needed)
+
         layout.addStretch(1)
+
+    def _build_header(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(Space.SNUG)
+
+        previous = QPushButton("◀ Previous")
+        previous.clicked.connect(lambda: self._step(-7))
+        self._label = SectionTitle("")
+        following = QPushButton("Next ▶")
+        following.clicked.connect(lambda: self._step(7))
+        this_week = QPushButton("This week")
+        this_week.clicked.connect(lambda: self.week_changed.emit(_monday_of(date.today())))
+
+        row.addWidget(previous)
+        row.addWidget(self._label, 1)
+        row.addWidget(this_week)
+        row.addWidget(following)
+        return row
 
     # --- rendering ------------------------------------------------------------------
 
-    def show_week(self, analysis: WeekAnalysis, target_per_day: Duration) -> None:
+    def show_week(
+        self,
+        analysis: WeekAnalysis,
+        target_per_day: Duration,
+        *,
+        attention: dict[date, Attention] | None = None,
+    ) -> None:
         self._week_start = analysis.week_start
         end = analysis.week_start + timedelta(days=6)
         self._label.setText(
             f"{analysis.week_start.strftime('%d %b').lstrip('0')} – "
             f"{end.strftime('%d %b %Y').lstrip('0')}"
         )
-        # There is nothing to read in a week that has not happened.
-        self._next.setEnabled(analysis.week_start < _this_week_start())
-        self._this_week.setEnabled(analysis.week_start != _this_week_start())
 
-        self.total.set_value(fmt.duration(analysis.total_worked), accent=self._palette.work)
-        self.total.set_caption(
-            f"across {len(analysis.measured)} completed day(s)"
-            + (
-                f" · {fmt.duration(analysis.in_progress)} today so far"
-                if analysis.in_progress.minutes
-                else ""
+        self._render_verdict(analysis)
+        self._render_cards(analysis)
+        self._render_progress(analysis)
+        self._render_days(analysis, target_per_day)
+        self._render_attention(analysis, attention or {})
+
+    def _render_verdict(self, analysis: WeekAnalysis) -> None:
+        """One sentence saying whether the week is fine, and what it would take if not."""
+        palette = self._palette
+        required = analysis.required_daily_average
+        settled = max(0, analysis.working_days - analysis.days_ahead)
+
+        if analysis.target.minutes <= 0:
+            # The target covers completed working days only, so a zero target means there
+            # is not yet anything to judge. "On track, 0m across 0 days" is a verdict about
+            # nothing — the same mistake as presenting a month's target as owed on day two.
+            measurable = "Nothing measurable this week yet"
+            reason = (
+                " — the days so far were outdoor duty, leave or time off."
+                if any(day.on_duty or day.status.is_off for day in analysis.days)
+                else "."
             )
-        )
+            self._verdict.setText(f"{measurable}{reason}")
+            self._verdict.setStyleSheet(
+                f"font-size: 15px; font-weight: 600; color: {palette.text_muted};"
+            )
+            return
+
+        if analysis.delta.minutes >= 0:
+            text = (
+                f"On track — {fmt.duration(analysis.delta, signed=True)} across the "
+                f"{settled} day(s) already worked."
+            )
+            colour = palette.good
+        elif required is None:
+            # Behind with no day left to make it up in. "Work X per day over the remaining
+            # 0" would be arithmetic nobody can act on.
+            text = (
+                f"The week finished {fmt.duration(-analysis.delta)} short. "
+                f"Nothing left to make it up in."
+            )
+            colour = palette.bad
+        else:
+            reachable = (
+                ""
+                if analysis.on_track
+                else "  That is more than a full shift, so it is not realistic."
+            )
+            text = (
+                f"{fmt.duration(-analysis.delta)} behind. Work {fmt.duration(required)} on "
+                f"each of the remaining {analysis.days_ahead} day(s) to finish "
+                f"level.{reachable}"
+            )
+            colour = palette.rest if analysis.on_track else palette.bad
+
+        self._verdict.setText(text)
+        self._verdict.setStyleSheet(f"font-size: 15px; font-weight: 600; color: {colour};")
+
+    def _render_cards(self, analysis: WeekAnalysis) -> None:
+        palette = self._palette
+        settled = max(0, analysis.working_days - analysis.days_ahead)
+
+        self.total.set_value(fmt.duration(analysis.total_worked), accent=palette.work)
+        self.total.set_caption(f"across {settled} completed day(s)")
+
         self.target.set_value(fmt.duration(analysis.target))
-        self.target.set_caption(f"of {fmt.duration(analysis.full_target)} for the full week")
+        self.target.set_caption(f"{fmt.duration(analysis.full_target)} for the whole week")
 
         ahead = analysis.delta.minutes >= 0
         self.delta.set_value(
             fmt.duration(analysis.delta, signed=True),
-            accent=self._palette.good if ahead else self._palette.bad,
+            accent=palette.good if ahead else palette.bad,
         )
         self.delta.set_caption("ahead of target" if ahead else "behind target")
 
-        self._render_projection(analysis)
-        self._progress.set_progress(
-            analysis.progress,
-            f"{round(analysis.progress * 100)}% of the week's {fmt.duration(analysis.full_target)}",
-        )
-        self._render_days(analysis, target_per_day)
-        self._render_extremes(analysis)
-
-    def _render_projection(self, analysis: WeekAnalysis) -> None:
-        """Where the week lands if nothing changes — the one figure Friday depends on."""
-        if not analysis.days_ahead:
-            self.projected.set_value(fmt.duration(analysis.total_worked))
-            self.projected.set_caption("the week is done")
-            return
-
-        projected = analysis.projected_total
-        short = analysis.full_target - projected
-        self.projected.set_value(fmt.duration(projected))
-        if short.minutes > 0:
-            self.projected.set_caption(
-                f"{analysis.days_ahead} day(s) left · still {fmt.duration(short)} short"
-            )
+        required = analysis.required_daily_average
+        if required is None:
+            self.needed.set_value(fmt.EMPTY, accent=palette.text_muted)
+            self.needed.set_caption("nothing to make up" if ahead else "no days left this week")
         else:
-            self.projected.set_caption(f"{analysis.days_ahead} day(s) left at target · on track")
+            self.needed.set_value(
+                fmt.duration(required),
+                accent=palette.rest if analysis.on_track else palette.bad,
+            )
+            self.needed.set_caption(f"on each of {analysis.days_ahead} remaining day(s)")
 
-    def _render_extremes(self, analysis: WeekAnalysis) -> None:
-        best, worst = analysis.best_day, analysis.worst_day
-        if best is None or worst is None:
-            # One day is not a comparison, and saying so beats naming a "best day" of one.
-            self._extremes.setText("")
-            return
-        self._extremes.setText(
-            f"Longest {best.day.strftime('%A').rstrip()} {fmt.duration(best.worked)}"
-            f"  ·  shortest {worst.day.strftime('%A')} {fmt.duration(worst.worked)}"
+    def _render_progress(self, analysis: WeekAnalysis) -> None:
+        share = analysis.progress
+        worked = analysis.total_worked + analysis.in_progress
+        today = (
+            f", including {fmt.duration(analysis.in_progress)} logged today"
+            if analysis.in_progress
+            else ""
+        )
+        self._progress.set_progress(
+            share,
+            f"{share * 100:.0f}% of the week — {fmt.duration(worked)} of "
+            f"{fmt.duration(analysis.full_target)}{today}",
         )
 
     def _render_days(self, analysis: WeekAnalysis, target_per_day: Duration) -> None:
-        while self._days.count():
-            item = self._days.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.deleteLater()
-
+        _clear(self._days)
         for rollup in analysis.days:
             row = _DayRow(rollup, target_per_day, self._palette)
             row.clicked.connect(lambda day=rollup.day: self.day_selected.emit(day))
             self._days.addWidget(row)
+
+    def _render_attention(self, analysis: WeekAnalysis, attention: dict[date, Attention]) -> None:
+        """The week's outstanding items, from the one place that decides what is outstanding.
+
+        Filtered to this week rather than recomputed, so it cannot disagree with the
+        Attendance row highlight or the heatmap ring.
+        """
+        _clear(self._attention)
+        days = {rollup.day for rollup in analysis.days}
+        found = [item for day, item in sorted(attention.items()) if day in days]
+
+        self._nothing_needed.setVisible(not found)
+        for item in found:
+            row = _AttentionRow(item, self._palette)
+            row.clicked.connect(lambda day=item.day: self.day_selected.emit(day))
+            self._attention.addWidget(row)
 
     def _step(self, days: int) -> None:
         if self._week_start is not None:
@@ -165,104 +262,159 @@ class WeekView(QWidget):
 
 
 class _DayRow(QWidget):
-    """One day: label, proportional bar, hours, and how much of the target that was."""
+    """One day: what it was, how much of the target it made, and why it is unusual."""
 
     clicked = Signal()
+
+    BAR_HEIGHT = 10
 
     def __init__(
         self, rollup: DayRollup, target: Duration, palette: Palette, parent: QWidget | None = None
     ) -> None:
         super().__init__(parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Space.SNUG + 2)
 
-        worked = rollup.worked
-        colour = _status_colour(rollup, target, palette)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, Space.TIGHT // 2, 0, Space.TIGHT // 2)
+        layout.setSpacing(Space.ROW)
 
         label = QLabel(rollup.day.strftime("%a %d").replace(" 0", " "))
-        label.setFixedWidth(64)
+        label.setFixedWidth(62)
         label.setStyleSheet(f"color: {palette.text_muted};")
         layout.addWidget(label)
 
-        bar = QWidget()
-        bar.setFixedHeight(14)
-        bar.setStyleSheet(_bar_style(worked, target, rollup.status, colour, palette))
-        layout.addWidget(bar, 1)
+        chip = StatusChip(_status_word(rollup), _status_colour(rollup, palette))
+        chip.setFixedWidth(86)
+        layout.addWidget(chip)
 
-        hours = QLabel(fmt.duration(worked) if rollup.status.counts_as_worked else "—")
-        hours.setFixedWidth(56)
+        # The bar and its note share the stretch, so the row spends the width on something
+        # rather than leaving a 700-pixel sliver with one number at the end of it.
+        middle = QVBoxLayout()
+        middle.setSpacing(2)
+        bar = QWidget()
+        bar.setFixedHeight(self.BAR_HEIGHT)
+        bar.setStyleSheet(_bar_style(rollup, target, palette))
+        middle.addWidget(bar)
+
+        note = QLabel(_day_note(rollup))
+        note.setObjectName("CardCaption")
+        middle.addWidget(note)
+        layout.addLayout(middle, 1)
+
+        hours = QLabel(_hours_text(rollup))
+        hours.setFixedWidth(76)
         hours.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        hours.setStyleSheet("font-variant-numeric: tabular-nums;")
+        if rollup.estimated:
+            hours.setToolTip("Estimated — this day's punch detail is not cached yet")
         layout.addWidget(hours)
 
-        share = QLabel(_share_text(rollup, target))
-        share.setFixedWidth(48)
-        share.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        share.setObjectName("CardCaption")
-        layout.addWidget(share)
+        self.setToolTip(_day_note(rollup) or _status_word(rollup))
 
-        self.setToolTip(_row_tooltip(rollup))
-
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 — Qt override
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-        super().mouseReleaseEvent(event)
+    def mouseReleaseEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        self.clicked.emit()
+        super().mouseReleaseEvent(event)  # type: ignore[arg-type]
 
 
-def _share_text(rollup: DayRollup, target: Duration) -> str:
-    if not rollup.status.counts_as_worked or target.minutes <= 0:
-        return ""
-    if rollup.unmeasured:
-        # Nothing was recorded, so 0% would be a measurement rather than the absence of one.
-        return "—"
-    return f"{round(rollup.worked.minutes / target.minutes * 100)}%"
+class _AttentionRow(QWidget):
+    """One outstanding item, and the day it belongs to."""
+
+    clicked = Signal()
+
+    def __init__(self, item: Attention, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, Space.TIGHT // 2, 0, Space.TIGHT // 2)
+        layout.setSpacing(Space.ROW)
+
+        when = QLabel(item.day.strftime("%a %d").replace(" 0", " "))
+        when.setFixedWidth(62)
+        when.setStyleSheet(f"color: {palette.bad};")
+        layout.addWidget(when)
+
+        reason = QLabel(item.reason)
+        reason.setWordWrap(True)
+        layout.addWidget(reason, 1)
+
+    def mouseReleaseEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        self.clicked.emit()
+        super().mouseReleaseEvent(event)  # type: ignore[arg-type]
 
 
-def _row_tooltip(rollup: DayRollup) -> str:
-    label = rollup.day.strftime("%A, %d %B").replace(" 0", " ")
-    body = f"{label} — {rollup.status.value.replace('_', ' ')}"
+# --- how a day reads ----------------------------------------------------------------------
+
+
+def _status_word(rollup: DayRollup) -> str:
+    if rollup.on_duty:
+        return "Outdoor"
     if rollup.in_progress:
-        body += "\nStill in progress"
-    if rollup.estimated:
-        body += "\nEstimated from the grid; punch detail not synced"
+        return "Today"
     if rollup.unmeasured:
-        body += "\nMarked worked, but the portal holds no hours for it"
-    return body
+        return "No data"
+    return {
+        DayStatus.PRESENT: "Worked",
+        DayStatus.HALF_DAY: "Half day",
+        DayStatus.ABSENT: "Absent",
+        DayStatus.WEEKLY_OFF: "Off",
+        DayStatus.HOLIDAY: "Holiday",
+        DayStatus.LEAVE: "Leave",
+        DayStatus.ON_DUTY: "Outdoor",
+    }.get(rollup.status, fmt.EMPTY)
 
 
-#: Colour per status. A holiday and an absence both render as an empty row otherwise, and
-#: nothing on the screen distinguishes a day off from a day missed.
-def _status_colour(rollup: DayRollup, target: Duration, palette: Palette) -> str:
-    if rollup.status is DayStatus.HOLIDAY:
+def _status_colour(rollup: DayRollup, palette: Palette) -> str:
+    if rollup.on_duty:
         return palette.adjust
-    if rollup.status is DayStatus.WEEKLY_OFF:
-        return palette.border
-    if not rollup.status.counts_as_worked:
-        # Leave, absence, anything else the portal names but does not pay hours for.
-        return palette.rest
+    if rollup.in_progress:
+        return palette.work
+    return {
+        DayStatus.PRESENT: palette.good,
+        DayStatus.HALF_DAY: palette.rest,
+        DayStatus.ABSENT: palette.bad,
+        DayStatus.LEAVE: palette.adjust,
+        DayStatus.HOLIDAY: palette.rest,
+    }.get(rollup.status, palette.text_muted)
+
+
+def _day_note(rollup: DayRollup) -> str:
+    """Why the day is what it is — the portal's remark when there is one, the state if not."""
+    if rollup.note:
+        return rollup.note
+    if rollup.on_duty:
+        return "Worked off site; no swipes to measure."
     if rollup.unmeasured:
-        return palette.bad
-    return palette.good if rollup.worked >= target else palette.work
+        return "Marked worked, but the portal holds no punches or hours."
+    if rollup.in_progress:
+        return "Still being worked."
+    if rollup.estimated:
+        return "Estimated from the monthly summary."
+    return ""
 
 
-def _bar_style(
-    worked: Duration, target: Duration, status: DayStatus, colour: str, palette: Palette
-) -> str:
+def _hours_text(rollup: DayRollup) -> str:
+    if rollup.on_duty or not rollup.status.counts_as_worked:
+        return fmt.EMPTY
+    return fmt.duration(rollup.worked)
+
+
+def _bar_style(rollup: DayRollup, target: Duration, palette: Palette) -> str:
     """A hard-edged fill showing the fraction of target worked.
 
     A gradient needs its two stops to straddle the boundary. Letting them land on the same
     offset — which happens at 0% and at 100% — makes Qt interpolate across the whole bar,
     so a full day renders as a wash rather than a solid fill.
     """
-    radius = "border-radius: 7px;"
-    if not status.counts_as_worked:
-        # Not a shortfall, so it is drawn as a flat band in the status colour rather than
-        # as an empty track that reads as a day someone failed to work.
-        return f"background: {colour}; {radius}"
+    radius = "border-radius: 5px;"
+    if rollup.on_duty:
+        # No hours to draw, but the day was worked. A flat band says something happened
+        # here without claiming a quantity that does not exist.
+        return f"background: {_tinted(palette.adjust)}; {radius}"
+    if not rollup.status.counts_as_worked:
+        return f"background: {palette.border}; {radius}"
 
-    filled = fmt.percent(worked, target) if target.minutes else 0.0
+    filled = fmt.percent(rollup.worked, target) if target.minutes else 0.0
+    colour = palette.work if rollup.in_progress or rollup.worked < target else palette.good
     if filled >= 1.0:
         return f"background: {colour}; {radius}"
     if filled <= 0.0:
@@ -276,7 +428,20 @@ def _bar_style(
     )
 
 
-def _this_week_start() -> date:
-    from cerepulse.intelligence.month import week_start_for
+def _tinted(colour: str) -> str:
+    from PySide6.QtGui import QColor
 
-    return week_start_for(date.today())
+    value = QColor(colour)
+    return f"rgba({value.red()}, {value.green()}, {value.blue()}, 110)"
+
+
+def _monday_of(day: date) -> date:
+    return day - timedelta(days=day.weekday())
+
+
+def _clear(layout: QVBoxLayout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget() if item is not None else None
+        if widget is not None:
+            widget.deleteLater()
