@@ -97,6 +97,7 @@ FILTERS: tuple[tuple[str, Callable[[_Row, MonthAnalysis], bool]], ...] = (
     ),
     ("Overtime days", lambda row, month: row.day.total_hours > month.policy.shift_span),
     ("Present", lambda row, month: row.day.status is DayStatus.PRESENT),
+    ("Outdoor duty", lambda row, month: row.day.has_outdoor_duty),
     ("Leave and absence", lambda row, month: row.day.status in _AWAY),
     ("Holidays and offs", lambda row, month: row.day.status in _OFF),
     ("Has a swipe request", lambda row, month: bool(row.requests)),
@@ -259,7 +260,19 @@ class AttendanceView(QWidget):
     def show_month(self, view: MonthView) -> None:
         analysis = view.analysis
         self.worked.set_value(fmt.duration(analysis.total_worked), accent=self._palette.work)
-        self.worked.set_caption(f"of {fmt.duration(analysis.month_target)} target")
+        # Against what the month has asked for *so far*, not against its eventual total.
+        # Comparing with the full month read "0m of 168h" on the second of August — a
+        # month's work presented as a debt on a day when nothing was owed.
+        if analysis.has_started:
+            self.worked.set_caption(
+                f"of {fmt.duration(analysis.elapsed_target)} owed so far  ·  "
+                f"{fmt.duration(analysis.month_target)} for the full month"
+            )
+        else:
+            self.worked.set_caption(
+                f"nothing owed yet  ·  {fmt.duration(analysis.month_target)} once the "
+                f"month is worked"
+            )
         self.overtime.set_value(
             fmt.duration(analysis.total_overtime),
             accent=self._palette.good if analysis.total_overtime else None,
@@ -286,12 +299,31 @@ class AttendanceView(QWidget):
             list(analysis.days),
             target=analysis.policy.work_target,
             attention=set(view.attention),
+            year=analysis.year,
+            month=analysis.month,
         )
         self._render_table(view)
         self._apply_filter()
 
     def _render_bank(self, analysis: MonthAnalysis) -> None:
+        if not analysis.has_started:
+            # No completed working day means no bank. Reporting "+0m ahead across 0 working
+            # days" is arithmetic about nothing, and it made an empty month look assessed.
+            self.bank.show_message(
+                f"{analysis.working_days_remaining} working day(s) ahead this month. "
+                f"Nothing to compare yet.",
+                Severity.INFO,
+            )
+            return
+
         notes = []
+        if analysis.on_duty_days:
+            # Real working days with no swipes to measure. They were excluded from the bank
+            # and from the excluded count too, so a week of outdoor duty simply vanished.
+            notes.append(
+                f"{analysis.on_duty_days} day(s) on outdoor duty — worked, but with no "
+                f"swipes to measure"
+            )
         if analysis.estimated_days:
             # Say so rather than implying a precision the cache cannot support.
             notes.append(
@@ -517,6 +549,15 @@ class _DayDrawer(QWidget):
             self._headline.setText(entry.attention.reason)
         else:
             self._headline.setText("")
+
+        # Outdoor duty leads, whatever else the day says. There are no hours to report, so
+        # the remark — "EAE Training in Bengaluru" — is the entire content of the day.
+        if entry.day.has_outdoor_duty:
+            self._headline.setText(
+                f"Outdoor duty — {entry.day.remarks.strip()}"
+                if entry.day.remarks.strip()
+                else "Outdoor duty — worked off site, no swipes to measure"
+            )
 
         segments = analysis.segments if analysis is not None else ()
         self._timeline.set_day(segments, leave_at=analysis.leave_at if analysis else None)

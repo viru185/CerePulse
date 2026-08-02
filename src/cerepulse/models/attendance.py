@@ -76,6 +76,10 @@ class DayStatus(Enum):
         return self in {DayStatus.WEEKLY_OFF, DayStatus.HOLIDAY, DayStatus.LEAVE}
 
 
+#: The portal's own codes for outdoor duty, in either user-type column.
+OUTDOOR_DUTY_CODES = frozenset({"OD", "ODT"})
+
+
 @dataclass(frozen=True, slots=True)
 class Punch:
     """A single swipe event from the day-detail log."""
@@ -122,6 +126,18 @@ class AttendanceDay:
     @property
     def has_punches(self) -> bool:
         return bool(self.punches)
+
+    @property
+    def has_outdoor_duty(self) -> bool:
+        """Whether any part of this day was worked off site.
+
+        Read from the raw portal codes rather than from :attr:`status`, because a day marked
+        half on-duty and half present resolves to ``HALF_DAY`` — correctly, since half of it
+        really was measured — and the on-duty half would otherwise vanish. The codes are kept
+        verbatim on the day for exactly this kind of question.
+        """
+        codes = {self.user_type_1.strip().upper(), self.user_type_2.strip().upper()}
+        return self.status is DayStatus.ON_DUTY or bool(codes & OUTDOOR_DUTY_CODES)
 
 
 @dataclass(frozen=True, slots=True)

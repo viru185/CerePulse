@@ -41,6 +41,13 @@ class DayRollup:
     unmeasured: bool = False
     #: Today, still being worked. Its target is not owed yet.
     in_progress: bool = False
+    #: Worked off site, so there are no swipes to measure. A real working day that no
+    #: hours figure can describe — kept distinct from ``unmeasured``, which is a day the
+    #: portal *should* have hours for and does not.
+    on_duty: bool = False
+    #: Why the day is what it is, when the portal bothered to say. The only thing that
+    #: explains a week of outdoor duty.
+    note: str = ""
 
     @property
     def counts_toward_target(self) -> bool:
@@ -136,9 +143,14 @@ class MonthAnalysis:
     estimated_days: int
     #: Days the portal calls worked but for which it holds no punches or hours at all.
     unmeasured_days: int
+    #: Days worked off site. Real working days with nothing to measure, so they are not a
+    #: deficit — but they were invisible entirely, which made a week away look like a week
+    #: that simply did not happen.
+    on_duty_days: int
     average_in_time: time | None
     working_days_elapsed: int
     working_days_remaining: int
+    #: What the whole month will ask for once every remaining day is worked. A forecast.
     month_target: Duration
     bank_delta: Duration
     required_daily_average: Duration | None
@@ -154,6 +166,22 @@ class MonthAnalysis:
     @property
     def working_days_total(self) -> int:
         return self.working_days_elapsed + self.working_days_remaining
+
+    @property
+    def elapsed_target(self) -> Duration:
+        """What the month has asked for *so far* — the only target already owed.
+
+        The Worked card used to compare against :attr:`month_target`, which spans the whole
+        month. On the second of August that read "0m of 168h", presenting a month's work as
+        a debt on a day when nothing had been worked and nothing was owed. What is owed is
+        what the elapsed working days add up to; the rest is a forecast and is labelled one.
+        """
+        return Duration(self.working_days_elapsed * self.policy.work_target.minutes)
+
+    @property
+    def has_started(self) -> bool:
+        """Whether the month has any completed working day to reason about at all."""
+        return self.working_days_elapsed > 0
 
 
 def analyze_month(
@@ -209,6 +237,7 @@ def analyze_month(
         short_days=short_days,
         estimated_days=sum(1 for r in worked_days if r.estimated),
         unmeasured_days=sum(1 for r in rollups if r.unmeasured),
+        on_duty_days=sum(1 for r in rollups if r.on_duty),
         average_in_time=_average_in_time(days),
         working_days_elapsed=working_days_elapsed,
         working_days_remaining=working_days_remaining,
@@ -299,6 +328,10 @@ def _week_days_ahead(
 
 # --- helpers --------------------------------------------------------------------------
 
+#: What the portal writes in Remarks on an ordinary day. It says nothing, so carrying it as
+#: a note would bury the remarks that do — "EAE Training in Bengaluru" and the like.
+_ROUTINE_REMARK = "Attendance Muster"
+
 
 def _rollup(
     day: AttendanceDay,
@@ -329,6 +362,8 @@ def _rollup(
         is_working_day=day.status.counts_as_worked and not unmeasured,
         unmeasured=unmeasured,
         in_progress=_is_in_progress(day, analysis, today),
+        on_duty=day.has_outdoor_duty,
+        note=day.remarks.strip() if day.remarks.strip() != _ROUTINE_REMARK else "",
     )
 
 
@@ -367,12 +402,18 @@ def _remaining_working_days(
     holidays: list[Holiday],
     today: date | None,
 ) -> int:
-    """Count working days left in the month after the last day the grid covers."""
+    """Count working days left in the month after the last day already accounted for.
+
+    Bounded by today. The grid usually stops at the current day, but a muster re-rendered
+    for an explicitly selected period can carry rows for the whole month — and taking the
+    last row unconditionally then put the cursor on the 31st, so every projection silently
+    became zero. What is left to work is measured from today, whatever the grid volunteers.
+    """
     if not days:
         return 0
 
     last_known = max(day.day for day in days)
-    cursor = max(last_known, today or last_known)
+    cursor = min(last_known, today) if today is not None else last_known
     _, last_day_number = monthrange(year, month)
     month_end = date(year, month, last_day_number)
 

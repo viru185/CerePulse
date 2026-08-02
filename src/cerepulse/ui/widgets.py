@@ -7,6 +7,7 @@ where work happened, where breaks fell, which stretches were inferred from a mis
 
 from __future__ import annotations
 
+from calendar import monthrange
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, timedelta
 
@@ -757,7 +758,10 @@ class MonthHeatmap(QWidget):
 
     #: Weekday initials, Monday first, matching the grid's column order.
     HEADINGS = ("M", "T", "W", "T", "F", "S", "S")
-    CELL = 30
+    #: Floor and ceiling for a cell. Between them the calendar grows with the window rather
+    #: than sitting at a fixed 222 px beside several hundred pixels of nothing.
+    MIN_CELL = 28
+    MAX_CELL = 54
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -765,7 +769,9 @@ class MonthHeatmap(QWidget):
         self._grid = QGridLayout(self)
         self._grid.setContentsMargins(0, 0, 0, 0)
         self._grid.setSpacing(4)
-        self._grid.setColumnStretch(7, 1)
+        for column in range(7):
+            self._grid.setColumnStretch(column, 1)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
     def set_days(
         self,
@@ -773,13 +779,20 @@ class MonthHeatmap(QWidget):
         *,
         target: Duration,
         attention: set[date] | None = None,
+        year: int | None = None,
+        month: int | None = None,
+        today: date | None = None,
     ) -> None:
-        """Render one month.
+        """Render one month — the *whole* month, not only the days that have happened.
 
         Rollups rather than raw grid rows, because a rollup's ``worked`` is comparable with
         the work target. Tinting by ``Tot. Hrs.`` instead compares a gross span against a
         net target, which made an ordinary nine-hour day render as 112% of an eight-hour one
         and turned the whole calendar green.
+
+        Days the portal has no row for are drawn as empty outlines rather than left out.
+        A calendar that stops at today is not a calendar, and on the second of the month it
+        made two cells look like the entire month's worth of data.
         """
         self._clear()
         flagged = attention or set()
@@ -787,25 +800,43 @@ class MonthHeatmap(QWidget):
         for column, initial in enumerate(self.HEADINGS):
             heading = QLabel(initial)
             heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            heading.setFixedWidth(self.CELL)
             heading.setStyleSheet(f"color: {self._palette.text_faint}; font-size: 10px;")
             self._grid.addWidget(heading, 0, column)
 
-        if not days:
+        known = {entry.day: entry for entry in days}
+        span = self._month_days(known, year, month)
+        if not span:
             return
 
         # Row 0 is the weekday headings, so the calendar starts at row 1. Weeks are indexed
         # from the first day's own Monday, which is what keeps columns aligned when a month
         # does not begin on one.
-        first = min(day.day for day in days)
-        origin = first - timedelta(days=first.weekday())
+        origin = span[0] - timedelta(days=span[0].weekday())
+        cutoff = today or date.today()
 
-        for entry in sorted(days, key=lambda item: item.day):
-            when = entry.day
+        for when in span:
             week = (when - origin).days // 7
-            cell = _HeatCell(entry, target, self._palette, flagged=when in flagged)
-            cell.clicked.connect(lambda day=when: self.day_selected.emit(day))
+            entry = known.get(when)
+            if entry is None:
+                cell: QWidget = _FutureCell(when, self._palette, ahead=when > cutoff)
+            else:
+                heat = _HeatCell(entry, target, self._palette, flagged=when in flagged)
+                heat.clicked.connect(lambda day=when: self.day_selected.emit(day))
+                cell = heat
             self._grid.addWidget(cell, week + 1, when.weekday())
+
+    @staticmethod
+    def _month_days(
+        known: dict[date, DayRollup], year: int | None, month: int | None
+    ) -> list[date]:
+        """Every date in the month, taken from the caller or inferred from the rollups."""
+        if year is None or month is None:
+            if not known:
+                return []
+            sample = min(known)
+            year, month = sample.year, sample.month
+        _, last = monthrange(year, month)
+        return [date(year, month, number) for number in range(1, last + 1)]
 
     def _clear(self) -> None:
         while self._grid.count():
@@ -832,11 +863,17 @@ class _HeatCell(QLabel):
         when = entry.day
         super().__init__(str(when.day), parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setFixedSize(MonthHeatmap.CELL, MonthHeatmap.CELL)
+        self.setMinimumSize(MonthHeatmap.MIN_CELL, MonthHeatmap.MIN_CELL)
+        self.setMaximumHeight(MonthHeatmap.MAX_CELL)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         fill, ink = _heat_colours(entry, target, palette)
         border = f"1px solid {palette.bad}" if flagged else "1px solid transparent"
+        if entry.on_duty:
+            # Outdoor duty has no hours to tint by, so without its own mark it renders as
+            # the same grey as a day nobody worked — which is how a week away disappeared.
+            border = f"1px dashed {palette.adjust}"
         self.setStyleSheet(
             f"background-color: {fill}; color: {ink}; border: {border};"
             f" border-radius: 6px; font-size: 11px;"
@@ -847,6 +884,33 @@ class _HeatCell(QLabel):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mouseReleaseEvent(event)
+
+
+class _FutureCell(QLabel):
+    """A day the portal holds nothing for — usually one that has not happened yet.
+
+    Drawn rather than omitted so the calendar is always a whole month. Not clickable: there
+    is nothing behind it, and a cell that responds to a click by doing nothing is worse than
+    one that plainly cannot be clicked.
+    """
+
+    def __init__(
+        self, when: date, palette: Palette, *, ahead: bool, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(str(when.day), parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumSize(MonthHeatmap.MIN_CELL, MonthHeatmap.MIN_CELL)
+        self.setMaximumHeight(MonthHeatmap.MAX_CELL)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setStyleSheet(
+            f"background: transparent; color: {palette.text_faint};"
+            f" border: 1px solid {palette.border}; border-radius: 6px; font-size: 11px;"
+        )
+        self.setToolTip(
+            f"{when:%A, %d %B} — not yet".replace(" 0", " ")
+            if ahead
+            else f"{when:%A, %d %B} — no record".replace(" 0", " ")
+        )
 
 
 def _heat_colours(entry: DayRollup, target: Duration, palette: Palette) -> tuple[str, str]:
@@ -869,11 +933,19 @@ def _heat_colours(entry: DayRollup, target: Duration, palette: Palette) -> tuple
 
 def _heat_tooltip(entry: DayRollup, flagged: bool) -> str:
     label = entry.day.strftime("%A, %d %B").replace(" 0", " ")
+    note = f"\n{entry.note}" if entry.note else ""
     if entry.worked.minutes <= 0:
         state = entry.status.value.replace("_", " ")
-        return f"{label} — {state}"
+        if entry.on_duty:
+            # The remark is the whole story on these days: it is the difference between
+            # "nothing recorded" and "training in Bengaluru".
+            return f"{label} — outdoor duty{note or ' (no swipes to measure)'}"
+        return f"{label} — {state}{note}"
 
     body = f"{label} — {entry.worked} worked"
+    if entry.on_duty:
+        body += ", partly outdoor duty"
+    body += note
     if not entry.is_working_day:
         body += f" ({entry.status.value.replace('_', ' ')})"
     if entry.estimated:
