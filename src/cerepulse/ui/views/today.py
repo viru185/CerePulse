@@ -25,7 +25,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -39,6 +38,7 @@ from cerepulse.ui.theme import Palette, Space
 from cerepulse.ui.widgets import (
     Banner,
     Card,
+    DayJourney,
     DayTimeline,
     InsightStrip,
     NextActionCard,
@@ -47,7 +47,6 @@ from cerepulse.ui.widgets import (
     StatusChip,
     TargetBar,
     card_row,
-    data_table,
 )
 
 #: Insight kinds each next action has already said, so repeating them as a chip directly
@@ -79,6 +78,8 @@ class TodayView(QWidget):
         #: Whether the screen was reached by drilling in from another one, which is what
         #: keeps the context bar up even on today's own date.
         self._drilled_in = False
+        self._status_label = ""
+        self._status_colour: str | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -131,9 +132,9 @@ class TodayView(QWidget):
         self._legend.setObjectName("CardCaption")
         body.addWidget(self._legend)
 
-        body.addWidget(SectionTitle("Punches"))
-        self._punches = data_table(("In", "Out", "Duration", "Note"), fit_rows=True)
-        body.addWidget(self._punches)
+        body.addWidget(SectionTitle("How the day went"))
+        self._journey = DayJourney(palette)
+        body.addWidget(self._journey)
         self._no_punches = QLabel("No punches recorded for this day.")
         self._no_punches.setObjectName("CardCaption")
         body.addWidget(self._no_punches)
@@ -235,20 +236,22 @@ class TodayView(QWidget):
         return host
 
     def _build_cards(self) -> QWidget:
+        # Worked, work remaining and overtime are three readings of one quantity — how the
+        # day stands against its target — so they were three cards saying the same thing in
+        # three ways, each given a quarter of the width to hold four characters. One card
+        # carries the figure and its consequence; break is a separate question and keeps
+        # its own.
+        #
         # Named for what is left rather than what is done. "Break 42m" reads as an
         # achievement; the question anyone actually has at 3 PM is how much of the
         # allowance is still theirs to spend.
         self.worked = Card("Worked", clickable=True)
         self.break_left = Card("Break Remaining", clickable=True)
-        self.work_left = Card("Work Remaining", clickable=True)
-        self.overtime = Card("Overtime", clickable=True)
 
         self.worked.clicked.connect(lambda: self._explain("worked"))
         self.break_left.clicked.connect(lambda: self._explain("break_taken"))
-        self.work_left.clicked.connect(lambda: self._explain("expected_out_break_adjusted"))
-        self.overtime.clicked.connect(lambda: self._explain("worked"))
 
-        return card_row(self.worked, self.break_left, self.work_left, self.overtime)
+        return card_row(self.worked, self.break_left)
 
     # --- rendering ------------------------------------------------------------------
 
@@ -321,7 +324,7 @@ class TodayView(QWidget):
             f"It appears once your first punch of the day is recorded."
         )
 
-        for card in (self.worked, self.break_left, self.work_left, self.overtime):
+        for card in (self.worked, self.break_left):
             card.set_value(fmt.EMPTY)
             card.set_caption("")
         self._next_action.setVisible(False)
@@ -329,6 +332,15 @@ class TodayView(QWidget):
         self._legend.setText("")
         self._insights.set_insights([])
         self._render_punches(None)
+
+    def set_day_context(self, label: str = "", colour: str | None = None) -> None:
+        """Say what a day with no punches actually was — leave, a holiday, outdoor duty.
+
+        Set before :meth:`show_analysis`, because the analysis knows only about punches and
+        a day with none of them is not necessarily a day with nothing in it.
+        """
+        self._status_label = label
+        self._status_colour = colour
 
     def show_analysis(self, analysis: DayAnalysis, *, is_today: bool = True) -> None:
         """Render a day. ``is_today`` drives whether the live countdown runs."""
@@ -351,6 +363,8 @@ class TodayView(QWidget):
             analysis.segments,
             leave_at=analysis.leave_at if analysis.segments else None,
             now=datetime.now() if is_today and analysis.is_ongoing else None,
+            status_label=self._status_label,
+            status_colour=self._status_colour,
         )
         self._legend.setText(self._legend_text(analysis))
         self._render_punches(analysis)
@@ -365,8 +379,24 @@ class TodayView(QWidget):
         palette = self._palette
         empty = analysis.state is DayState.EMPTY
 
+        # One card for the whole target question: what has been worked, and what that
+        # leaves. Remaining and overtime were separate cards, but they are the same fact
+        # read from either side and only one of them is ever non-zero.
         self.worked.set_value(fmt.duration(analysis.worked), accent=palette.work)
-        self.worked.set_caption("" if empty else f"of {analysis.policy.work_target} target")
+        if empty:
+            self.worked.set_caption("nothing logged")
+        elif analysis.work_remaining:
+            self.worked.set_caption(
+                f"of {analysis.policy.work_target} target  ·  "
+                f"{fmt.duration(analysis.work_remaining)} left"
+            )
+        elif analysis.extra_worked:
+            self.worked.set_caption(
+                f"of {analysis.policy.work_target} target  ·  "
+                f"{fmt.duration(analysis.extra_worked)} overtime"
+            )
+        else:
+            self.worked.set_caption(f"of {analysis.policy.work_target} target  ·  target met")
 
         if empty:
             self.break_left.set_value(fmt.EMPTY)
@@ -377,23 +407,6 @@ class TodayView(QWidget):
         else:
             self.break_left.set_value("None", accent=palette.text_muted)
             self.break_left.set_caption(f"{fmt.duration(analysis.break_taken)} taken — over")
-
-        if empty:
-            # Nothing was worked, so "target met" would be actively wrong.
-            self.work_left.set_value(fmt.EMPTY)
-            self.work_left.set_caption("nothing logged")
-        elif analysis.work_remaining:
-            self.work_left.set_value(fmt.duration(analysis.work_remaining), accent=palette.bad)
-            self.work_left.set_caption(f"free at {fmt.clock(analysis.leave_at)}")
-        else:
-            self.work_left.set_value("Done", accent=palette.good)
-            self.work_left.set_caption("target met")
-
-        self.overtime.set_value(
-            fmt.duration(analysis.extra_worked),
-            accent=palette.good if analysis.extra_worked else None,
-        )
-        self.overtime.set_caption("beyond target" if analysis.extra_worked else "")
 
     def _render_presence(self, analysis: DayAnalysis, *, is_today: bool) -> None:
         """Say where you are now, which the four durations between them never did."""
@@ -488,25 +501,8 @@ class TodayView(QWidget):
 
     def _render_punches(self, analysis: DayAnalysis | None) -> None:
         segments = analysis.segments if analysis is not None else ()
-        self._punches.setRowCount(0)
-        self._punches.setVisible(bool(segments))
+        self._journey.set_segments(segments)
         self._no_punches.setVisible(not segments)
-
-        for row, segment in enumerate(segments):
-            self._punches.insertRow(row)
-            note = "end inferred" if segment.end_inferred else ""
-            for column, text in enumerate(
-                (
-                    fmt.clock(segment.start),
-                    fmt.clock(segment.end),
-                    fmt.duration(segment.duration),
-                    note,
-                )
-            ):
-                item = QTableWidgetItem(text)
-                if column == 3 and note:
-                    item.setToolTip("No Out punch was recorded, so this end was reconstructed.")
-                self._punches.setItem(row, column, item)
 
     # --- interaction ----------------------------------------------------------------
 

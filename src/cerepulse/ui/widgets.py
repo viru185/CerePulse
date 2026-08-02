@@ -11,7 +11,7 @@ from calendar import monthrange
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, timedelta
 
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -320,23 +320,30 @@ class SegmentBar(QWidget):
 class DayTimeline(QWidget):
     """The day on a clock axis: work, breaks, every punch, and where the finish line is.
 
-    :class:`SegmentBar` draws the day to scale but anchored to itself — the bar starts at
-    the first punch and ends at the last, so it shows the day's *shape* and cannot show its
-    *position*. Two identical-looking bars can be a 7 AM start and a 2 PM one, and neither
-    can show a finish time that has not been reached.
-
-    Here the axis is wall-clock hours, so the bands sit where they happened, the punches are
+    The axis is wall-clock hours, so the bands sit where they happened, the punches are
     labelled with the times they actually were, and the moment you can leave is a marker on
     the same scale rather than a number somewhere else on the screen.
+
+    Work is a solid block and a break is the thin track showing between two of them, so the
+    difference is carried by *shape* rather than by hue alone — and each is labelled with
+    its own length, because a ten-minute coffee and a ninety-minute lunch used to look
+    identical until you hovered.
+
+    Two modes, chosen from the measured width rather than by the caller. The same widget is
+    drawn at ~870 px on Today and inside a much narrower panel on Attendance; one set of
+    constants tuned for the wide case produced a scribble at the narrow one.
     """
 
-    HEIGHT = 74
-    PUNCH_ROW = 15  # baseline for punch labels, above the bar
-    BAR_TOP = 22
-    BAR_HEIGHT = 24
-    AXIS_TOP = 54
+    #: Below this the hour axis and in-block labels stop fitting, so they are dropped
+    #: rather than overlapped.
+    COMPACT_BELOW = 460
+
+    HEIGHT_FULL = 96
+    HEIGHT_COMPACT = 54
     #: Minimum axis span. A day two hours old would otherwise be drawn at absurd magnification.
     MIN_HOURS = 5
+    #: Narrower than this and a label written inside a block would be clipped.
+    LABEL_FITS = 48
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -346,7 +353,8 @@ class DayTimeline(QWidget):
         self._now: datetime | None = None
         self._start: datetime | None = None
         self._end: datetime | None = None
-        self.setMinimumHeight(self.HEIGHT)
+        self._status_label = ""
+        self._status_colour: str | None = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_day(
@@ -355,14 +363,24 @@ class DayTimeline(QWidget):
         *,
         leave_at: datetime | None = None,
         now: datetime | None = None,
+        status_label: str = "",
+        status_colour: str | None = None,
     ) -> None:
+        """Render a day.
+
+        ``status_label`` is for the days that have no punches and never will — leave, a
+        holiday, outdoor duty. Those used to draw an empty track reading "No punches
+        recorded", which is true and tells the user nothing about a week in Bengaluru.
+        """
         self._segments = segments
         self._leave_at = leave_at
         self._now = now
+        self._status_label = status_label
+        self._status_colour = status_colour
 
         if not segments:
             self._start = self._end = None
-            self.setToolTip("No punches recorded")
+            self.setToolTip(status_label or "No punches recorded")
             self.update()
             return
 
@@ -375,36 +393,96 @@ class DayTimeline(QWidget):
             end = start + timedelta(hours=self.MIN_HOURS)
 
         self._start, self._end = start, end
-        self.setToolTip(
-            "\n".join(
-                f"{_clock_short(segment.start)} – {_clock_short(segment.end)}"
-                f"  ({segment.duration})" + ("  · end inferred" if segment.end_inferred else "")
-                for segment in segments
-            )
-        )
+        self.setToolTip("\n".join(self._describe()))
         self.update()
+
+    def _describe(self) -> list[str]:
+        """The whole day as text, for the tooltip and for anyone reading it aloud."""
+        lines: list[str] = []
+        previous: WorkSegment | None = None
+        for segment in self._segments:
+            if previous is not None:
+                gap = _gap_between(previous, segment)
+                if gap.minutes > 0:
+                    lines.append(f"    break {gap}")
+            lines.append(
+                f"{_clock_short(segment.start)} – {_clock_short(segment.end)}"
+                f"  worked {segment.duration}"
+                + ("  · end inferred" if segment.end_inferred else "")
+            )
+            previous = segment
+        return lines
+
+    # --- geometry ---------------------------------------------------------------------
+
+    @property
+    def _compact(self) -> bool:
+        """Derived from the current width rather than cached.
+
+        The same instance is drawn full-width on Today and in a side panel on Attendance,
+        and a stored flag has to be kept in step with every resize — including the ones Qt
+        delivers before a widget is ever shown. Reading the width is always right.
+        """
+        return self.width() < self.COMPACT_BELOW
+
+    def sizeHint(self) -> QSize:  # noqa: N802 — Qt override
+        """Height follows the mode, which follows the width.
+
+        Asked for rather than pushed: a layout queries this whenever it re-measures, so the
+        widget never has to keep a cached height in step with a resize it might not have
+        been told about yet.
+        """
+        return QSize(self.width(), self.HEIGHT_COMPACT if self._compact else self.HEIGHT_FULL)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 — Qt override
+        return self.sizeHint()
+
+    def resizeEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        # Crossing the threshold changes the height the hints report, so the layout has to
+        # be told to ask again.
+        self.updateGeometry()
+        super().resizeEvent(event)  # type: ignore[arg-type]
+
+    @property
+    def _bar(self) -> QRectF:
+        top = 8.0 if self._compact else 34.0
+        height = 22.0 if self._compact else 28.0
+        return QRectF(0, top, float(self.width()), height)
 
     # --- painting ---------------------------------------------------------------------
 
     def paintEvent(self, event: object) -> None:  # noqa: N802 — Qt override
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        bar = QRectF(0, self.BAR_TOP, self.width(), self.BAR_HEIGHT)
-        radius = self.BAR_HEIGHT / 2
-        track = QPainterPath()
-        track.addRoundedRect(bar, radius, radius)
-        painter.fillPath(track, QColor(self._palette.border))
+        bar = self._bar
 
         if self._start is None or self._end is None:
-            painter.setPen(QColor(self._palette.text_faint))
-            painter.drawText(bar, Qt.AlignmentFlag.AlignCenter, "No punches recorded")
+            self._paint_status(painter, bar)
             return
 
-        self._paint_hours(painter, bar)
-        self._paint_bands(painter, bar, track)
+        self._paint_track(painter, bar)
+        self._paint_breaks(painter, bar)
+        self._paint_work(painter, bar)
         self._paint_markers(painter, bar)
-        self._paint_punches(painter)
+        self._paint_punches(painter, bar)
+        if not self._compact:
+            self._paint_hours(painter, bar)
+
+    def _paint_status(self, painter: QPainter, bar: QRectF) -> None:
+        """One labelled band for a day that has no punches to draw."""
+        colour = QColor(self._status_colour or self._palette.border)
+        path = QPainterPath()
+        path.addRoundedRect(bar, 6, 6)
+        painter.fillPath(path, QColor(colour.red(), colour.green(), colour.blue(), 60))
+        painter.setPen(QPen(colour, 1))
+        painter.drawPath(path)
+
+        painter.setPen(
+            QColor(self._palette.text if self._status_label else self._palette.text_faint)
+        )
+        painter.drawText(
+            bar, Qt.AlignmentFlag.AlignCenter, self._status_label or "No punches recorded"
+        )
 
     def _x_for(self, moment: datetime) -> float:
         assert self._start is not None and self._end is not None
@@ -412,14 +490,119 @@ class DayTimeline(QWidget):
         fraction = (moment - self._start).total_seconds() / total
         return min(max(fraction, 0.0), 1.0) * self.width()
 
+    def _paint_track(self, painter: QPainter, bar: QRectF) -> None:
+        """A thin rule for the whole span. What a break looks like where no block covers it."""
+        line = QRectF(0, bar.center().y() - 1.5, bar.width(), 3)
+        path = QPainterPath()
+        path.addRoundedRect(line, 1.5, 1.5)
+        painter.fillPath(path, QColor(self._palette.border))
+
+    def _paint_breaks(self, painter: QPainter, bar: QRectF) -> None:
+        """Every gap between two work blocks, with its length written in it when it fits."""
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+
+        for previous, following in zip(self._segments, self._segments[1:], strict=False):
+            gap = _gap_between(previous, following)
+            if gap.minutes <= 0:
+                continue
+            left, right = self._x_for(previous.end), self._x_for(following.start)
+            span = QRectF(left, bar.center().y() - 1.5, right - left, 3)
+            painter.fillPath(_rounded(span, 1.5), QColor(self._palette.rest))
+
+            if right - left >= self.LABEL_FITS and not self._compact:
+                painter.setPen(QColor(self._palette.rest))
+                painter.drawText(
+                    QRectF(left, bar.top() - 15, right - left, 13),
+                    Qt.AlignmentFlag.AlignCenter,
+                    str(gap),
+                )
+
+    def _paint_work(self, painter: QPainter, bar: QRectF) -> None:
+        """Solid blocks, each carrying its own duration when there is room to write it."""
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+
+        for segment in self._segments:
+            left = self._x_for(segment.start)
+            width = max(2.0, self._x_for(segment.end) - left)
+            block = QRectF(left, bar.top(), width, bar.height())
+            painter.fillPath(_rounded(block, 4), QColor(self._palette.work))
+            if segment.end_inferred:
+                _hatch(painter, block, self._palette.surface)
+
+            if width >= self.LABEL_FITS:
+                painter.setPen(QColor(self._palette.surface))
+                painter.drawText(block, Qt.AlignmentFlag.AlignCenter, str(segment.duration))
+
+    def _paint_markers(self, painter: QPainter, bar: QRectF) -> None:
+        """The finish line and where the day has got to — both named, not bare lines."""
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+
+        markers = []
+        if self._leave_at is not None:
+            markers.append((self._leave_at, self._palette.good, "leave", True))
+        if self._now is not None:
+            markers.append((self._now, self._palette.text, "now", False))
+
+        for moment, colour, label, dashed in markers:
+            pen = QPen(QColor(colour), 2 if dashed else 1)
+            if dashed:
+                pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            x = self._x_for(moment)
+            painter.drawLine(int(x), int(bar.top() - 5), int(x), int(bar.bottom() + 5))
+            if not self._compact:
+                painter.setPen(QColor(colour))
+                painter.drawText(QRectF(x - 40, 0, 80, 12), Qt.AlignmentFlag.AlignCenter, label)
+
+    def _paint_punches(self, painter: QPainter, bar: QRectF) -> None:
+        """A dot at every punch, with In times above the bar and Out times below it.
+
+        Splitting by direction is what stopped labels being dropped. They used to be skipped
+        whenever two fell within 22 px, so a ten-punch day lost exactly the times it most
+        needed to show. In and Out alternate by nature, so putting each on its own row means
+        neighbours never compete for the same space.
+        """
+        if self._compact:
+            return
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+
+        for segment in self._segments:
+            self._punch(painter, bar, segment.start, above=True, inferred=False)
+            self._punch(painter, bar, segment.end, above=False, inferred=segment.end_inferred)
+
+    def _punch(
+        self, painter: QPainter, bar: QRectF, moment: datetime, *, above: bool, inferred: bool
+    ) -> None:
+        x = self._x_for(moment)
+        colour = QColor(self._palette.text_faint if inferred else self._palette.text)
+        painter.setBrush(colour)
+        painter.setPen(Qt.PenStyle.NoPen)
+        edge = bar.top() - 3 if above else bar.bottom() - 2
+        painter.drawEllipse(QRectF(x - 2.5, edge, 5, 5))
+
+        if inferred:
+            # No time was punched, so writing one would be inventing it.
+            return
+        painter.setPen(colour)
+        top = bar.top() - 17 if above else bar.bottom() + 4
+        painter.drawText(
+            QRectF(x - 26, top, 52, 13), Qt.AlignmentFlag.AlignCenter, _clock_short(moment)
+        )
+
     def _paint_hours(self, painter: QPainter, bar: QRectF) -> None:
-        """Hour gridlines and labels — the thing that makes it a clock rather than a bar."""
+        """The hour axis — what makes it a clock rather than a bar."""
         assert self._start is not None and self._end is not None
         hours = int((self._end - self._start).total_seconds() // 3600)
-        # Label every hour only while they fit; past that, every second or third one.
         step = max(1, -(-hours // 8))
 
-        painter.setPen(QPen(QColor(self._palette.border), 1))
         font = painter.font()
         font.setPointSize(8)
         painter.setFont(font)
@@ -427,84 +610,126 @@ class DayTimeline(QWidget):
         for index in range(0, hours + 1, step):
             moment = self._start + timedelta(hours=index)
             x = self._x_for(moment)
-            painter.setPen(QPen(QColor(self._palette.border), 1))
-            painter.drawLine(int(x), int(bar.top()), int(x), int(bar.bottom()))
             painter.setPen(QColor(self._palette.text_faint))
             painter.drawText(
-                QRectF(x - 24, self.AXIS_TOP, 48, 14),
+                QRectF(x - 24, bar.bottom() + 18, 48, 14),
                 Qt.AlignmentFlag.AlignCenter,
                 _hour_label(moment),
             )
 
-    def _paint_bands(self, painter: QPainter, bar: QRectF, track: QPainterPath) -> None:
-        painter.save()
-        painter.setClipPath(track)
-        # Breaks are the gaps between segments, so painting the span amber and the work over
-        # it in aqua draws both without computing the gaps separately.
-        first, last = self._segments[0].start, self._segments[-1].end
-        painter.fillRect(
-            QRectF(
-                self._x_for(first), bar.top(), self._x_for(last) - self._x_for(first), bar.height()
-            ),
-            QColor(self._palette.rest),
-        )
 
-        for segment in self._segments:
-            left = self._x_for(segment.start)
-            band = QRectF(left, bar.top(), max(1.0, self._x_for(segment.end) - left), bar.height())
-            painter.fillRect(band, QColor(self._palette.work))
-            if segment.end_inferred:
-                _hatch(painter, band, self._palette.surface)
-        painter.restore()
+class DayJourney(QWidget):
+    """The day's punches as a list of events, breaks included.
 
-        painter.setPen(QPen(QColor(self._palette.border), 1))
-        painter.drawPath(track)
+    Replaces a four-column table of In / Out / Duration / Note. That table had one row per
+    *work segment*, so the gaps between them — the thing anyone scanning a punch log is
+    actually looking for — were not rows at all; you had to subtract one row's In from the
+    previous row's Out to find your own lunch. It also stranded three narrow time columns on
+    the left and gave the whole remaining width to a Note column that was empty on almost
+    every row.
 
-    def _paint_markers(self, painter: QPainter, bar: QRectF) -> None:
-        """The finish line, and where the day has got to."""
-        if self._leave_at is not None:
-            pen = QPen(QColor(self._palette.good), 2)
-            pen.setStyle(Qt.PenStyle.DashLine)
-            painter.setPen(pen)
-            x = self._x_for(self._leave_at)
-            painter.drawLine(int(x), int(bar.top() - 4), int(x), int(bar.bottom() + 4))
+    Here every event is a row in the order it happened, work and break alike, and a repaired
+    punch is marked on its own row rather than in a column that exists only for it.
+    """
 
-        if self._now is not None:
-            painter.setPen(QPen(QColor(self._palette.text), 1))
-            x = self._x_for(self._now)
-            painter.drawLine(int(x), int(bar.top() - 4), int(x), int(bar.bottom() + 4))
+    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
 
-    def _paint_punches(self, painter: QPainter) -> None:
-        """A dot and a time at every real punch.
+    def set_segments(self, segments: Sequence[WorkSegment]) -> None:
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
 
-        Labels are dropped, not squeezed, when they would collide: an unreadable overlap of
-        two times is worse than one time and a dot that says a punch is there.
-        """
-        font = painter.font()
-        font.setPointSize(8)
-        painter.setFont(font)
-        occupied = -1000.0
-
-        for segment in self._segments:
-            for moment, inferred in (
-                (segment.start, False),
-                (segment.end, segment.end_inferred),
-            ):
-                x = self._x_for(moment)
-                colour = QColor(self._palette.text_faint if inferred else self._palette.text)
-                painter.setBrush(colour)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.drawEllipse(QRectF(x - 2.5, self.BAR_TOP - 6, 5, 5))
-
-                if inferred or x - 22 < occupied:
-                    continue
-                painter.setPen(colour)
-                painter.drawText(
-                    QRectF(x - 24, self.PUNCH_ROW - 11, 48, 12),
-                    Qt.AlignmentFlag.AlignCenter,
-                    _clock_short(moment),
+        self.setVisible(bool(segments))
+        previous: WorkSegment | None = None
+        for segment in segments:
+            if previous is not None:
+                gap = _gap_between(previous, segment)
+                if gap.minutes > 0:
+                    self._layout.addWidget(
+                        _JourneyRow(
+                            self._palette,
+                            when="",
+                            title=f"Break · {gap}",
+                            detail=(
+                                f"{_clock_short(previous.end)} – {_clock_short(segment.start)}"
+                            ),
+                            colour=self._palette.rest,
+                        )
+                    )
+            self._layout.addWidget(
+                _JourneyRow(
+                    self._palette,
+                    when=f"{_clock_short(segment.start)} – {_clock_short(segment.end)}",
+                    title=f"Worked · {segment.duration}",
+                    detail=(
+                        "the out punch is missing, so this end was inferred"
+                        if segment.end_inferred
+                        else ""
+                    ),
+                    colour=self._palette.work,
+                    muted=segment.end_inferred,
                 )
-                occupied = x + 22
+            )
+            previous = segment
+
+
+class _JourneyRow(QWidget):
+    """One event: a colour stripe, what it was, and when."""
+
+    def __init__(
+        self,
+        palette: Palette,
+        *,
+        when: str,
+        title: str,
+        detail: str,
+        colour: str,
+        muted: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, Space.TIGHT // 2, 0, Space.TIGHT // 2)
+        layout.setSpacing(Space.ROW)
+
+        stripe = QFrame()
+        stripe.setFixedWidth(3)
+        stripe.setStyleSheet(f"background-color: {colour}; border-radius: 2px;")
+        layout.addWidget(stripe)
+
+        heading = QLabel(title)
+        heading.setStyleSheet(f"color: {colour}; font-weight: 600;")
+        layout.addWidget(heading)
+
+        if detail:
+            note = QLabel(detail)
+            note.setObjectName("CardCaption")
+            layout.addWidget(note)
+
+        layout.addStretch(1)
+
+        stamp = QLabel(when)
+        stamp.setObjectName("CardCaption" if muted else "")
+        stamp.setStyleSheet(f"color: {palette.text_muted};")
+        layout.addWidget(stamp)
+
+
+def _rounded(rect: QRectF, radius: float) -> QPainterPath:
+    path = QPainterPath()
+    path.addRoundedRect(rect, radius, radius)
+    return path
+
+
+def _gap_between(previous: WorkSegment, following: WorkSegment) -> Duration:
+    minutes = int((following.start - previous.end).total_seconds() // 60)
+    return Duration(max(0, minutes))
 
 
 def _hatch(painter: QPainter, band: QRectF, colour: str) -> None:

@@ -104,11 +104,9 @@ def test_the_reason_travels_with_the_day() -> None:
 
 
 def test_the_routine_remark_is_not_carried_as_a_note() -> None:
-    """"Attendance Muster" is on every ordinary day and says nothing; carrying it would
+    """ "Attendance Muster" is on every ordinary day and says nothing; carrying it would
     bury the remarks that do say something."""
-    analysis = analyze_month(
-        [day(date(2026, 6, 22))], year=2026, month=6, today=date(2026, 6, 30)
-    )
+    analysis = analyze_month([day(date(2026, 6, 22))], year=2026, month=6, today=date(2026, 6, 30))
     assert analysis.days[0].note == ""
 
 
@@ -118,8 +116,7 @@ def test_the_routine_remark_is_not_carried_as_a_note() -> None:
 def test_a_month_with_no_completed_day_owes_nothing() -> None:
     """August's first two days are a weekend. 168 hours were being presented as owed."""
     weekend = [
-        day(date(2026, 8, d), status=DayStatus.WEEKLY_OFF, total="0.00", ut1="WO")
-        for d in (1, 2)
+        day(date(2026, 8, d), status=DayStatus.WEEKLY_OFF, total="0.00", ut1="WO") for d in (1, 2)
     ]
     analysis = analyze_month(weekend, year=2026, month=8, today=date(2026, 8, 2))
 

@@ -141,25 +141,27 @@ class AttendanceView(QWidget):
         self.average_in = Card("Average in")
         layout.addWidget(card_row(self.worked, self.overtime, self.short_days, self.average_in))
 
-        shape = QHBoxLayout()
-        shape.setSpacing(18)
-        self.heatmap = MonthHeatmap(palette)
-        self.heatmap.day_selected.connect(self.show_day)
-        shape.addWidget(self.heatmap)
-        shape.addWidget(self._build_legend())
-        shape.addStretch(1)
-        layout.addLayout(shape)
-
-        layout.addWidget(SectionTitle("Days"))
-
+        # Two columns that actually divide the width. The calendar used to sit at a fixed
+        # 222 px beside an addStretch, so several hundred pixels to its right were simply
+        # void while the day drawer below was crushed into 300 px.
         body = QHBoxLayout()
         body.setSpacing(Space.GAP)
+
+        left = QVBoxLayout()
+        left.setSpacing(Space.SNUG)
+        self.heatmap = MonthHeatmap(palette)
+        self.heatmap.day_selected.connect(self.show_day)
+        left.addWidget(self.heatmap)
+        left.addWidget(self._build_legend())
+        left.addWidget(SectionTitle("Days"))
         self.table = self._build_table()
-        body.addWidget(self.table, 1)
+        left.addWidget(self.table, 1)
+        body.addLayout(left, 3)
+
         self.drawer = _DayDrawer(palette)
         self.drawer.open_in_today.connect(self.day_selected)
         self.drawer.open_portal.connect(self.open_portal)
-        body.addWidget(self.drawer)
+        body.addWidget(self.drawer, 2)
         layout.addLayout(body, 1)
 
     def _build_header(self) -> QHBoxLayout:
@@ -484,13 +486,15 @@ class _DayDrawer(QWidget):
     open_in_today = Signal(object)  # date
     open_portal = Signal()
 
-    WIDTH = 300
+    #: A floor, not a fixed width. Pinned at 300 px the timeline inside it was drawn at a
+    #: third of the width its constants assumed, and the fact lines wrapped mid-column.
+    MIN_WIDTH = 300
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._palette = palette
         self._entry: _Row | None = None
-        self.setFixedWidth(self.WIDTH)
+        self.setMinimumWidth(self.MIN_WIDTH)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(Space.GAP, 0, 0, 0)

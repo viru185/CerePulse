@@ -269,8 +269,24 @@ def test_the_cards_report_what_is_left_not_what_is_spent(qapp: QApplication) -> 
     view.show_analysis(analysis, is_today=True)
 
     assert view.break_left._value.text() == fmt.duration(analysis.break_remaining)
-    assert view.work_left._value.text() == fmt.duration(analysis.work_remaining)
     assert "taken" in view.break_left._caption.text()
+
+
+def test_worked_carries_its_own_consequence(qapp: QApplication) -> None:
+    """Worked, remaining and overtime were three cards reading one fact from three sides,
+    and only ever one of the latter two was non-zero."""
+    ongoing = analyze_day(punches(("09:00", "in")), day=DAY, now=datetime(2026, 7, 28, 13, 0))
+    view = TodayView(DARK)
+    view.show_analysis(ongoing, is_today=True)
+
+    assert view.worked._value.text() == fmt.duration(ongoing.worked)
+    assert "left" in view.worked._caption.text()
+
+    over = analyze_day(
+        punches(("09:00", "in"), ("13:00", "out"), ("14:00", "in"), ("19:30", "out")), day=DAY
+    )
+    view.show_analysis(over, is_today=False)
+    assert "overtime" in view.worked._caption.text()
 
 
 def test_the_progress_bar_says_what_leaving_now_would_cost(qapp: QApplication) -> None:
