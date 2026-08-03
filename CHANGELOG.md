@@ -2,6 +2,11 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.11.0] - 2026-08-03
+
+### Features
+- Promote 0.11 to stable — the session round trip, and a day you can read
+
 ## [0.11.0-beta.1] - 2026-08-02
 
 ### Chores
