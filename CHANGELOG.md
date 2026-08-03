@@ -4,6 +4,9 @@ All notable changes to CerePulse are documented here.
 
 ## [0.11.0-beta.1] - 2026-08-02
 
+### Chores
+- Regenerate the changelog for 0.11.0-beta.1
+
 ### Documentation
 - Record what 0.11 learned about the portal and the pause
 
