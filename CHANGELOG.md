@@ -2,10 +2,19 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.13.1-beta.1] - 2026-08-04
+
+### Chores
+- Bump to 0.13.1-beta.1
+
+### Features
+- A pin you can trust, and a Records page that stays readable
+
 ## [0.13.0-beta.1] - 2026-08-04
 
 ### Chores
 - Bump to 0.13.0-beta.1
+- Regenerate the changelog for 0.13.0-beta.1
 
 ### Features
 - One source of truth, two filters, and the whole holiday year
