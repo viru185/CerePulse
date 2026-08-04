@@ -2,11 +2,24 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.13.0-beta.1] - 2026-08-04
+
+### Chores
+- Bump to 0.13.0-beta.1
+
+### Features
+- One source of truth, two filters, and the whole holiday year
+- Work out when you actually get home
+- The journey home on Today, and a guide to the key it needs
+
 ## [0.12.0-beta.1] - 2026-08-04
 
 ### Bug Fixes
 - Sign the browser in again, and stop Today going stale by lunchtime
 - Stop timeline labels drawing on top of each other
+
+### Chores
+- Regenerate the changelog for 0.12.0-beta.1
 
 ### Documentation
 - Record the seventh pass's three protocol lessons
