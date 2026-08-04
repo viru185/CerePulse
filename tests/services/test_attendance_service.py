@@ -237,6 +237,7 @@ def test_load_day_fetches_detail_on_demand_and_analyzes(
 def test_load_day_reuses_stored_punches(
     attendance_service: AttendanceService, gateway: FakeGateway
 ) -> None:
+    """A finished day is settled: fetched once, then served from the cache forever."""
     target = date(2026, 7, 1)
     seed_month(gateway, day(target))
     gateway.punches[target] = punches()
@@ -246,6 +247,95 @@ def test_load_day_reuses_stored_punches(
     attendance_service.load_day(EMPLOYEE, target)
 
     assert gateway.detail_fetches == [target]  # fetched once
+
+
+# --- today is never finished being read -----------------------------------------------
+#
+# The complaint this fixes: Today did not update on its own, and the working routine was
+# Attendance → click today → open in Today → sync this day. Four clicks to do what the
+# fifteen-minute timer was supposed to do by itself.
+
+
+def test_today_is_re_fetched_every_time_it_is_read(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """A day still being lived has a punch log that is correct as far as it goes and out of
+    date the moment anyone swipes again. Treating a stored log as settled left Today showing
+    the morning until the user forced a fetch by hand."""
+    target = date(2026, 7, 1)
+    seed_month(gateway, day(target))
+    gateway.punches[target] = punches()
+    attendance_service.load_month(EMPLOYEE, *JULY)
+
+    noon = datetime(2026, 7, 1, 12, 0)
+    attendance_service.load_day(EMPLOYEE, target, now=noon)
+    attendance_service.load_day(EMPLOYEE, target, now=noon)
+
+    assert gateway.detail_fetches == [target, target], "today is never settled"
+
+
+def test_today_stays_in_the_backlog_after_its_first_punch_lands(
+    attendance_service: AttendanceService, gateway: FakeGateway, repos: dict[str, object]
+) -> None:
+    """The root cause. One stored punch row used to satisfy "has detail", so today dropped
+    out of the backlog for good and lunch was never fetched."""
+    target = date(2026, 7, 1)
+    seed_month(gateway, day(target))
+    gateway.punches[target] = punches()
+    attendance_service.load_month(EMPLOYEE, *JULY)
+    attendance_service.backfill_detail(EMPLOYEE, *JULY)
+
+    store = repos["attendance"]
+    assert target in store.days_missing_detail(EMPLOYEE, *JULY, today=target)  # type: ignore[attr-defined]
+    assert target not in store.days_missing_detail(EMPLOYEE, *JULY, today=date(2026, 7, 2))  # type: ignore[attr-defined]
+
+
+def test_the_backlog_puts_today_first(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """The day anyone is actually looking at, refreshed before a month of history behind it."""
+    days = [date(2026, 7, d) for d in range(1, 6)]
+    seed_month(gateway, *[day(d) for d in days])
+    attendance_service.load_month(EMPLOYEE, *JULY)
+
+    attendance_service.backfill_detail(EMPLOYEE, *JULY, batch_size=2)
+
+    assert gateway.detail_fetches[0] == days[-1]
+
+
+# --- one grid, many days --------------------------------------------------------------
+
+
+def test_a_days_detail_reuses_the_grid_it_was_found_in(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """`refresh_day_detail` fetches the month to find the row, then used to throw that page
+    away so `fetch_day_detail` could fetch and re-select it all over again — two GETs and two
+    full-ViewState period postbacks for one day's punches."""
+    target = date(2026, 7, 1)
+    seed_month(gateway, day(target))
+    attendance_service.load_month(EMPLOYEE, *JULY)
+    gateway.month_fetches = 0
+
+    attendance_service.refresh_day_detail(EMPLOYEE, target)
+
+    assert gateway.month_fetches == 1, "the grid is fetched once, not twice"
+    assert gateway.detail_pages == [gateway.fetch_month_page(*JULY)[2]]
+
+
+def test_a_whole_batch_shares_one_grid(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """Twenty days used to mean about sixty requests to do twenty-two requests' worth."""
+    seed_month(gateway, *[day(date(2026, 7, d)) for d in range(1, 6)])
+    attendance_service.load_month(EMPLOYEE, *JULY)
+    gateway.month_fetches = 0
+
+    attendance_service.backfill_detail(EMPLOYEE, *JULY, batch_size=5)
+
+    assert gateway.month_fetches == 1
+    assert len(gateway.detail_pages) == 5
+    assert all(page is not None for page in gateway.detail_pages)
 
 
 def test_the_shift_policy_comes_from_config(gateway: FakeGateway, repos: dict[str, object]) -> None:

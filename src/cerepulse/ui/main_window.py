@@ -45,7 +45,6 @@ from cerepulse.notify.startup import set_registered
 from cerepulse.notify.tray import Tray
 from cerepulse.services.attendance import MonthView
 from cerepulse.services.leave import LeaveView as LeaveData
-from cerepulse.services.portal import MENU_ATTENDANCE, MENU_SWIPE
 from cerepulse.services.scopes import Scope
 from cerepulse.transport import pages
 from cerepulse.ui import formatting as fmt
@@ -172,17 +171,13 @@ class MainWindow(QMainWindow):
         self.attendance.fetch_detail_requested.connect(
             lambda: self._sync.sync_scope(Scope.DAY_DETAIL)
         )
-        self.attendance.open_portal.connect(
-            lambda: self._open_portal(pages.ATTENDANCE_REPORT, menu=MENU_ATTENDANCE)
-        )
+        self.attendance.open_portal.connect(lambda: self._open_portal(pages.ATTENDANCE_REPORT))
         self.today.sync_day_requested.connect(self._sync_day)
         # Through `refresh`, not straight to the service. A Refresh button that cannot end
         # a pause is worse than no button: Records is the screen the portal is opened from,
         # so its Refresh was the one the user reached for and the one that did nothing.
         self.records.refresh_requested.connect(self._refresh_records)
-        self.records.open_portal.connect(
-            lambda: self._open_portal(pages.SWIPE_REQUESTS, menu=MENU_SWIPE)
-        )
+        self.records.open_portal.connect(lambda: self._open_portal(pages.SWIPE_REQUESTS))
         self.records.day_selected.connect(self._open_day)
         self.week.week_changed.connect(self._change_week)
         self.week.day_selected.connect(self._open_day)
@@ -513,16 +508,13 @@ class MainWindow(QMainWindow):
             self._sync.refresh(force=True)
         self._sync.refresh_trends()
 
-    def _open_portal(self, page: str, *, menu: tuple[str, str] | None = None) -> None:
+    def _open_portal(self, page: str) -> None:
         """Open SpineHR in the browser, signed in, and hand the session over.
 
-        ``menu`` names the page by its menu label so the URL carries its privilege token.
-        Without one the portal answers a deep link with the privileges error, which is why
-        the plain ``page`` is only ever a safe fallback.
-
-        Verified against the live portal: a login form scraped here and submitted by a
-        client with none of this app's cookies is accepted, so the browser really can be
-        signed in without the user typing anything.
+        The browser lands on the portal's own home page: the login form is posted at the top
+        level so the cookies it issues are first-party, and that means control passes to the
+        portal the moment it responds. ``page`` is only the fallback destination for when
+        signing in could not be arranged at all.
 
         It is a handover, not a share — a cookie cannot be injected into a browser from
         outside it, so this creates a second session and the portal ends ours. Standing
@@ -547,7 +539,7 @@ class MainWindow(QMainWindow):
                 f"({_message_for(exc)}). It has paused either way."
             )
 
-        self._sync.open_in_browser(page, on_ready=ready, on_error=failed, menu=menu)
+        self._sync.open_in_browser(on_ready=ready, on_error=failed)
 
     def _stand_down(self, message: str = "") -> None:
         """Stop using the portal because something else is signed in as the same user.
@@ -559,6 +551,14 @@ class MainWindow(QMainWindow):
         """
         self._paused = True
         self._auto.stop()
+
+        # The session is gone, so stop pretending otherwise. Left alone, the cookie jar
+        # keeps a dead `.ASPXFORMSAUTH`, `is_authenticated` reports True, and every later
+        # request spends a round trip rediscovering that — while the menu it cached still
+        # holds privilege tokens minted for a session that no longer exists, which come
+        # back as a privileges error rather than an honest sign-in prompt.
+        self._context.client.clear_cookies()
+        self._context.gateway.forget_menu()
         logger.info("Paused: the portal session is in use elsewhere")
 
         self._set_status("Paused — signed in elsewhere")
@@ -614,6 +614,15 @@ class MainWindow(QMainWindow):
         self._sync_panel.raise_()
 
     def _sync_day(self, day: date) -> None:
+        """Fetch one day, ending a pause if there is one.
+
+        Asking for a specific day is the user asking for the session back just as plainly as
+        pressing Refresh is. Without this, pressing it while paused raised
+        ``SessionTakenError`` and did nothing at all — and the way out was to press a
+        different button first, which nothing on screen said.
+        """
+        if self._paused:
+            self._resume()
         self._set_status(f"Fetching {fmt.day_label(day)}…")
         self._sync.sync_day(day)
 
@@ -835,9 +844,9 @@ class MainWindow(QMainWindow):
         kind = getattr(action, "kind", None)
         if kind is ActionKind.OPEN_SWIPE_REQUEST:
             self._copy_request_date(getattr(action, "on", None))
-            self._open_portal(pages.SWIPE_REQUESTS, menu=MENU_SWIPE)
+            self._open_portal(pages.SWIPE_REQUESTS)
         elif kind is ActionKind.OPEN_ATTENDANCE:
-            self._open_portal(pages.ATTENDANCE_REPORT, menu=MENU_ATTENDANCE)
+            self._open_portal(pages.ATTENDANCE_REPORT)
 
     def _copy_request_date(self, day: date | None) -> None:
         """Put the request date on the clipboard, in the portal's own format.

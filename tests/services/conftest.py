@@ -60,6 +60,7 @@ class FakeGateway:
 
         self.month_fetches = 0
         self.detail_fetches: list[date] = []
+        self.detail_pages: list[str | None] = []
         self.leave_fetches = 0
         self.menu_forgotten = 0
 
@@ -78,6 +79,12 @@ class FakeGateway:
         self.menu_forgotten += 1
 
     def fetch_month(self, year: int, month: int) -> tuple[AttendanceMonth, list[ParsedDay]]:
+        found, parsed, _page = self.fetch_month_page(year, month)
+        return found, parsed
+
+    def fetch_month_page(
+        self, year: int, month: int
+    ) -> tuple[AttendanceMonth, list[ParsedDay], str]:
         self._maybe_fail()
         if self.fail_month_with is not None:
             error, self.fail_month_with = self.fail_month_with, None
@@ -90,18 +97,21 @@ class FakeGateway:
             ParsedDay(day=day, detail_ctl=f"ctl{index + 2:02d}")
             for index, day in enumerate(found.days)
         ]
-        return found, parsed
+        return found, parsed, f"<html data-month='{year:04d}-{month:02d}'></html>"
 
     def available_periods(self, html: str | None = None) -> list[tuple[int, int]]:
         self._maybe_fail()
         return list(self.periods)
 
-    def fetch_day_detail(self, day: ParsedDay) -> list[Punch]:
+    def fetch_day_detail(self, day: ParsedDay, *, page: str | None = None) -> list[Punch]:
         self._maybe_fail()
         if self.fail_detail_with is not None:
             error, self.fail_detail_with = self.fail_detail_with, None
             raise error
         self.detail_fetches.append(day.day.day)
+        #: Whether the caller handed over a page it already had, rather than making this
+        #: method fetch the grid again. Recorded so a test can hold the saving in place.
+        self.detail_pages.append(page)
         return self.punches.get(day.day.day, [])
 
     def fetch_leave(self) -> tuple[list[LeaveBalance], list[LeaveTransaction]]:

@@ -1,16 +1,18 @@
 """Signing a browser into the portal without the user typing a password.
 
-Two promises this module made and did not keep until 0.11. It claimed to serve the page
-"exactly one request and then stop" — the handler never shut anything down, so the page and
-the encrypted credential in it stayed on localhost until the app exited. And it accepted a
-``landing`` argument, computed a URL from it, wrote it to ``sessionStorage`` and never went
-there, so every deep link the app passed was inert and the browser always arrived at the
-portal home.
+Three things this module claimed and did not do. It promised to serve the page "exactly one
+request and then stop", while the handler shut nothing down and left an encrypted credential
+on localhost until the app exited. It took a ``landing`` argument it never navigated to. And
+the attempt to fix that second one — posting the login into a hidden iframe so the page could
+survive and redirect — broke signing in altogether, because a cross-origin iframe makes the
+portal's cookies third-party and modern browsers drop them.
+
+The last is why the top-level post is asserted here rather than left to a comment. It looks
+like an implementation detail and it is the entire feature.
 """
 
 from __future__ import annotations
 
-import json
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -33,16 +35,19 @@ LOGIN_PAGE = """
 
 @pytest.fixture
 def served(monkeypatch: pytest.MonkeyPatch) -> Iterator[handover.Handover]:
-    """A real local server, built from a stubbed login page."""
-    client = HttpClient(AppConfig())
+    """A real local server, built from a stubbed login page.
+
+    Patched on the class rather than the instance: the scrape deliberately builds its own
+    cookie-less client, so patching the one handed in would miss it.
+    """
     monkeypatch.setattr(
-        client, "get", lambda *_a, **_k: httpx.Response(200, text=LOGIN_PAGE), raising=True
+        HttpClient, "get", lambda *_a, **_k: httpx.Response(200, text=LOGIN_PAGE), raising=True
     )
-    prepared = handover.prepare(
-        client, "someone", "secret", landing="/Atten/SwipeRequestList.aspx?mnusr=menu__10201"
-    )
+    client = HttpClient(AppConfig())
+    prepared = handover.prepare(client, "someone", "secret")
     yield prepared
     prepared.stop()
+    client.close()
 
 
 def _fetch(url: str) -> str:
@@ -73,28 +78,27 @@ def test_the_password_is_posted_encrypted_not_plain(served: handover.Handover) -
     assert 'name="txtPassword"' in page
 
 
-def test_the_page_navigates_to_its_landing(served: handover.Handover) -> None:
-    """The bug: the landing was computed, stored in sessionStorage and never used, so a
-    deep link arrived at the portal home."""
+def test_the_login_posts_at_the_top_level(served: handover.Handover) -> None:
+    """The 0.11 regression, and the reason this file exists.
+
+    Posting into a hidden iframe let the page survive its own submission and navigate on to
+    a deep link — and silently stopped signing anyone in. The iframe is cross-origin, so the
+    cookies the portal sets inside it are third-party, which Chrome and Edge now block or
+    partition: the login succeeds in the frame and the auth cookie never reaches the
+    top-level context. First-party is the whole mechanism.
+    """
     page = _fetch(served.url)
-    assert "SwipeRequestList.aspx" in page
-    assert "window.location.replace" in page
+
+    assert "<iframe" not in page, "an iframe makes the portal's cookies third-party"
+    assert "target=" not in page, "the form must submit the page it is on"
+    assert 'method="post"' in page
 
 
-def test_the_login_is_posted_into_a_frame_so_the_page_survives_it(
-    served: handover.Handover,
-) -> None:
-    """Submitting at the top level hands control to the portal the moment the response
-    arrives, and nothing can run afterwards to go anywhere else."""
+def test_nothing_navigates_away_after_the_post(served: handover.Handover) -> None:
+    """There is nowhere to navigate *to*: control belongs to the portal from the moment it
+    answers. A leftover redirect would only race it."""
     page = _fetch(served.url)
-    assert 'target="signin"' in page
-    assert '<iframe name="signin"' in page
-
-
-def test_the_landing_is_escaped_as_javascript(served: handover.Handover) -> None:
-    """It is embedded in a script tag, so it is encoded rather than pasted."""
-    page = _fetch(served.url)
-    assert 'var landing = "' in page
+    assert "window.location" not in page
 
 
 # --- one shot, and gone ---------------------------------------------------------------
@@ -130,4 +134,50 @@ def test_a_page_nobody_fetches_still_goes_away() -> None:
     """`server.timeout` never did this: it applies to `handle_request`, and the thread runs
     `serve_forever`, which ignores it."""
     assert handover.TIMEOUT_SECONDS > 0
-    assert json.dumps  # (import kept meaningful for the escaping test above)
+
+
+# --- whose session the form belongs to ------------------------------------------------
+
+
+def test_the_login_form_is_scraped_without_the_app_s_cookies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`hEnSa` is the key the password is encrypted against and the portal mints it per page
+    load. Scraping it through the signed-in client sent the app's auth cookie to a login
+    page that has no business seeing it, and bound the form to a session the browser will
+    never hold."""
+    jars: list[list[str]] = []
+
+    def record(self: HttpClient, *_a: object, **_k: object) -> httpx.Response:
+        jars.append(list(self.cookies.keys()))
+        return httpx.Response(200, text=LOGIN_PAGE)
+
+    monkeypatch.setattr(HttpClient, "get", record, raising=True)
+
+    client = HttpClient(AppConfig())
+    client.cookies.set(".ASPXFORMSAUTH", "a-live-session", domain="cerebulb.spinehr.in")
+
+    prepared = handover.prepare(client, "someone", "secret")
+    prepared.stop()
+    client.close()
+
+    assert jars == [[]], "the scrape must run on an empty jar"
+
+
+def test_the_scrape_does_not_reset_the_eviction_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`looks_evicted` reads how long since the app last spoke. Scraping through the app's
+    own client made it look freshly active at the exact moment it hands the session away —
+    which is the state that makes the next expiry read as a theft rather than an expected
+    loss, and pauses the app for no reason."""
+    monkeypatch.setattr(
+        HttpClient, "get", lambda *_a, **_k: httpx.Response(200, text=LOGIN_PAGE), raising=True
+    )
+
+    client = HttpClient(AppConfig())
+    assert client.seconds_since_last_request is None
+
+    prepared = handover.prepare(client, "someone", "secret")
+    prepared.stop()
+
+    assert client.seconds_since_last_request is None, "the app's client never spoke"
+    client.close()

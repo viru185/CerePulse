@@ -158,19 +158,34 @@ class PortalGateway:
 
     def fetch_month(self, year: int, month: int) -> tuple[AttendanceMonth, list[ParsedDay]]:
         """Fetch one month's attendance grid."""
+        month_data, days, _page = self.fetch_month_page(year, month)
+        return month_data, days
 
-        def get() -> tuple[AttendanceMonth, list[ParsedDay]]:
+    def fetch_month_page(
+        self, year: int, month: int
+    ) -> tuple[AttendanceMonth, list[ParsedDay], str]:
+        """As :meth:`fetch_month`, and hand back the HTML it was parsed from.
+
+        The page is worth more than the rows parsed out of it: it carries the ``__VIEWSTATE``
+        and the ScriptManager that a day-detail postback needs, and it is already showing the
+        right month. Callers that want both used to fetch it twice — once here and once
+        inside :meth:`fetch_day_detail` — which is two GETs and two full-ViewState period
+        postbacks for one day's punches.
+        """
+
+        def get() -> tuple[AttendanceMonth, list[ParsedDay], str]:
             url = self._url(*MENU_ATTENDANCE)
             html = self._auth.check_response(self._client.get(url, follow_redirects=True)).text
 
             if not self._shows_period(html, year, month):
                 html = self._select_period(url, html, year, month)
 
-            return parse_month(html, year=year, month=month)
+            month_data, days = parse_month(html, year=year, month=month)
+            return month_data, days, html
 
         return self._retrying_stale_menu(get)
 
-    def fetch_day_detail(self, day: ParsedDay) -> list[Punch]:
+    def fetch_day_detail(self, day: ParsedDay, *, page: str | None = None) -> list[Punch]:
         """Fetch one day's punch log via the async postback its date link triggers.
 
         The postback target is a **row control in the grid currently on screen** —
@@ -181,34 +196,50 @@ class PortalGateway:
 
         Selecting the day's own month first is therefore not an optimisation, it is what
         makes the target mean the day it was parsed from.
+
+        ``page`` is that already-selected grid, when the caller has one. ``day`` was parsed
+        out of some page, and if that is the page still on screen then re-fetching it is pure
+        duplication — which it was for every caller, since both of them had just called
+        :meth:`fetch_month`. Passing it turns a single day's sync from four requests into
+        two, and a twenty-day drain from about sixty into twenty-two.
+
+        Wrapped in :meth:`_retrying_stale_menu` like every other fetch. It was the one that
+        was not, so a stale privilege token here raised ``PrivilegeError`` — which is a
+        ``ProtocolError``, not a session error, so nothing above could recover from it and
+        "sync this day" simply failed after the portal had been opened in a browser.
         """
         target = day.detail_target()
         if target is None:
             raise ParserError(f"{day.day.day:%d %b} has no clickable date link")
-
         when = day.day.day
-        url = self._url(*MENU_ATTENDANCE)
-        page = self._auth.check_response(self._client.get(url, follow_redirects=True)).text
-        if not self._shows_period(page, when.year, when.month):
-            page = self._select_period(url, page, when.year, when.month)
 
-        script_manager = find_script_manager(page)
-        if script_manager is None:
-            raise ParserError("Attendance page has no ScriptManager; cannot request detail")
-        panels = find_update_panels(page)
+        def get() -> list[Punch]:
+            url = self._url(*MENU_ATTENDANCE)
+            html = page
+            if html is None or not self._shows_period(html, when.year, when.month):
+                html = self._auth.check_response(self._client.get(url, follow_redirects=True)).text
+                if not self._shows_period(html, when.year, when.month):
+                    html = self._select_period(url, html, when.year, when.month)
 
-        payload = async_postback_payload(
-            WebFormsState.from_html(page),
-            script_manager=script_manager,
-            update_panel=panels[0] if panels else "",
-            target=target,
-        )
-        response = self._auth.check_response(
-            self._client.post(
-                url, data=payload, headers=async_postback_headers(self._client.url_for(url))
+            script_manager = find_script_manager(html)
+            if script_manager is None:
+                raise ParserError("Attendance page has no ScriptManager; cannot request detail")
+            panels = find_update_panels(html)
+
+            payload = async_postback_payload(
+                WebFormsState.from_html(html),
+                script_manager=script_manager,
+                update_panel=panels[0] if panels else "",
+                target=target,
             )
-        )
-        return parse_punches(response.text)
+            response = self._auth.check_response(
+                self._client.post(
+                    url, data=payload, headers=async_postback_headers(self._client.url_for(url))
+                )
+            )
+            return parse_punches(response.text)
+
+        return self._retrying_stale_menu(get)
 
     def _shows_period(self, html: str, year: int, month: int) -> bool:
         """True when the page already displays the requested month."""

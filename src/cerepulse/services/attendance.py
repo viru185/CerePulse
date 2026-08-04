@@ -212,9 +212,17 @@ class AttendanceService:
     def load_day(
         self, employee_code: str, day: date, *, now: datetime | None = None
     ) -> DayAnalysis:
-        """Analyze one day from cache, fetching its punch log if not already stored."""
+        """Analyze one day, fetching its punch log when the cache cannot be trusted.
+
+        "Already stored" was the wrong test for today. A day in progress has a punch log that
+        is *correct as far as it goes* and out of date the moment anyone swipes again, so
+        treating a stored log as settled left Today showing the morning until the user forced
+        a fetch by hand. Anything already fetched for a day that has finished is settled and
+        is served from the cache, which is almost every read this method ever does.
+        """
         cached = self._attendance.find_day(employee_code, day)
-        if cached is None or not cached.detail_loaded:
+        stale = day == (now.date() if now else date.today())
+        if cached is None or not cached.detail_loaded or stale:
             self.refresh_day_detail(employee_code, day)
             cached = self._attendance.find_day(employee_code, day)
 
@@ -453,14 +461,20 @@ class AttendanceService:
         return self._attendance.prune_before(employee_code, date(year, month, 1))
 
     def refresh_day_detail(self, employee_code: str, day: date) -> None:
-        """Fetch and store one day's punch log."""
-        _month, parsed = self._gateway.fetch_month(day.year, day.month)
+        """Fetch and store one day's punch log.
+
+        The grid is fetched to find the day's row, and the page it came from goes straight
+        into the postback rather than being thrown away and fetched again — which halves the
+        requests and, more to the point, removes one whole full-ViewState period postback,
+        the single heaviest thing in this path.
+        """
+        _month, parsed, page = self._gateway.fetch_month_page(day.year, day.month)
         target = next((item for item in parsed if item.day.day == day), None)
         if target is None:
             logger.warning("No attendance row for {} to fetch detail for", day)
             return
 
-        punches = self._gateway.fetch_day_detail(target)
+        punches = self._gateway.fetch_day_detail(target, page=page)
         self._attendance.save_day_detail(employee_code, day, punches)
 
     def backfill_detail(
@@ -476,13 +490,20 @@ class AttendanceService:
         Returns how many days were fetched. Bounded on purpose: a fresh month needs roughly
         twenty postbacks, and firing them all at once would stall the refresh and hammer the
         portal for data the user may never open.
+
+        Today is always in the backlog while it is still today, and sorting newest-first puts
+        it at the head of the batch — so the day anyone is actually looking at is the one that
+        gets refreshed first, even when a month of history is still filling in behind it.
         """
         pending = self._attendance.days_missing_detail(employee_code, year, month)
         if not pending:
             return 0
 
         batch = sorted(pending, reverse=True)[:batch_size]
-        _month, parsed = self._gateway.fetch_month(year, month)
+        # One grid for the whole batch, and the same page reused for every postback in it.
+        # Each day used to re-fetch and re-select the month for itself, so a twenty-day drain
+        # made about sixty requests to do twenty-two requests' worth of work.
+        _month, parsed, page = self._gateway.fetch_month_page(year, month)
         by_date = {item.day.day: item for item in parsed}
 
         fetched = 0
@@ -491,7 +512,7 @@ class AttendanceService:
             if target is None:
                 continue
             try:
-                punches = self._gateway.fetch_day_detail(target)
+                punches = self._gateway.fetch_day_detail(target, page=page)
             except CerePulseError as exc:
                 # One bad day must not abandon the batch; it stays in the backlog.
                 logger.warning("Could not fetch detail for {}: {}", day, exc)

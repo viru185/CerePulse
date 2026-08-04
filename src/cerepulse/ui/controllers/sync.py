@@ -21,7 +21,7 @@ from loguru import logger
 from PySide6.QtCore import QObject, Signal
 
 from cerepulse.app import AppContext
-from cerepulse.core.errors import AuthenticationError, CerePulseError
+from cerepulse.core.errors import AuthenticationError
 from cerepulse.services.scopes import Scope
 from cerepulse.ui.workers import TaskRunner
 
@@ -268,25 +268,17 @@ class SyncController(QObject):
             on_error=lambda exc: self.degraded.emit("applications", exc),
         )
 
-    def open_in_browser(
-        self,
-        landing: str,
-        on_ready: Success,
-        on_error: Failure,
-        *,
-        menu: tuple[str, str] | None = None,
-    ) -> None:
+    def open_in_browser(self, on_ready: Success, on_error: Failure) -> None:
         """Sign a browser into the portal, off the GUI thread.
 
         Scraping the login form is a network round trip, so it cannot happen on the GUI
         thread. What comes back is a localhost URL for the caller to open.
 
-        ``menu`` names a page by its (label, section) so the URL can be resolved through the
-        live menu index and arrive carrying its ``?mnusr=`` privilege token. Without one the
-        portal answers a deep link with "You do not have sufficient privileges (ROLE)" —
-        which is why ``landing`` alone can only ever be the home page. Resolved here, before
-        the handover, because handing the session over is what kills the session the menu
-        came from.
+        Where the browser lands is the portal's own decision. It used to take a page to send
+        the browser to, and resolving that through the menu for its privilege token was real
+        work — but the mechanism that would have used it is the one that broke signing in
+        (see :func:`cerepulse.auth.handover._page`), so the argument is gone rather than
+        left in place doing nothing.
         """
         from cerepulse.auth import handover
         from cerepulse.core.secrets import get_password
@@ -294,21 +286,12 @@ class SyncController(QObject):
         username = self._context.config.portal.username
 
         def run() -> object:
-            target = landing
-            if menu is not None:
-                try:
-                    target = self._context.gateway.page_url(*menu)
-                except CerePulseError as exc:
-                    # A deep link is a convenience. Losing it costs the user one click;
-                    # refusing to open the portal at all would cost them the whole trip.
-                    logger.warning("Could not resolve {} through the menu: {}", menu, exc)
-
             password = get_password(username)
             if not password:
                 raise AuthenticationError(
                     "No saved password, so CerePulse cannot sign the browser in for you."
                 )
-            return handover.prepare(self._context.client, username, password, landing=target)
+            return handover.prepare(self._context.client, username, password)
 
         self._runner.submit("handover", run, on_success=on_ready, on_error=on_error)
 

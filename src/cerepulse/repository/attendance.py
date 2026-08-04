@@ -217,25 +217,32 @@ class AttendanceRepository:
 
         return [row_to_attendance_day(row, tuple(grouped.get(row["day"], ()))) for row in rows]
 
-    def days_missing_detail(self, employee_code: str, year: int, month: int) -> list[date]:
-        """Worked days whose punch log is missing — the sync backlog.
+    def days_missing_detail(
+        self, employee_code: str, year: int, month: int, *, today: date | None = None
+    ) -> list[date]:
+        """Worked days whose punch log is missing or out of date — the sync backlog.
 
-        Two cases, not one. The obvious one is a day never fetched. The other is a day the
-        portal answered with nothing *at the time*, which is what it does for the day still
-        in progress: the empty result was recorded as "fetched, nothing there", the backlog
-        forgot about it, and the day was left permanently with no punches. Today then showed
-        a single In and a single Out — the pair reconstructed from the monthly grid — for a
-        day that really had ten punches, and no amount of refreshing brought them back.
+        Three cases. The obvious one is a day never fetched. The second is a day the portal
+        answered with nothing *at the time*, which is what it does for a day still in
+        progress: the empty result was recorded as "fetched, nothing there", the backlog
+        forgot about it, and the day was left permanently with no punches. An empty punch log
+        is legitimate on its own; what makes it a contradiction is the grid reporting hours
+        for the same day. A day with 9:27 on it has punches somewhere.
 
-        An empty punch log stays legitimate on its own; what makes it a contradiction is the
-        grid reporting hours for the same day. A day with 9:27 on it has punches somewhere.
+        The third is **today**, and it is why this method exists in its present form. A day
+        still being lived is never finished being read: the 08:30 fetch stores the arrival
+        and nothing else has happened yet. Under the old predicate that single punch row was
+        enough to satisfy "has detail", so today dropped out of the backlog for good and
+        lunch and the evening out were never fetched. Every automatic path then re-rendered
+        the morning. The only way to see the rest of the day was to press "Sync this day" by
+        hand, which is what the user ended up doing four clicks at a time.
 
-        The retry is bounded by ``detail_synced_at``, and it has to be: ``drain_detail``
-        loops until the backlog empties, so a day that is genuinely empty and permanently
-        eligible would never let it finish. A fetch made on or before the day itself was
-        made while the day was still running and is worth one more try; a fetch made
-        afterwards that still found nothing has settled the question.
+        So today is always eligible while it is still today. That does not put ``drain_detail``
+        back at risk of looping — the bound that migration 2 exists for still holds for every
+        *other* day, and today stops being today. It costs one postback per refresh, for the
+        one day whose answer is guaranteed to have changed.
         """
+        now = today or date.today()
         rows = self.database.execute(
             """
             SELECT day FROM attendance_day
@@ -244,6 +251,7 @@ class AttendanceRepository:
                AND status IN ('present', 'half_day')
                AND (
                      detail_loaded = 0
+                  OR day = ?
                   OR (
                         total_minutes > 0
                     AND (detail_synced_at IS NULL OR substr(detail_synced_at, 1, 10) <= day)
@@ -256,7 +264,7 @@ class AttendanceRepository:
                  )
              ORDER BY day
             """,
-            (employee_code, f"{year:04d}-{month:02d}"),
+            (employee_code, f"{year:04d}-{month:02d}", now.isoformat()),
         ).fetchall()
         return [date.fromisoformat(row["day"]) for row in rows]
 

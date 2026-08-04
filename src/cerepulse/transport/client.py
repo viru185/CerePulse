@@ -22,6 +22,11 @@ from cerepulse.core.errors import ServerUnavailableError, TransportError
 #: Status codes worth retrying. Auth and client errors are never retried (section 8).
 RETRYABLE_STATUS = frozenset({502, 503, 504})
 
+#: How long an idle connection is kept for reuse. Longer than any pause between two things
+#: a person does, which is the point: the default of five seconds meant every interaction
+#: began with a fresh TLS handshake.
+KEEPALIVE_SECONDS = 120.0
+
 _BROWSER_ACCEPT = (
     "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,"
     "image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
@@ -32,7 +37,7 @@ class HttpClient:
     """Thin, retrying wrapper around ``httpx.Client`` scoped to one portal host."""
 
     def __init__(self, config: AppConfig) -> None:
-        self._config = config
+        self.config = config
         network = config.network
         self.base_url = config.portal.base_url.rstrip("/")
         #: Monotonic stamp of the last request, for telling an idle timeout from an eviction.
@@ -45,6 +50,19 @@ class HttpClient:
                 write=network.write_timeout,
                 pool=network.pool_timeout,
             ),
+            # httpx defaults `keepalive_expiry` to 5 seconds, which is shorter than any gap
+            # between two things a person does. Every request was therefore paying for a
+            # fresh TCP and TLS handshake — five of them on a single day's sync, against a
+            # remote host, for no reason. The portal keeps connections alive far longer than
+            # this; the ceiling here is ours, not theirs.
+            limits=httpx.Limits(
+                max_keepalive_connections=8,
+                max_connections=16,
+                keepalive_expiry=KEEPALIVE_SECONDS,
+            ),
+            # `httpx[http2]` has been a declared dependency since the first release and the
+            # flag was never passed, so the extra was installed and unused.
+            http2=True,
             follow_redirects=False,
             headers={
                 "User-Agent": network.user_agent,
@@ -114,7 +132,7 @@ class HttpClient:
     def request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         """Send a request, retrying only transient failures (Chapter 03 section 8)."""
         url = self.url_for(path)
-        attempts = self._config.network.max_retries + 1
+        attempts = self.config.network.max_retries + 1
         last_error: Exception | None = None
 
         for attempt in range(attempts):
@@ -166,7 +184,7 @@ class HttpClient:
         """Back off exponentially. Returns False when no attempts remain."""
         if attempt >= attempts - 1:
             return False
-        delay = self._config.network.backoff_factor * (2**attempt)
+        delay = self.config.network.backoff_factor * (2**attempt)
         logger.debug("Retrying in {:.2f}s", delay)
         time.sleep(delay)
         return True

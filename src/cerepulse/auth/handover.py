@@ -24,11 +24,9 @@ itself would have posted.
 from __future__ import annotations
 
 import html
-import json
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urljoin
 
 from loguru import logger
 
@@ -77,22 +75,25 @@ class Handover:
         self._thread.join(timeout=2)
 
 
-def prepare(client: HttpClient, username: str, password: str, *, landing: str = "") -> Handover:
+def prepare(client: HttpClient, username: str, password: str) -> Handover:
     """Build the auto-submitting login page and serve it once from localhost.
 
-    ``landing`` is where to send the browser after login. It is a portal path, and the
-    portal refuses a deep link that carries no menu privilege token — so the default is the
-    home page, which is always reachable, rather than a URL that would land on "you do not
-    have sufficient privileges".
+    Where the browser ends up is the portal's decision, not ours: the form posts top-level
+    to the login endpoint and the portal redirects to its own home page. A ``landing``
+    argument used to be threaded through here to send the browser somewhere specific; it
+    never worked, and the attempt to make it work is what broke signing in. See :func:`_page`.
+
+    The login form is scraped through a **cookie-less** client. ``hEnSa`` is the AES key the
+    password is encrypted against and the portal mints it per page load; scraping it through
+    the app's authenticated client bound it to a session the browser does not have, which is
+    the wrong session to be logging in from twice over.
     """
     state = _login_state(client)
     fields = dict(state.postback("btnLogin", ""))
     fields["txtUser"] = username
     fields["txtPassword"] = encrypt_password(password, state.require("hEnSa"))
 
-    action = client.url_for(pages.LOGIN)
-    target = urljoin(client.base_url + "/", (landing or pages.HOME).lstrip("/"))
-    page = _page(action, fields, target)
+    page = _page(client.url_for(pages.LOGIN), fields)
 
     token = secrets.token_urlsafe(16)
     # The handler needs the Handover to shut itself down, and the Handover needs the server
@@ -116,28 +117,41 @@ def prepare(client: HttpClient, username: str, password: str, *, landing: str = 
 
 
 def _login_state(client: HttpClient) -> WebFormsState:
-    response = client.get(pages.LOGIN)
-    if response.status_code != 200:
-        raise ProtocolError(f"Login page returned {response.status_code}")
-    return WebFormsState.from_html(response.text)
+    """Scrape the login form through a throwaway client with an empty cookie jar.
+
+    Two reasons not to use the app's own client. It is signed in, so the GET would carry
+    ``.ASPXFORMSAUTH`` to a login page that has no business seeing it. And every request the
+    app makes stamps the clock ``looks_evicted`` reads — so scraping through it made the app
+    look freshly active at the exact moment it is about to hand the session away, which is
+    the state that makes the next expiry read as a theft rather than an expected loss.
+    """
+    with HttpClient(client.config) as anonymous:
+        response = anonymous.get(pages.LOGIN)
+        if response.status_code != 200:
+            raise ProtocolError(f"Login page returned {response.status_code}")
+        return WebFormsState.from_html(response.text)
 
 
-def _page(action: str, fields: dict[str, str], landing: str) -> bytes:
-    """A form that posts itself the moment it loads, then follows on to the landing page.
+def _page(action: str, fields: dict[str, str]) -> bytes:
+    """A form that posts itself, at the top level, the moment it loads.
 
     Rendered as hidden inputs rather than assembled as a URL: the credential must not end
     up in a query string, where it would be written to the browser's history and to every
     proxy log on the way.
 
-    The post goes into a hidden iframe rather than the top window, which is what makes the
-    landing page reachable at all. Submitting at the top level hands control to the portal
-    the instant the response arrives, and nothing can run afterwards to go anywhere else —
-    which is why ``landing`` was computed, stored and silently ignored until now. In the
-    iframe the login completes, the browser keeps the cookies it was issued, and this page
-    survives to navigate.
+    **The post must be top-level.** 0.11 submitted it into a hidden iframe so this page
+    would survive its own submission and could then navigate on to a deep link. It does
+    survive — and the sign-in silently stops working, because the iframe is cross-origin.
+    The portal's cookies are third-party in that context, which Chrome and Edge now block or
+    partition by default: the login genuinely succeeds inside the frame and the
+    ``.ASPXFORMSAUTH`` it issues never reaches the top-level browsing context. The user
+    lands on the portal looking signed out.
 
-    The iframe is cross-origin, so its contents cannot be read; only that it finished
-    loading. That is enough, and reading more would be the browser correctly refusing.
+    Posting at the top level makes those cookies first-party, which is the whole mechanism.
+    The cost is that control is handed to the portal the instant the response arrives, so
+    the browser goes wherever the portal's own login sends it — its home page. That is the
+    trade, taken deliberately this time: signing in is the point, and the deep link was
+    never worth breaking it for.
     """
     inputs = "\n".join(
         f'<input type="hidden" name="{html.escape(name)}" value="{html.escape(value)}">'
@@ -151,27 +165,8 @@ def _page(action: str, fields: dict[str, str], landing: str) -> bytes:
 <p style="color:#888;font-size:.9em">
 CerePulse has handed its session over and paused. It will not sign back in until you ask it
 to.</p>
-<form id="f" method="post" target="signin" action="{html.escape(action)}">{inputs}</form>
-<iframe name="signin" style="display:none" title="sign-in"></iframe>
-<script>
-  var landing = {json.dumps(landing)};
-  var frame = document.getElementsByName("signin")[0];
-  var gone = false;
-  function go() {{
-    if (gone) return;
-    gone = true;
-    window.location.replace(landing);
-  }}
-  // The iframe fires load once for its initial blank document and again when the login
-  // response lands; only the second one means the cookies exist.
-  var loads = 0;
-  frame.addEventListener("load", function () {{ if (++loads >= 2) go(); }});
-  // A backstop, because a login that redirects oddly could leave that count short. Landing
-  // signed out is recoverable — the portal shows its login page — and hanging on this
-  // screen is not.
-  setTimeout(go, 8000);
-  document.getElementById("f").submit();
-</script>
+<form id="f" method="post" action="{html.escape(action)}">{inputs}</form>
+<script>document.getElementById("f").submit();</script>
 </body>""".encode()
 
 
