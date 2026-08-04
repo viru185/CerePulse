@@ -2,7 +2,22 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.12.0-beta.1] - 2026-08-04
+
+### Bug Fixes
+- Sign the browser in again, and stop Today going stale by lunchtime
+- Stop timeline labels drawing on top of each other
+
+### Documentation
+- Record the seventh pass's three protocol lessons
+
+### Features
+- Real Windows toasts, and something worth saying in them
+
 ## [0.11.0] - 2026-08-03
+
+### Chores
+- Regenerate the changelog for 0.11.0
 
 ### Features
 - Promote 0.11 to stable — the session round trip, and a day you can read
