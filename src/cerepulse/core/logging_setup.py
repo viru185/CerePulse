@@ -60,6 +60,11 @@ _JSON_PATTERNS = [
 # Whole-header redaction — a Cookie header may carry several secrets at once.
 _HEADER_PATTERN = re.compile(r"^(\s*(?:set-)?cookie\s*:\s*).*$", re.IGNORECASE | re.MULTILINE)
 
+# The maps provider takes its API key as a query parameter, so any logged URL would carry
+# the user's key in clear text. Anchored on `?` or `&` rather than added to the key list
+# above, because a bare "key" substring would also redact words that merely end in it.
+_API_KEY_PATTERN = re.compile(r"([?&](?:key|api-key|subscription-key)=)[^&\s]+", re.IGNORECASE)
+
 
 def redact(text: str) -> str:
     """Strip secret values out of ``text``, preserving the surrounding structure."""
@@ -67,6 +72,7 @@ def redact(text: str) -> str:
         text = pattern.sub(replacement, text)
     for pattern, replacement in _JSON_PATTERNS:
         text = pattern.sub(replacement, text)
+    text = _API_KEY_PATTERN.sub(rf"\1{_PLACEHOLDER}", text)
     return _HEADER_PATTERN.sub(rf"\1{_PLACEHOLDER}", text)
 
 

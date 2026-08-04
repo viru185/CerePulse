@@ -103,6 +103,40 @@ class LeaveRulesConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class CommuteConfig:
+    """The journey home. Off until there is both a key and a destination.
+
+    Coordinates are stored beside the addresses so geocoding runs when an address changes
+    rather than on every estimate. The typed text is kept as well as the resolved point, so
+    Settings can show *what it matched* — an address that quietly geocoded to the next city
+    produces a perfectly plausible travel time, and being shown the match is the only way
+    anybody catches it.
+
+    The API key is **not** here. It goes to the Windows Credential Manager with the portal
+    password; a secret in a plain-text config file beside the logs is a secret in two places.
+    """
+
+    enabled: bool = False
+    #: Where the working day ends. Configurable rather than hardcoded, but defaulted to the
+    #: office this was built for so the common case is one address to type, not two.
+    origin: str = "GIFT City, Gandhinagar, Gujarat, India"
+    origin_lat: float = 0.0
+    origin_lon: float = 0.0
+    destination: str = ""
+    destination_lat: float = 0.0
+    destination_lon: float = 0.0
+    #: car | motorcycle | bus | bicycle | pedestrian. A typo resolves to car rather than
+    #: refusing to route at all.
+    mode: str = "motorcycle"
+    #: Reaching the vehicle, parking, the walk at either end — a fact about a building
+    #: rather than about the road, so only the user can supply it.
+    buffer_minutes: int = 5
+    #: A ceiling the app cannot exceed in a day, whatever goes wrong. The realistic use is
+    #: one or two calls, so this is a runaway guard rather than a budget anyone will feel.
+    max_calls_per_day: int = 40
+
+
+@dataclass(frozen=True, slots=True)
 class LoggingConfig:
     level: str = "INFO"
 
@@ -131,6 +165,7 @@ class AppConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     updates: UpdateConfig = field(default_factory=UpdateConfig)
     leave_rules: LeaveRulesConfig = field(default_factory=LeaveRulesConfig)
+    commute: CommuteConfig = field(default_factory=CommuteConfig)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
@@ -208,4 +243,5 @@ _SECTION_TYPES: dict[str, Any] = {
     "logging": LoggingConfig,
     "updates": UpdateConfig,
     "leave_rules": LeaveRulesConfig,
+    "commute": CommuteConfig,
 }

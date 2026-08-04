@@ -105,6 +105,21 @@ class MigrationError(RepositoryError):
     user_message = "Could not upgrade the local database."
 
 
+# --- Commute -----------------------------------------------------------------------
+
+
+class CommuteError(CerePulseError):
+    """The travel-time provider could not answer.
+
+    Deliberately outside the transport/protocol hierarchy above: those describe SpineHR, and
+    a maps provider being down must never read as the HR portal being down or as a session
+    problem. Nothing about attendance depends on this, so it degrades to one card saying it
+    could not work out the journey.
+    """
+
+    user_message = "Could not work out your journey home."
+
+
 # --- Configuration -----------------------------------------------------------------
 
 
