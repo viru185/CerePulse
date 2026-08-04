@@ -84,12 +84,31 @@ def test_a_failed_transaction_rolls_back(database: Database) -> None:
 
 
 def test_clear_cache_empties_data_but_keeps_the_schema(database: Database) -> None:
+    from cerepulse.models.application import Application, ApplicationKind
     from cerepulse.repository.attendance import AttendanceRepository
+    from cerepulse.repository.leave import ApplicationRepository
 
     AttendanceRepository(database).save_month(make_month(make_day(date(2026, 7, 1))))
+    ApplicationRepository(database).save_all(
+        EMPLOYEE,
+        [
+            Application(
+                app_id="6856",
+                kind=ApplicationKind.OUTDOOR_DUTY,
+                start=date(2026, 6, 14),
+                end=date(2026, 6, 19),
+                days=5.5,
+                remark="Client site",
+                status=SwipeStatus.APPROVED,
+            )
+        ],
+    )
     database.clear_cache()
 
     assert database.execute("SELECT COUNT(*) AS n FROM attendance_day").fetchone()["n"] == 0
+    # Omitted from the wipe list until 0.13, so "clear the cache" left every filed
+    # application behind — the one table a stuck sync most needs cleared.
+    assert database.execute("SELECT COUNT(*) AS n FROM application").fetchone()["n"] == 0
     assert current_version(database.connection) == SCHEMA_VERSION
 
 
@@ -176,13 +195,17 @@ def test_transactions_filter_by_type(leave: LeaveRepository) -> None:
 # --- swipe requests -------------------------------------------------------------------
 
 
-def swipe(day: date, status: SwipeStatus = SwipeStatus.IN_PROCESS) -> SwipeRequest:
+def swipe(
+    day: date,
+    status: SwipeStatus = SwipeStatus.IN_PROCESS,
+    remark: str = "Extra night work",
+) -> SwipeRequest:
     return SwipeRequest(
         for_date=day,
         direction="In",
         in_time=time(9, 0),
         out_time=None,
-        remark="Extra night work",
+        remark=remark,
         status=status,
     )
 
@@ -214,6 +237,62 @@ def test_swipe_requests_filter_by_month(swipes: SwipeRequestRepository) -> None:
     assert [r.for_date for r in swipes.find_for_month(EMPLOYEE, 2026, 7)] == [date(2026, 7, 24)]
 
 
+def test_two_requests_for_one_day_and_punch_both_survive(
+    swipes: SwipeRequestRepository,
+) -> None:
+    """The portal really does carry these — a second request filed because the first looked
+    like it had not gone through.
+
+    Until 0.13 the primary key was day and punch alone, so the second silently upserted over
+    the first and one of two real records vanished on save. It also made
+    ``duplicate_requests`` unreachable: it groups by exactly that key, so the schema
+    guaranteed the condition it warns about could never exist in the cache.
+    """
+    day = date(2026, 7, 24)
+    swipes.save_all(
+        EMPLOYEE,
+        [swipe(day, remark="Extra night work"), swipe(day, remark="Filed again, no response")],
+    )
+
+    loaded = swipes.find_all(EMPLOYEE)
+    assert len(loaded) == 2
+    assert {request.remark for request in loaded} == {
+        "Extra night work",
+        "Filed again, no response",
+    }
+
+
+def test_the_repository_keys_on_the_models_own_identity(
+    swipes: SwipeRequestRepository,
+) -> None:
+    """One definition, used by the fetch and the store. They disagreed before, and the
+    mismatch was invisible from either side."""
+    first, second = swipe(date(2026, 7, 24)), swipe(date(2026, 7, 24), remark="different")
+    assert first.identity != second.identity
+
+    swipes.save_all(EMPLOYEE, [first, second])
+    assert len({request.identity for request in swipes.find_all(EMPLOYEE)}) == 2
+
+
+def test_a_withdrawn_request_disappears(swipes: SwipeRequestRepository) -> None:
+    """The portal stops mentioning a withdrawn request rather than marking it gone, so a
+    save that could only ever add left it on the timeline forever."""
+    swipes.save_all(EMPLOYEE, [swipe(date(2026, 7, 24)), swipe(date(2026, 7, 25))])
+    swipes.save_all(EMPLOYEE, [swipe(date(2026, 7, 24))])
+
+    assert [request.for_date for request in swipes.find_all(EMPLOYEE)] == [date(2026, 7, 24)]
+
+
+def test_replacing_one_employee_leaves_another_alone(
+    swipes: SwipeRequestRepository,
+) -> None:
+    swipes.save_all("OTHER", [swipe(date(2026, 7, 20))])
+    swipes.save_all(EMPLOYEE, [swipe(date(2026, 7, 24))])
+
+    assert len(swipes.find_all("OTHER")) == 1
+    assert len(swipes.find_all(EMPLOYEE)) == 1
+
+
 # --- holidays -------------------------------------------------------------------------
 
 
@@ -224,6 +303,18 @@ def test_holidays_round_trip_and_upsert(holidays: HolidayRepository) -> None:
     loaded = holidays.find_all()
     assert len(loaded) == 1
     assert loaded[0].name == "Uttarayan"
+
+
+def test_a_holiday_the_company_moved_does_not_linger_on_both_dates(
+    holidays: HolidayRepository,
+) -> None:
+    """Merging meant a rescheduled holiday stayed on the old date forever — and since the
+    optimizer and every working-day count read this table, a phantom day off is not
+    cosmetic."""
+    holidays.save_all([Holiday(day=date(2026, 9, 14), weekday="Monday", name="Samvatsari")])
+    holidays.save_all([Holiday(day=date(2026, 9, 15), weekday="Tuesday", name="Samvatsari")])
+
+    assert [holiday.day for holiday in holidays.find_all()] == [date(2026, 9, 15)]
 
 
 def test_holidays_filter_by_range(holidays: HolidayRepository) -> None:

@@ -101,6 +101,45 @@ def build_records(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class HolidayEntry:
+    """One company holiday, placed relative to today."""
+
+    holiday: Holiday
+    #: The date is behind us. Rendered dimmed rather than hidden — "what have I already had"
+    #: is half of what anyone opens a holiday list to find out.
+    has_passed: bool
+    #: The soonest one still ahead. Exactly one entry carries this, unless the year is spent.
+    is_next: bool
+
+    @property
+    def day(self) -> date:
+        return self.holiday.day
+
+
+def holiday_calendar(holidays: list[Holiday], *, today: date) -> list[HolidayEntry]:
+    """The published calendar in date order, with the past marked and the next one flagged.
+
+    Separate from :func:`build_records` on purpose. The timeline answers "what happened to my
+    time" and bounds holidays to the month on screen, because a calendar running a year ahead
+    would bury the things that actually happened. This answers a different question — "what
+    days off does the company give, and which are left" — and for that the whole year is the
+    point.
+
+    Ascending, unlike the timeline: a calendar is read forwards.
+    """
+    ordered = sorted(holidays, key=lambda holiday: holiday.day)
+    upcoming = next((holiday.day for holiday in ordered if holiday.day >= today), None)
+    return [
+        HolidayEntry(
+            holiday=holiday,
+            has_passed=holiday.day < today,
+            is_next=holiday.day == upcoming,
+        )
+        for holiday in ordered
+    ]
+
+
 def _from_days(days: list[AttendanceDay], applications: list[Application]) -> list[Record]:
     """The muster's own view of a day, with the filed application's status where there is one.
 
@@ -369,4 +408,4 @@ def _status_word(status: SwipeStatus) -> str:
     }.get(status, "filed")
 
 
-__all__ = ["Record", "RecordKind", "build_records"]
+__all__ = ["HolidayEntry", "Record", "RecordKind", "build_records", "holiday_calendar"]

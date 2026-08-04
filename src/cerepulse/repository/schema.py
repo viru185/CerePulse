@@ -23,7 +23,7 @@ from loguru import logger
 from cerepulse.core.errors import MigrationError
 
 #: Bumped whenever a migration is added. Checked against the database on open.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _migration_001(connection: sqlite3.Connection) -> None:
@@ -201,6 +201,55 @@ def _migration_005(connection: sqlite3.Connection) -> None:
     """)
 
 
+def _migration_006(connection: sqlite3.Connection) -> None:
+    """Widen the swipe-request key to the identity the fetch has always used.
+
+    The portal gives these rows no id, so identity is rebuilt from the fields — and there
+    were two different answers to what those fields are. ``_absorb`` treats a request as
+    unique by day, punch *and remark*; the primary key only ever used day and punch. A
+    portal that genuinely carries two requests for one day and punch therefore lost one of
+    them on save, silently, because the second upserted over the first.
+
+    It also made ``duplicate_requests`` unreachable: it groups by exactly the key it reads
+    through, so the schema guaranteed the condition it looks for could never occur, and the
+    warning it exists to raise could never fire.
+
+    SQLite cannot alter a primary key, so the table is rebuilt. Rows that collided under the
+    old key are already lost and cannot be recovered here — the next sync refetches them,
+    which is the whole reason nothing but parsed models is ever stored.
+    """
+    connection.executescript("""
+        CREATE TABLE swipe_request_rebuilt (
+            employee_code TEXT NOT NULL,
+            for_date      TEXT NOT NULL,
+            direction     TEXT NOT NULL DEFAULT '',
+            in_time       TEXT,
+            out_time      TEXT,
+            remark        TEXT NOT NULL DEFAULT '',
+            status        TEXT NOT NULL,
+            approve_date  TEXT,
+            category      TEXT NOT NULL DEFAULT '',
+            synced_at     TEXT NOT NULL,
+            kind          TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (employee_code, for_date, direction, remark)
+        );
+
+        INSERT INTO swipe_request_rebuilt (
+            employee_code, for_date, direction, in_time, out_time,
+            remark, status, approve_date, category, synced_at, kind
+        )
+        SELECT employee_code, for_date, direction, in_time, out_time,
+               remark, status, approve_date, category, synced_at, kind
+          FROM swipe_request;
+
+        DROP TABLE swipe_request;
+        ALTER TABLE swipe_request_rebuilt RENAME TO swipe_request;
+
+        -- Dropped with the old table; the month query depends on it.
+        CREATE INDEX idx_swipe_request_for_date ON swipe_request (for_date);
+    """)
+
+
 #: Ordered migrations. Append only; never edit one that has shipped.
 MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migration_001,
@@ -208,6 +257,7 @@ MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migration_003,
     _migration_004,
     _migration_005,
+    _migration_006,
 )
 
 

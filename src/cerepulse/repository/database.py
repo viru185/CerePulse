@@ -162,6 +162,10 @@ class Database:
             "leave_balance",
             "leave_transaction",
             "swipe_request",
+            # Omitted until 0.13, so "clear the cache" left every filed leave, outdoor-duty
+            # and comp-off application behind — the one table a stuck sync most needs
+            # cleared.
+            "application",
             "holiday",
             "sync_metadata",
             "employee",

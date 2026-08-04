@@ -122,22 +122,37 @@ class SwipeRequestRepository:
         *,
         synced_at: datetime | None = None,
     ) -> None:
+        """Replace every stored request with the fetched set, atomically.
+
+        A replace rather than a merge because the fetch covers *all* of the portal's status
+        views, so the window it describes is "everything" — and a merge could only ever add.
+        A request the user withdrew would otherwise sit on the timeline forever, since the
+        portal stops mentioning it rather than marking it gone.
+
+        Safe to replace only because a partial fetch never reaches here: ``_status_views``
+        yields lazily and any view that fails propagates out of ``fetch_swipe_requests``
+        before a save is attempted. Nothing in this method may be called with "what we
+        managed to get" — that is how a failed fetch becomes an empty screen the TTL then
+        protects for the rest of the day.
+        """
         stamp = (synced_at or datetime.now()).isoformat()
         rows = [
             swipe_request_to_row(request, employee_code=employee_code, synced_at=stamp)
             for request in requests
         ]
         with self.database.transaction() as connection:
+            connection.execute(
+                "DELETE FROM swipe_request WHERE employee_code = ?", (employee_code,)
+            )
             connection.executemany(
                 """
                 INSERT INTO swipe_request (
                     employee_code, for_date, direction, in_time, out_time,
                     remark, status, approve_date, category, kind, synced_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (employee_code, for_date, direction) DO UPDATE SET
+                ON CONFLICT (employee_code, for_date, direction, remark) DO UPDATE SET
                     in_time    = excluded.in_time,
                     out_time   = excluded.out_time,
-                    remark     = excluded.remark,
                     status     = excluded.status,
                     approve_date  = excluded.approve_date,
                     category   = excluded.category,
@@ -179,12 +194,20 @@ class ApplicationRepository:
         *,
         synced_at: datetime | None = None,
     ) -> None:
+        """Replace every stored application with the fetched set, atomically.
+
+        Same reasoning as the swipe requests: the fetch walks every status view of all three
+        lists, so it describes the whole entity, and a cancelled application has to be able
+        to disappear. And the same precondition — a view that fails aborts the fetch, so a
+        partial set never arrives here.
+        """
         stamp = (synced_at or datetime.now()).isoformat()
         rows = [
             application_to_row(application, employee_code=employee_code, synced_at=stamp)
             for application in applications
         ]
         with self.database.transaction() as connection:
+            connection.execute("DELETE FROM application WHERE employee_code = ?", (employee_code,))
             connection.executemany(
                 """
                 INSERT INTO application (
@@ -223,8 +246,20 @@ class HolidayRepository:
         self.database = database
 
     def save_all(self, holidays: Iterable[Holiday]) -> None:
+        """Replace the calendar with the fetched one, atomically.
+
+        The portal publishes the year in one page, so a fetch is the whole calendar. Merging
+        meant a holiday the company later moved stayed on both dates forever — and since the
+        optimizer and every working-day count read this table, a phantom holiday is not a
+        cosmetic problem.
+
+        An empty fetch never reaches here: ``parse_holidays`` raises rather than returning
+        nothing when the page is not the holiday list, so this cannot wipe the calendar over
+        a session that expired mid-sync.
+        """
         rows = [holiday_to_row(holiday) for holiday in holidays]
         with self.database.transaction() as connection:
+            connection.execute("DELETE FROM holiday")
             connection.executemany(
                 """
                 INSERT INTO holiday (day, weekday, name) VALUES (?, ?, ?)

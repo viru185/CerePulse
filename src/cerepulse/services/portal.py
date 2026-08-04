@@ -398,16 +398,18 @@ def _absorb(
 ) -> None:
     """Merge one status view's rows into the accumulator, decided rows winning.
 
-    The portal gives requests no id, so identity has to be built from the fields a user
-    cannot file twice with: the day, which punch, and what they wrote. A request should
-    appear under exactly one status filter, but if the portal ever lists one under two the
-    decided reading is the true one — a request cannot un-approve itself back to pending.
+    Keyed on :attr:`SwipeRequest.identity`, which is also what the repository stores under —
+    the two used to disagree, and a request the portal really did carry twice was lost on
+    save because of it.
+
+    A request should appear under exactly one status filter, but if the portal ever lists one
+    under two the decided reading is the true one: a request cannot un-approve itself back to
+    pending.
     """
     for request in requests:
-        key = (request.for_date, request.direction, request.remark)
-        existing = collected.get(key)
+        existing = collected.get(request.identity)
         if existing is None or (request.status.is_decided and not existing.status.is_decided):
-            collected[key] = request
+            collected[request.identity] = request
 
 
 def _employee_code(html: str) -> str:

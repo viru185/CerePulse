@@ -101,6 +101,31 @@ def test_parses_holidays() -> None:
     assert holidays[1].name == "Republic day"
 
 
+def test_a_page_that_is_not_the_holiday_list_raises() -> None:
+    """It used to answer "this company has no holidays", and the cost was invisible.
+
+    A fetch that landed on a login page returned ``[]``; ``save_all([])`` wrote nothing;
+    ``mark_synced`` blessed it; and the holiday TTL — a full day, because a calendar
+    published once a year does not need re-asking — then suppressed the retry until
+    tomorrow. Since 0.13 the save also *replaces* the calendar, so returning empty here
+    would delete a good one over a session that expired mid-sync.
+    """
+    with pytest.raises(ParserError, match="holiday"):
+        parse_holidays("<html><body><p>Please sign in</p></body></html>")
+
+
+def test_a_real_holiday_page_with_no_rows_is_not_an_error() -> None:
+    """The portal renders the grid whether or not it has holidays in it, so the grid is
+    what proves the page arrived — a company that has published nothing yet is a fact, not
+    a fault."""
+    html = """
+      <table id="ctl00_BodyContentPlaceHolder_GridView1">
+        <tr><th>Date</th><th>Day</th><th>Remarks</th></tr>
+      </table>
+    """
+    assert parse_holidays(html) == []
+
+
 # --- swipe requests -------------------------------------------------------------------
 
 

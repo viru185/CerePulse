@@ -68,3 +68,20 @@ class SwipeRequest:
     @property
     def is_open(self) -> bool:
         return self.status is SwipeStatus.IN_PROCESS
+
+    @property
+    def identity(self) -> tuple[date, str, str]:
+        """What makes this request *this* request, defined once for everyone who needs it.
+
+        The portal exposes no id, no filed date and no approver, so identity has to be built
+        from the fields a person cannot file twice with: the day, which punch, and what they
+        wrote. Status is deliberately not part of it — a request that moves from pending to
+        approved is the same request, and including it would make every approval look like a
+        new row appearing beside the old one.
+
+        This exists because there were two answers to the question. The fetch de-duplicated
+        on day, punch and remark; the database keyed on day and punch alone. A portal that
+        really does carry two requests for one day and punch lost one of them on save, and
+        the mismatch was invisible from either side. One definition, used by both.
+        """
+        return (self.for_date, self.direction, self.remark)

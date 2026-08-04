@@ -16,6 +16,7 @@ has no transaction date); subsequent rows are the dated movements that produced 
 
 from __future__ import annotations
 
+from cerepulse.core.errors import ParserError
 from cerepulse.models.leave import Holiday, LeaveBalance, LeaveTransaction
 from cerepulse.parsers.primitives import clean, parse_date, parse_float
 from cerepulse.parsers.tables import (
@@ -99,11 +100,23 @@ def current_balances(transactions: list[LeaveTransaction]) -> list[LeaveBalance]
 
 
 def parse_holidays(html: str) -> list[Holiday]:
-    """Parse the holiday list: ``Date | Day | Remarks``."""
+    """Parse the holiday list: ``Date | Day | Remarks``.
+
+    Raises when the page is not the holiday list at all, rather than reporting a company
+    with no holidays. The two used to be the same answer and the cost was invisible: a
+    fetch that landed on a login page or an expired session returned ``[]``, ``save_all([])``
+    wrote nothing, ``mark_synced`` blessed it, and the holiday TTL — a full day, because a
+    calendar published once a year does not need re-asking — then suppressed the retry until
+    tomorrow. The screen showed no holidays over a portal holding twelve.
+
+    Unlike the swipe list there is no status filter to prove the page arrived, so the grid
+    itself is the proof: the portal renders it whether or not it has rows, so a page without
+    it is not the page that was asked for.
+    """
     root = parse_document(html)
     table = find_table_opt(root, HOLIDAY_GRID_ID)
     if table is None:
-        return []
+        raise ParserError("Holiday page has no holiday grid on it")
 
     holidays: list[Holiday] = []
     for row in data_rows(table):

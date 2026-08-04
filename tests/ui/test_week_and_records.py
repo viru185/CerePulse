@@ -20,6 +20,7 @@ from cerepulse.intelligence.month import DayRollup, WeekAnalysis
 from cerepulse.intelligence.policy import ShiftPolicy
 from cerepulse.intelligence.records import Record, RecordKind
 from cerepulse.models.attendance import DayStatus, Punch, PunchDirection
+from cerepulse.models.leave import Holiday
 from cerepulse.models.values import Duration
 from cerepulse.ui.theme import DARK
 from cerepulse.ui.views.records import RecordsView
@@ -301,23 +302,55 @@ def test_the_timeline_shows_everything_by_default(qapp: QApplication) -> None:
     assert view._timeline.count() == 5
 
 
-def test_filtering_narrows_the_timeline(qapp: QApplication) -> None:
-    from cerepulse.ui.views.records import FILTERS
+def _pick(view: RecordsView, *, kind: str | None = None, state: str | None = None) -> None:
+    from cerepulse.ui.views.records import KIND_FILTERS, STATE_FILTERS
 
+    if kind is not None:
+        view._kind.setCurrentIndex([name for name, _ in KIND_FILTERS].index(kind))
+    if state is not None:
+        view._state.setCurrentIndex([name for name, _ in STATE_FILTERS].index(state))
+
+
+def test_filtering_narrows_the_timeline(qapp: QApplication) -> None:
     view = RecordsView(DARK)
     view.show_records(records())
-    view._filter.setCurrentIndex([name for name, _ in FILTERS].index("Outdoor duty"))
+    _pick(view, kind="Outdoor duty")
 
     assert view._timeline.count() == 1
     assert "Bengaluru" in _text(view)
 
 
 def test_needs_doing_finds_the_one_thing_that_does(qapp: QApplication) -> None:
-    from cerepulse.ui.views.records import FILTERS
-
     view = RecordsView(DARK)
     view.show_records(records())
-    view._filter.setCurrentIndex([name for name, _ in FILTERS].index("Needs doing"))
+    _pick(view, state="Needs doing")
+
+    assert view._timeline.count() == 1
+
+
+def test_the_two_axes_combine(qapp: QApplication) -> None:
+    """The question the single dropdown could not ask.
+
+    Choosing a kind used to throw away the state and vice versa, because both lived in one
+    control. "Swipe requests that are still waiting" needed both halves at once.
+    """
+    view = RecordsView(DARK)
+    view.show_records(records())
+
+    _pick(view, kind="Swipe requests", state="Waiting on approval")
+    assert view._timeline.count() == 1
+
+    # Same kind, a state it is not in.
+    _pick(view, state="Needs doing")
+    assert view._timeline.count() == 0
+
+
+def test_absence_can_be_filtered_to(qapp: QApplication) -> None:
+    """It had no entry at all before, so the one kind that always needs explaining was the
+    one kind the filter could not isolate."""
+    view = RecordsView(DARK)
+    view.show_records(records())
+    _pick(view, kind="Absence")
 
     assert view._timeline.count() == 1
 
@@ -330,18 +363,76 @@ def test_an_empty_timeline_explains_itself(qapp: QApplication) -> None:
     assert view._nothing.isVisibleTo(view)
 
 
-def test_rebuilding_does_not_accumulate_rows(qapp: QApplication) -> None:
+def test_rebuilding_does_not_leave_rows_painting(qapp: QApplication) -> None:
+    """Counting the layout was never enough to catch this.
+
+    ``takeAt`` empties the layout immediately, so the old assertion passed while up to four
+    generations of row widgets stayed parented and drawing at their last geometry, waiting on
+    a ``deleteLater`` the event loop had not serviced yet. The records timeline is rebuilt
+    once per source per sync, so what the screen actually showed mid-sync was the same row
+    stacked four deep. The children are the thing to count.
+    """
+    from cerepulse.ui.views.records import _RecordRow
+
     view = RecordsView(DARK)
-    view.show_records(records())
-    view.show_records(records())
+    for _ in range(4):
+        view.show_records(records())
 
     assert view._timeline.count() == 5
+    assert len(view.findChildren(_RecordRow)) == 5
 
 
-def test_every_filter_survives_a_timeline_it_finds_nothing_in(qapp: QApplication) -> None:
-    from cerepulse.ui.views.records import FILTERS
+def test_every_filter_combination_survives_an_empty_timeline(qapp: QApplication) -> None:
+    from cerepulse.ui.views.records import KIND_FILTERS, STATE_FILTERS
 
     view = RecordsView(DARK)
     view.show_records([])
-    for index in range(len(FILTERS)):
-        view._filter.setCurrentIndex(index)
+    for kind in range(len(KIND_FILTERS)):
+        for state in range(len(STATE_FILTERS)):
+            view._kind.setCurrentIndex(kind)
+            view._state.setCurrentIndex(state)
+
+
+# --- the holiday calendar ---------------------------------------------------------------
+
+
+def calendar_() -> list[Holiday]:
+    return [
+        Holiday(day=date(2026, 1, 14), weekday="Wednesday", name="Uttrayan"),
+        Holiday(day=date(2026, 8, 15), weekday="Saturday", name="Independence Day"),
+        Holiday(day=date(2026, 12, 25), weekday="Friday", name="Christmas"),
+    ]
+
+
+def test_the_whole_published_year_is_listed(qapp: QApplication) -> None:
+    """Not the month on screen. The timeline bounds holidays to the displayed month, which
+    left the full calendar with nowhere to live at all."""
+    view = RecordsView(DARK)
+    view.show_holidays(calendar_(), today=date(2026, 8, 4))
+
+    assert view.holidays.rowCount() == 3
+
+
+def test_passed_holidays_are_marked_and_the_next_one_named(qapp: QApplication) -> None:
+    view = RecordsView(DARK)
+    view.show_holidays(calendar_(), today=date(2026, 8, 4))
+
+    marks = [view.holidays.item(row, 3).text() for row in range(view.holidays.rowCount())]
+    assert marks == ["Passed", "Next", ""]
+    assert "Independence Day" in view._holidays_note.text()
+    assert "2 of 3" in view._holidays_note.text()
+
+
+def test_an_unsynced_calendar_says_so_rather_than_showing_nothing(qapp: QApplication) -> None:
+    view = RecordsView(DARK)
+    view.show_holidays([], today=date(2026, 8, 4))
+
+    assert not view.holidays.isVisibleTo(view)
+    assert "not synced" in view._holidays_note.text()
+
+
+def test_a_spent_year_says_so(qapp: QApplication) -> None:
+    view = RecordsView(DARK)
+    view.show_holidays(calendar_(), today=date(2026, 12, 31))
+
+    assert "have passed" in view._holidays_note.text()

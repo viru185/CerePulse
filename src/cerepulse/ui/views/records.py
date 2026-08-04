@@ -32,9 +32,9 @@ from cerepulse.intelligence.attention import duplicate_requests
 from cerepulse.intelligence.insights import Severity
 from cerepulse.intelligence.leave import LeaveOutlook
 from cerepulse.intelligence.optimizer import BreakPlan
-from cerepulse.intelligence.records import Record, RecordKind
+from cerepulse.intelligence.records import Record, RecordKind, holiday_calendar
 from cerepulse.intelligence.sandwich import SandwichAssessment
-from cerepulse.models.leave import LeaveCategory
+from cerepulse.models.leave import Holiday, LeaveCategory
 from cerepulse.services.leave import LeaveView as LeaveData
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette, Space
@@ -60,11 +60,17 @@ CARD_ORDER = (
     LeaveCategory.OTHER,
 )
 
-#: The timeline filters. "Needs doing" first, because it is the only one that is urgent.
-FILTERS: tuple[tuple[str, Callable[[Record], bool]], ...] = (
-    ("Everything", lambda record: True),
-    ("Needs doing", lambda record: record.needs_action),
-    ("Waiting on approval", lambda record: record.pending),
+HOLIDAY_COLUMNS = ("Date", "Day", "Holiday", "")
+
+#: The timeline filters, on **two** axes rather than one.
+#:
+#: They used to share a single dropdown of eight entries: three describing a *state* and five
+#: a *kind*. That made them mutually exclusive when they are nothing of the sort — there was
+#: no way to ask for "leave that still needs doing", because picking a kind threw away the
+#: state and picking a state threw away the kind. Two controls that combine with AND is the
+#: same information, fewer entries each, and a question the old one could not express.
+KIND_FILTERS: tuple[tuple[str, Callable[[Record], bool]], ...] = (
+    ("All kinds", lambda record: True),
     ("Leave", lambda record: record.kind is RecordKind.LEAVE),
     ("Outdoor duty", lambda record: record.kind is RecordKind.OUTDOOR_DUTY),
     (
@@ -72,7 +78,18 @@ FILTERS: tuple[tuple[str, Callable[[Record], bool]], ...] = (
         lambda record: record.kind in (RecordKind.COMP_OFF_EARNED, RecordKind.COMP_OFF_SPENT),
     ),
     ("Swipe requests", lambda record: record.kind is RecordKind.SWIPE_REQUEST),
+    # Absence had no entry at all under the old single dropdown, so the one kind that always
+    # needs an explanation was the one kind that could not be filtered to.
+    ("Absence", lambda record: record.kind is RecordKind.ABSENCE),
     ("Holidays", lambda record: record.kind is RecordKind.HOLIDAY),
+)
+
+#: "Needs doing" leads because it is the only one that is urgent.
+STATE_FILTERS: tuple[tuple[str, Callable[[Record], bool]], ...] = (
+    ("Any state", lambda record: True),
+    ("Needs doing", lambda record: record.needs_action),
+    ("Waiting on approval", lambda record: record.pending),
+    ("Settled", lambda record: record.is_settled),
 )
 
 
@@ -129,6 +146,18 @@ class RecordsView(QWidget):
         self._breaks_note.setWordWrap(True)
         layout.addWidget(self._breaks_note)
 
+        # The whole published year, not the month on screen. The timeline deliberately bounds
+        # holidays to the displayed month so a year of future dates cannot bury what actually
+        # happened — which left the full calendar with nowhere to live, and "when is the next
+        # day off" unanswerable without opening the portal.
+        layout.addWidget(SectionTitle("Company holidays"))
+        self.holidays = data_table(HOLIDAY_COLUMNS, fit_rows=True)
+        layout.addWidget(self.holidays)
+        self._holidays_note = QLabel()
+        self._holidays_note.setObjectName("CardCaption")
+        self._holidays_note.setWordWrap(True)
+        layout.addWidget(self._holidays_note)
+
         layout.addLayout(self._build_timeline_header())
         self._timeline = QVBoxLayout()
         self._timeline.setSpacing(Space.TIGHT)
@@ -164,14 +193,22 @@ class RecordsView(QWidget):
         row = QHBoxLayout()
         row.setSpacing(Space.SNUG)
         row.addWidget(SectionTitle("What happened"))
-        self._filter = QComboBox()
-        self._filter.setMinimumWidth(180)
-        for label, _predicate in FILTERS:
-            self._filter.addItem(label)
-        self._filter.currentIndexChanged.connect(lambda _index: self._render_timeline())
-        row.addWidget(self._filter)
+        self._kind = self._filter_box(KIND_FILTERS, width=160)
+        self._state = self._filter_box(STATE_FILTERS, width=170)
         row.addStretch(1)
+        row.addWidget(self._kind)
+        row.addWidget(self._state)
         return row
+
+    def _filter_box(
+        self, entries: tuple[tuple[str, Callable[[Record], bool]], ...], *, width: int
+    ) -> QComboBox:
+        box = QComboBox()
+        box.setMinimumWidth(width)
+        for label, _predicate in entries:
+            box.addItem(label)
+        box.currentIndexChanged.connect(lambda _index: self._render_timeline())
+        return box
 
     # --- rendering ------------------------------------------------------------------
 
@@ -230,6 +267,7 @@ class RecordsView(QWidget):
             item = self._cards.takeAt(0)
             widget = item.widget() if item is not None else None
             if widget is not None:
+                widget.setParent(None)
                 widget.deleteLater()
 
         ordered = sorted(outlooks, key=lambda outlook: CARD_ORDER.index(outlook.balance.category))
@@ -250,6 +288,50 @@ class RecordsView(QWidget):
         card.set_caption(_expiry_caption(outlook))
         card.setMinimumWidth(170)
         return card
+
+    def show_holidays(self, holidays: list[Holiday], *, today: date | None = None) -> None:
+        """The published calendar, past dimmed and the next one named."""
+        from PySide6.QtWidgets import QTableWidgetItem
+
+        entries = holiday_calendar(holidays, today=today or date.today())
+        self.holidays.setRowCount(len(entries))
+        self.holidays.setVisible(bool(entries))
+
+        if not entries:
+            self._holidays_note.setText(
+                "The holiday calendar has not synced yet. Refresh to fetch it."
+            )
+            return
+
+        for row, entry in enumerate(entries):
+            holiday = entry.holiday
+            mark = "Next" if entry.is_next else ("Passed" if entry.has_passed else "")
+            values = (
+                holiday.day.strftime("%d %b %Y").lstrip("0"),
+                holiday.weekday,
+                holiday.name or "Company holiday",
+                mark,
+            )
+            for column, text in enumerate(values):
+                item = QTableWidgetItem(text)
+                # Dimmed rather than hidden: half of what this list answers is what has
+                # already been taken.
+                if entry.has_passed:
+                    item.setForeground(QColor(self._palette.text_faint))
+                elif entry.is_next:
+                    item.setForeground(QColor(self._palette.good))
+                self.holidays.setItem(row, column, item)
+
+        remaining = sum(1 for entry in entries if not entry.has_passed)
+        upcoming = next((entry for entry in entries if entry.is_next), None)
+        if upcoming is None:
+            self._holidays_note.setText(f"All {len(entries)} published holidays have passed.")
+        else:
+            when = upcoming.day.strftime("%A %d %B").lstrip("0")
+            self._holidays_note.setText(
+                f"{remaining} of {len(entries)} still to come — next is "
+                f"{upcoming.holiday.name or 'a company holiday'} on {when}."
+            )
 
     def _render_breaks(self, plans: list[BreakPlan]) -> None:
         from PySide6.QtWidgets import QTableWidgetItem
@@ -299,20 +381,35 @@ class RecordsView(QWidget):
         self._breaks_note.setText(note)
 
     def _render_timeline(self) -> None:
-        while self._timeline.count():
-            item = self._timeline.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.deleteLater()
+        _empty(self._timeline)
 
-        _label, predicate = FILTERS[max(0, self._filter.currentIndex())]
-        shown = [record for record in self._records if predicate(record)]
+        _kind_label, by_kind = KIND_FILTERS[max(0, self._kind.currentIndex())]
+        _state_label, by_state = STATE_FILTERS[max(0, self._state.currentIndex())]
+        shown = [record for record in self._records if by_kind(record) and by_state(record)]
         self._nothing.setVisible(not shown)
 
         for record in shown:
             row = _RecordRow(record, self._palette)
             row.clicked.connect(lambda day=record.day: self.day_selected.emit(day))
             self._timeline.addWidget(row)
+
+
+def _empty(layout: QVBoxLayout | QHBoxLayout) -> None:
+    """Remove every widget from a layout, and stop it painting *now*.
+
+    ``takeAt`` only detaches the layout item — the widget stays a child of the container and
+    keeps drawing at its last geometry until ``deleteLater`` is serviced, which happens when
+    the event loop next drains and not before. That is normally invisible, but the records
+    timeline is rebuilt four times per sync as the month, the requests, the ledger and the
+    applications each land, so a sync could paint four stacked copies of every row.
+    Reparenting first is what makes the removal immediate rather than eventual.
+    """
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget() if item is not None else None
+        if widget is not None:
+            widget.setParent(None)
+            widget.deleteLater()
 
 
 class _RecordRow(QWidget):

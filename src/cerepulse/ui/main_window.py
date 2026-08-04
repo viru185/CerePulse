@@ -104,6 +104,12 @@ class MainWindow(QMainWindow):
         self._swipes: list[object] = []
         self._ledger: list[object] = []
         self._applications: list[object] = []
+        #: Collapses a burst of "the timeline changed" calls into one render. A sync delivers
+        #: all four sources within a turn or two of the event loop, and rebuilding four times
+        #: means three renders that nothing ever sees.
+        self._records_pending = QTimer(self)
+        self._records_pending.setSingleShot(True)
+        self._records_pending.timeout.connect(self._rebuild_records_now)
         #: The unelided sidebar status, kept because the button only holds the short form.
         self._status_text = ""
 
@@ -761,15 +767,25 @@ class MainWindow(QMainWindow):
         self._rebuild_records()
 
     def _rebuild_records(self) -> None:
-        """Reassemble the one timeline from whichever caches have reported so far.
+        """Ask for a rebuild; the work happens once, after the current burst has landed.
 
         The four sources arrive on their own schedules — the month with a sync, then the
-        requests, the ledger and the filed applications behind it — so this is called by
-        each of them rather than waiting for all four. A partial timeline is more useful
-        than none, and every source that lands after simply rebuilds it.
+        requests, the ledger and the filed applications behind it — so each calls this rather
+        than waiting for all four, because a partial timeline is more useful than none.
+
+        The rebuild itself is deferred to a zero-delay timer so a sync that delivers all four
+        within one turn of the event loop assembles the timeline once instead of four times.
+        Three of those four renders were always thrown away by the next one.
         """
+        self._records_pending.start(0)
+
+    def _rebuild_records_now(self) -> None:
         from cerepulse.intelligence.records import build_records
 
+        self.records.show_holidays(
+            self._month_view.holidays if self._month_view else [],
+            today=date.today(),
+        )
         self.records.show_records(
             build_records(
                 days=list(self._month_view.month.days) if self._month_view else [],
