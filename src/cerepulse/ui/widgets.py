@@ -577,9 +577,12 @@ class DayTimeline(QWidget):
             painter.fillPath(_rounded(span, 1.5), QColor(self._palette.rest))
 
             if right - left >= self.LABEL_FITS and not self._compact:
+                # Above the In times, not level with them. At `bar.top() - 15` this shared a
+                # band with the punch labels at `- 17`, so a gap just wide enough to earn a
+                # duration wrote it straight through the In time at its right-hand edge.
                 painter.setPen(QColor(self._palette.rest))
                 painter.drawText(
-                    QRectF(left, bar.top() - 15, right - left, 13),
+                    QRectF(left, bar.top() - 31, right - left, 13),
                     Qt.AlignmentFlag.AlignCenter,
                     str(gap),
                 )
@@ -614,24 +617,40 @@ class DayTimeline(QWidget):
         if self._now is not None:
             markers.append((self._now, self._palette.text, "now", False))
 
-        for moment, colour, label, dashed in markers:
+        # "leave" and "now" are 80 px boxes drawn at whatever x they fall on, so the day
+        # where you can leave *around now* — the one this screen exists for — wrote the two
+        # words on top of each other. Laid out left to right like the punch times.
+        occupied = -1e9
+        for moment, colour, label, dashed in sorted(markers, key=lambda m: m[0]):
             pen = QPen(QColor(colour), 2 if dashed else 1)
             if dashed:
                 pen.setStyle(Qt.PenStyle.DashLine)
             painter.setPen(pen)
             x = self._x_for(moment)
             painter.drawLine(int(x), int(bar.top() - 5), int(x), int(bar.bottom() + 5))
-            if not self._compact:
-                painter.setPen(QColor(colour))
-                painter.drawText(QRectF(x - 40, 0, 80, 12), Qt.AlignmentFlag.AlignCenter, label)
+            if self._compact:
+                continue
+
+            width = painter.fontMetrics().horizontalAdvance(label)
+            left = max(x - width / 2, occupied + LABEL_GAP)
+            painter.setPen(QColor(colour))
+            painter.drawText(QRectF(left, 0, width + 2, 12), Qt.AlignmentFlag.AlignLeft, label)
+            occupied = left + width
 
     def _paint_punches(self, painter: QPainter, bar: QRectF) -> None:
         """A dot at every punch, with In times above the bar and Out times below it.
 
-        Splitting by direction is what stopped labels being dropped. They used to be skipped
-        whenever two fell within 22 px, so a ten-punch day lost exactly the times it most
-        needed to show. In and Out alternate by nature, so putting each on its own row means
-        neighbours never compete for the same space.
+        Splitting by direction was half the answer. Labels used to be skipped whenever two
+        fell within 22 px, so a ten-punch day lost exactly the times it most needed to show;
+        In and Out alternate by nature, so giving each its own row stops *neighbours*
+        competing. It does nothing for punches two apart in the sequence, which share a row —
+        two segments starting a few minutes apart put two times in the same place, and at
+        roughly three pixels per minute anything closer than a quarter of an hour is a smear.
+
+        So each row is laid out rather than drawn where it falls: a label that would land on
+        the previous one slides right until it clears, and is dropped only when sliding would
+        take it so far from its own dot that it would be pointing at the wrong punch. The dot
+        is always drawn — the exact position is never the thing that gets lost.
         """
         if self._compact:
             return
@@ -639,28 +658,42 @@ class DayTimeline(QWidget):
         font.setPointSize(8)
         painter.setFont(font)
 
+        above: list[tuple[float, str]] = []
+        below: list[tuple[float, str]] = []
         for segment in self._segments:
-            self._punch(painter, bar, segment.start, above=True, inferred=False)
-            self._punch(painter, bar, segment.end, above=False, inferred=segment.end_inferred)
+            self._dot(painter, bar, segment.start, above=True, inferred=False)
+            self._dot(painter, bar, segment.end, above=False, inferred=segment.end_inferred)
+            above.append((self._x_for(segment.start), _clock_short(segment.start)))
+            if not segment.end_inferred:
+                # No time was punched, so writing one would be inventing it.
+                below.append((self._x_for(segment.end), _clock_short(segment.end)))
 
-    def _punch(
+        painter.setPen(QColor(self._palette.text))
+        self._row(painter, above, top=bar.top() - 17)
+        self._row(painter, below, top=bar.bottom() + 4)
+
+    def _dot(
         self, painter: QPainter, bar: QRectF, moment: datetime, *, above: bool, inferred: bool
     ) -> None:
-        x = self._x_for(moment)
         colour = QColor(self._palette.text_faint if inferred else self._palette.text)
         painter.setBrush(colour)
         painter.setPen(Qt.PenStyle.NoPen)
         edge = bar.top() - 3 if above else bar.bottom() - 2
-        painter.drawEllipse(QRectF(x - 2.5, edge, 5, 5))
+        painter.drawEllipse(QRectF(self._x_for(moment) - 2.5, edge, 5, 5))
 
-        if inferred:
-            # No time was punched, so writing one would be inventing it.
-            return
-        painter.setPen(colour)
-        top = bar.top() - 17 if above else bar.bottom() + 4
-        painter.drawText(
-            QRectF(x - 26, top, 52, 13), Qt.AlignmentFlag.AlignCenter, _clock_short(moment)
-        )
+    def _row(self, painter: QPainter, labels: list[tuple[float, str]], *, top: float) -> None:
+        """Draw one row of time labels, sliding each clear of the one before it."""
+        metrics = painter.fontMetrics()
+        occupied = -1e9
+        for x, text in sorted(labels):
+            width = metrics.horizontalAdvance(text)
+            left = max(x - width / 2, occupied + LABEL_GAP)
+            if left - (x - width / 2) > LABEL_DRIFT:
+                # Sliding this far would park the time above a different punch, which is
+                # worse than not writing it: the dot still says exactly when it happened.
+                continue
+            painter.drawText(QRectF(left, top, width + 2, 13), Qt.AlignmentFlag.AlignLeft, text)
+            occupied = left + width
 
     def _paint_hours(self, painter: QPainter, bar: QRectF) -> None:
         """The hour axis — what makes it a clock rather than a bar."""
@@ -690,6 +723,12 @@ DOMAIN_EARLIEST = 6
 DOMAIN_LATEST = 23
 #: Least span worth drawing. Below it the bands are wider than the day they describe.
 DOMAIN_MIN_HOURS = 6
+
+#: Clear space between two time labels sharing a row.
+LABEL_GAP = 6.0
+#: How far a label may slide from its own punch before it is dropped instead. Past this it
+#: is sitting above a neighbour's dot, which reads as a wrong answer rather than a missing one.
+LABEL_DRIFT = 18.0
 
 
 def shared_domain(spans: Sequence[tuple[datetime, datetime]]) -> tuple[int, int]:

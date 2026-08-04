@@ -9,6 +9,7 @@ them — the thing anyone reads a punch log for — were not rows at all.
 from __future__ import annotations
 
 from datetime import date, datetime, time
+from typing import NamedTuple
 
 from PySide6.QtWidgets import QApplication
 
@@ -71,6 +72,124 @@ def test_the_tooltip_names_every_break(qapp: QApplication) -> None:
     tip = timeline.toolTip()
     assert tip.count("break") == 3, tip
     assert "worked" in tip
+
+
+# --- labels that do not sit on each other ---------------------------------------------------
+#
+# In and Out on separate rows keeps *neighbours* apart, because punches alternate by nature.
+# It does nothing for two punches two apart in the sequence, which share a row — and at
+# roughly three pixels per minute, two segments starting a few minutes apart wrote two times
+# in the same place.
+
+
+class Label(NamedTuple):
+    """One string the timeline painted, and the box it went in."""
+
+    left: float
+    right: float
+    top: float
+    bottom: float
+    text: str
+
+    def overlaps(self, other: Label) -> bool:
+        """Boxes that intersect in both axes. Two labels on different rows may share an x —
+        that is the whole point of putting In above the bar and Out below it."""
+        return (
+            self.left < other.right
+            and other.left < self.right
+            and self.top < other.bottom
+            and other.top < self.bottom
+        )
+
+
+def _drawn(timeline: DayTimeline) -> list[Label]:
+    """Every string the timeline paints, with the rectangle it was given."""
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QImage, QPainter
+
+    placed: list[Label] = []
+    real = QPainter.drawText
+
+    def record(self: QPainter, target: object, *args: object) -> None:
+        if isinstance(target, QRectF) and args and isinstance(args[-1], str) and args[-1]:
+            placed.append(
+                Label(target.left(), target.right(), target.top(), target.bottom(), args[-1])
+            )
+        real(self, target, *args)  # type: ignore[arg-type]
+
+    image = QImage(870, DayTimeline.HEIGHT_FULL, QImage.Format.Format_ARGB32)
+    QPainter.drawText = record  # type: ignore[method-assign]
+    try:
+        timeline.render(image)
+    finally:
+        QPainter.drawText = real  # type: ignore[method-assign]
+    return placed
+
+
+def _times(timeline: DayTimeline) -> list[Label]:
+    return [label for label in _drawn(timeline) if ":" in label.text]
+
+
+def _collisions(labels: list[Label]) -> list[tuple[str, str]]:
+    return [
+        (a.text, b.text)
+        for index, a in enumerate(labels)
+        for b in labels[index + 1 :]
+        if a.overlaps(b)
+    ]
+
+
+def test_two_punches_minutes_apart_do_not_overlap(qapp: QApplication) -> None:
+    """The report. A two-minute segment puts two In times fourteen pixels apart, against
+    labels around thirty-five pixels wide."""
+    timeline = DayTimeline(DARK)
+    timeline.resize(870, DayTimeline.HEIGHT_FULL)
+    timeline.set_day((segment("09:00", "09:02"), segment("09:05", "18:00")))
+
+    assert not _collisions(_times(timeline))
+
+
+def test_a_busy_day_still_shows_its_times(qapp: QApplication) -> None:
+    """The rule this replaces dropped any label within 22 px of another, so a ten-punch day
+    lost exactly the times it most needed to show."""
+    timeline = DayTimeline(DARK)
+    timeline.resize(870, DayTimeline.HEIGHT_FULL)
+    analysis = analyze_day(punches(*BUSY), day=DAY)
+    timeline.set_day(analysis.segments)
+
+    assert len(_times(timeline)) == 8, "four segments, eight punches, eight times"
+    assert not _collisions(_times(timeline))
+
+
+def test_a_label_that_cannot_fit_is_dropped_rather_than_misplaced(qapp: QApplication) -> None:
+    """Sliding far enough to clear a neighbour would park the time above the wrong dot, which
+    reads as a wrong answer rather than a missing one."""
+    timeline = DayTimeline(DARK)
+    timeline.resize(870, DayTimeline.HEIGHT_FULL)
+    timeline.set_day(
+        (
+            segment("09:00", "09:01"),
+            segment("09:02", "09:03"),
+            segment("09:04", "09:05"),
+            segment("09:06", "18:00"),
+        )
+    )
+
+    shown = _times(timeline)
+    assert len(shown) < 8, "not everything can fit inside six minutes"
+    assert not _collisions(shown)
+
+
+def test_the_break_duration_does_not_write_through_the_in_time(qapp: QApplication) -> None:
+    """Break labels sat at `bar.top() - 15` against In times at `- 17` — the same band, so a
+    gap just wide enough to earn a duration wrote it through the time at its right edge."""
+    timeline = DayTimeline(DARK)
+    timeline.resize(870, DayTimeline.HEIGHT_FULL)
+    timeline.set_day((segment("09:00", "12:30"), segment("13:10", "18:00")))
+
+    drawn = _drawn(timeline)
+    assert any(label.text == "40m" for label in drawn), "a forty-minute gap is worth labelling"
+    assert not _collisions(drawn), "nothing on this widget may overlap anything else"
 
 
 # --- modes ---------------------------------------------------------------------------------
