@@ -37,7 +37,12 @@ needs-attention filter, and a month heatmap tinted by hours worked. A day alread
 a request is handled, not outstanding.
 
 **Plans your leave** — the cheapest days to book for the longest break, using the company
-holiday calendar and the balance you actually hold.
+holiday calendar and the balance you actually hold, plus the published holiday list with the
+ones you have already had marked off.
+
+**Tells you when you get home** — takes the leave time it already predicted, adds a
+traffic-aware drive to an address you set, and says when the front door opens. Needs a free
+TomTom key of your own; see [below](#the-journey-home).
 
 **Talks like a person** — a light remark when you have earned one, and never when you have
 not. Warnings, expiring leave and missing punches stay plain at every setting.
@@ -48,6 +53,45 @@ above are readable with no connection.
 **Explains itself** — every metric on the Today screen expands to show the exact punches and
 arithmetic behind it, including any punch that was inferred or discarded, and why. Estimated
 days are always counted and named rather than blended into a figure that looks exact.
+
+---
+
+## The journey home
+
+Today can add one more line: **when you would actually get home**, using the leave time it
+already predicts plus a traffic-aware estimate of the drive.
+
+That needs a maps provider, and **CerePulse asks you for your own key rather than shipping
+one.** Not to make life difficult — a key shipped inside the app would be a key published
+with it. The releases are public downloads and a packaged Python app is a zip of bytecode, so
+pulling a string out of it takes about a minute, and TomTom's terms require keys stay
+confidential in any case. Obfuscating it would change how long that takes, not whether it
+happens, and the first person to scrape it would be spending your allowance.
+
+Getting one takes about three minutes and costs nothing:
+
+1. Register at [developer.tomtom.com](https://developer.tomtom.com/) — free, no card.
+2. Create a project or app. The free tier gives **20,000 requests a month** with live
+   traffic, which is roughly a thousand times what this uses.
+3. Copy the key it issues.
+4. In CerePulse, open **Settings → Journey home**, paste it, and press **Check key**.
+
+Then set your home address and press **Find this address**. The app shows you what it
+matched, because an address that quietly resolves to the next city still produces a
+perfectly believable travel time.
+
+**On usage.** The app asks once when you are within half an hour of leaving, and again only
+if that prediction moves by more than a quarter of an hour — roughly one lookup per working
+day, about 22 a month. Refresh is always available and always answers; if the last answer is
+under a minute old it simply re-uses it rather than buying an identical one. There is a hard
+daily ceiling it cannot exceed, adjustable in Settings.
+
+Your key goes to the Windows Credential Manager, alongside the portal password, and never
+into a config file. Estimates are held in memory only and are never written to the local
+database, which keeps CerePulse inside TomTom's terms on caching results.
+
+Without a key, everything else works exactly as before — the card simply says how to set it
+up.
 
 ---
 

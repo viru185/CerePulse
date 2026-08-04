@@ -11,7 +11,8 @@ it, so the window is useful immediately rather than after a round trip to the po
 
 from __future__ import annotations
 
-from datetime import date
+from dataclasses import replace
+from datetime import date, datetime
 
 from loguru import logger
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -44,6 +45,7 @@ from cerepulse.intelligence.month import analyze_week, week_start_for
 from cerepulse.notify.startup import set_registered
 from cerepulse.notify.tray import Tray
 from cerepulse.services.attendance import MonthView
+from cerepulse.services.commute import CommuteView
 from cerepulse.services.leave import LeaveView as LeaveData
 from cerepulse.services.scopes import Scope
 from cerepulse.transport import pages
@@ -66,6 +68,12 @@ from cerepulse.update import Channel
 
 SCREENS = ("Today", "Week", "Attendance", "Insights", "Records", "Settings", "About")
 TODAY_SCREEN = SCREENS.index("Today")
+SETTINGS_SCREEN = SCREENS.index("Settings")
+
+#: Where a free TomTom key comes from. Linked rather than walked through step by step, so a
+#: vendor redesign cannot turn this into instructions that confidently describe buttons that
+#: no longer exist.
+KEY_GUIDE_URL = "https://developer.tomtom.com/how-to-get-tomtom-api-key"
 
 SIDEBAR_WIDTH = 196
 #: Room the sidebar status button actually has for text: the sidebar, less its 8px margins,
@@ -198,6 +206,13 @@ class MainWindow(QMainWindow):
         self.settings.sync_history_requested.connect(self.sync_history)
         self.settings.cancel_history_requested.connect(self.cancel_history)
         self.settings.test_notification_requested.connect(self._test_notification)
+        self.settings.geocode_requested.connect(self._find_home)
+        self.settings.key_check_requested.connect(self._check_key)
+        self.settings.key_guide_requested.connect(self._open_key_guide)
+        self.today.commute_refresh_requested.connect(self._refresh_commute)
+        self.today.commute_setup_requested.connect(
+            lambda: self._navigation.drill_to(SETTINGS_SCREEN)
+        )
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
@@ -725,6 +740,8 @@ class MainWindow(QMainWindow):
     def _apply_day(self, analysis: DayAnalysis, is_today: bool) -> None:
         self.today.show_analysis(analysis, is_today=is_today)
         self.today.set_back_target(self._navigation.origin_name)
+        self._analysis = analysis
+        self._maybe_estimate_commute(analysis, is_today=is_today)
         if self._tray is not None and is_today:
             self._tray.set_analysis(analysis)
             self._tray.notify_insights(list(analysis.insights))
@@ -937,6 +954,150 @@ class MainWindow(QMainWindow):
         self.settings.banner.show_message(
             f"Saved. Switching tray mode or theme fully applies on the next start.{note}",
             Severity.SUCCESS,
+        )
+
+    # --- the journey home -----------------------------------------------------------
+
+    def _maybe_estimate_commute(self, analysis: DayAnalysis, *, is_today: bool) -> None:
+        """Render the card, and spend a call only when one could change the answer.
+
+        Two separate decisions. The card always renders — including its "set this up"
+        state, which is how anybody discovers the feature exists. Whether that render costs
+        a request is the service's judgement, and for a past day or a day with no predicted
+        exit the answer is always no: there is nothing to be on time for.
+        """
+        if not is_today or analysis.leave_at is None:
+            self.today.show_commute(CommuteView(message="", needs_setup=False))
+            return
+
+        leaving = analysis.leave_at
+        service = self._context.commute
+        if service.should_ask(leaving, now=datetime.now()):
+            self._refresh_commute(force=False)
+            return
+        # Nothing to fetch, but the held estimate still wants painting against the current
+        # departure — the exit time drifts as punches land, and the arrival must drift with
+        # it rather than describing a departure that has moved on.
+        self.today.show_commute(service.estimate(leaving))
+
+    def _find_home(self, address: str) -> None:
+        """Resolve the typed address and show what it matched.
+
+        Shown rather than swallowed: an address that quietly geocodes to the next city
+        produces a perfectly plausible travel time, and seeing the match is the only way
+        anybody catches it.
+        """
+        from cerepulse.commute.tomtom import TomTomClient
+
+        text = address.strip()
+        if not text:
+            self.settings.show_geocode_result("Type an address first.")
+            return
+        key = self._tomtom_key()
+        if not key:
+            self.settings.show_geocode_result("Add a TomTom key first — the lookup needs one.")
+            return
+
+        self.settings.show_geocode_result("Looking it up…")
+        self._runner.submit(
+            "geocode",
+            lambda: TomTomClient(key).geocode(text),
+            on_success=self._home_found,
+            on_error=lambda exc: self.settings.show_geocode_result(
+                f"Could not look that up: {_message_for(exc)}"
+            ),
+        )
+
+    def _home_found(self, place: object) -> None:
+        if place is None:
+            self.settings.show_geocode_result("Nothing matched that address. Try adding the city.")
+            return
+
+        from cerepulse.core.config import save_config
+
+        config = replace(
+            self._context.config,
+            commute=replace(
+                self._context.config.commute,
+                destination=place.label,  # type: ignore[attr-defined]
+                destination_lat=place.latitude,  # type: ignore[attr-defined]
+                destination_lon=place.longitude,  # type: ignore[attr-defined]
+            ),
+        )
+        try:
+            save_config(config)
+        except CerePulseError as exc:
+            self.settings.show_geocode_result(f"Found it, but could not save: {exc}")
+            return
+        self._context.apply_config(config)
+        self.settings.set_config(config)
+        self.settings.show_geocode_result(
+            f"Found: {place.resolved}. Saved."  # type: ignore[attr-defined]
+        )
+
+    def _check_key(self, key: str) -> None:
+        """Validate a pasted key, and store it only when that means something.
+
+        The four outcomes are not decoration. A rejected key must not be stored, or the
+        feature fails silently on the one evening somebody relies on it — and an unreachable
+        TomTom must not block storing a perfectly good key, because "your key is wrong" is
+        an unfixable message when the real problem is the wifi.
+        """
+        typed = key.strip()
+        if not typed:
+            self.settings.show_key_result("Paste a key first.")
+            return
+
+        self.settings.show_key_result("Checking with TomTom…")
+        self._runner.submit(
+            "key-check",
+            lambda: self._context.commute.validate_key(typed),
+            on_success=lambda check: self._key_checked(check, typed),
+            on_error=lambda exc: self.settings.show_key_result(
+                f"Could not check the key: {_message_for(exc)}"
+            ),
+        )
+
+    def _key_checked(self, check: object, key: str) -> None:
+        from cerepulse.core.secrets import TOMTOM_KEY, store_secret
+
+        message = check.message  # type: ignore[attr-defined]
+        if check.is_usable or check.is_uncertain:  # type: ignore[attr-defined]
+            store_secret(TOMTOM_KEY, key)
+            self._context.commute.use_key(key)
+            if check.is_uncertain:  # type: ignore[attr-defined]
+                message += " Saved anyway — it may well be fine."
+            self._refresh_commute()
+        self.settings.show_key_result(message)
+
+    def _open_key_guide(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        QDesktopServices.openUrl(QUrl(KEY_GUIDE_URL))
+        self.settings.show_key_result(
+            "Register free (no card), create a project, then copy its key and paste it here."
+        )
+
+    def _tomtom_key(self) -> str:
+        from cerepulse.core.secrets import TOMTOM_KEY, get_secret
+
+        return self.settings.typed_key() or get_secret(TOMTOM_KEY)
+
+    def _refresh_commute(self, *, force: bool = True) -> None:
+        """Ask for an arrival estimate. The button never refuses; the service decides cost."""
+        analysis = self._analysis
+        if analysis is None or analysis.leave_at is None:
+            return
+
+        leaving = analysis.leave_at
+        self._runner.submit(
+            "commute",
+            lambda: self._context.commute.estimate(leaving, force=force),
+            on_success=lambda view: self.today.show_commute(view),
+            # A maps outage costs this one card. Nothing about attendance depends on it, so
+            # it must never reach the shared banner or look like a portal problem.
+            on_error=lambda exc: logger.warning("Commute refresh failed: {}", exc),
         )
 
     def _test_notification(self) -> None:

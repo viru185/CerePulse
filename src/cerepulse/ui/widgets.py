@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from calendar import monthrange
 from collections.abc import Callable, Sequence
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from html import escape
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen
@@ -34,6 +35,12 @@ from cerepulse.intelligence.next_action import NextAction
 from cerepulse.intelligence.segments import WorkSegment
 from cerepulse.models.values import Duration
 from cerepulse.ui.theme import Palette, Space
+
+if TYPE_CHECKING:  # Imported for the annotation only; widgets must not depend on services.
+    from cerepulse.services.commute import CommuteView
+
+#: What a card shows when it has no number yet.
+EMPTY_VALUE = "—"
 
 
 class Card(QFrame):
@@ -1620,6 +1627,76 @@ def card_row(*cards: QWidget) -> QWidget:
     for card in cards:
         layout.addWidget(card)
     return container
+
+
+class CommuteCard(QFrame):
+    """When you get home, with its own Refresh.
+
+    The button is **never disabled**, whatever state the card is in. A control that greys
+    out to stop you spending an API call is a control that looks broken, and looking broken
+    is what makes people click it repeatedly — the exact behaviour the guards behind it
+    exist to absorb. It always answers; the service decides whether answering costs a call.
+    """
+
+    refresh_requested = Signal()
+    setup_requested = Signal()
+
+    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("Card")
+        self._palette = palette
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(4)
+
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        title = QLabel("HOME BY")
+        title.setObjectName("CardTitle")
+        head.addWidget(title)
+        head.addStretch(1)
+
+        self.refresh = QPushButton("Refresh")
+        self.refresh.clicked.connect(self.refresh_requested)
+        head.addWidget(self.refresh)
+
+        self.setup = QPushButton("Set up")
+        self.setup.setObjectName("Primary")
+        self.setup.clicked.connect(self.setup_requested)
+        head.addWidget(self.setup)
+        layout.addLayout(head)
+
+        self._value = QLabel(EMPTY_VALUE)
+        self._value.setObjectName("CardValue")
+        layout.addWidget(self._value)
+
+        self._caption = QLabel()
+        self._caption.setObjectName("CardCaption")
+        self._caption.setWordWrap(True)
+        layout.addWidget(self._caption)
+
+    def show_view(self, view: CommuteView, *, now: datetime | None = None) -> None:
+        from cerepulse.intelligence.commute import describe
+
+        self.setup.setVisible(view.needs_setup)
+        # Refresh is pointless before there is anything configured to refresh, but it is
+        # hidden rather than disabled — a greyed-out control invites clicking at it.
+        self.refresh.setVisible(not view.needs_setup)
+
+        if view.arrival is None:
+            self._value.setText(EMPTY_VALUE)
+            self._caption.setText(view.message)
+            return
+
+        self._value.setText(_clock_label(view.arrival.clock))
+        caption = describe(view.arrival, now=now)
+        self._caption.setText(f"{caption} — {view.message}" if view.message else caption)
+
+
+def _clock_label(when: time) -> str:
+    """``7:34 PM``. Windows has no ``%-I``, so the leading zero comes off by hand."""
+    return when.strftime("%I:%M %p").lstrip("0")
 
 
 def _tint(colour: str, alpha: int) -> str:

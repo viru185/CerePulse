@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -104,6 +105,11 @@ class SettingsView(QWidget):
     sync_history_requested = Signal()
     cancel_history_requested = Signal()
     test_notification_requested = Signal()
+    #: The typed address, to resolve to a point. Carries the text rather than reading it
+    #: back from the widget, so nothing off the GUI thread ever touches a Qt object.
+    geocode_requested = Signal(str)
+    key_check_requested = Signal(str)
+    key_guide_requested = Signal()
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -145,7 +151,8 @@ class SettingsView(QWidget):
         grid.addWidget(self._build_history(), 3, 0)
         grid.addWidget(self._build_cache(), 3, 1)
         grid.addWidget(self._build_leave_rules(), 4, 0, 1, 2)
-        grid.addWidget(self._build_updates(), 5, 0, 1, 2)
+        grid.addWidget(self._build_commute(), 5, 0, 1, 2)
+        grid.addWidget(self._build_updates(), 6, 0, 1, 2)
 
         page.addStretch(1)
 
@@ -288,6 +295,91 @@ class SettingsView(QWidget):
         card.add("Sandwich leave", self._sandwich)
         return card.finish()
 
+    def _build_commute(self) -> Card:
+        """The journey home, and the key that makes it possible.
+
+        The key needs its own explanation on screen, because "why am I being asked for an
+        API key" is a fair question. The honest answer is short: a key shipped inside the
+        app would be a key published with it.
+        """
+        card = Card(
+            "Journey home",
+            "Works out when you would actually get home, from your predicted leave time. "
+            "Needs a free TomTom API key — 20,000 lookups a month, no card. The key is "
+            "yours rather than built in, because a key inside a public download is a "
+            "published key. It is kept in the Windows Credential Manager, never in a file.",
+        )
+
+        self._home = QLineEdit()
+        self._home.setPlaceholderText("Where you live — street, area, city")
+        self._home.setMinimumWidth(320)
+        card.add("Home address", self._home)
+
+        self._home_found = QLabel()
+        self._home_found.setObjectName("CardCaption")
+        self._home_found.setWordWrap(True)
+
+        find = QPushButton("Find this address")
+        find.clicked.connect(lambda: self.geocode_requested.emit(self._home.text()))
+        card.add("", find)
+        card.add_full(self._home_found)
+
+        self._mode = _choice(
+            [
+                ("Motorcycle", "motorcycle"),
+                ("Car", "car"),
+                ("Bus", "bus"),
+                ("Bicycle", "bicycle"),
+                ("Walking", "pedestrian"),
+            ]
+        )
+        card.add("Travel by", self._mode)
+
+        self._buffer = QSpinBox()
+        self._buffer.setRange(0, 60)
+        self._buffer.setSuffix(" min")
+        self._buffer.setFixedWidth(NUMBER_WIDTH)
+        self._buffer.setToolTip(
+            "Reaching your vehicle, parking, the walk at either end. A fact about your "
+            "building rather than the road, so only you can supply it."
+        )
+        card.add("Add for parking etc.", self._buffer)
+
+        self._api_key = QLineEdit()
+        self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_key.setPlaceholderText("Paste your TomTom key")
+        self._api_key.setMinimumWidth(320)
+        card.add("TomTom API key", self._api_key)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        check = QPushButton("Check key")
+        check.clicked.connect(lambda: self.key_check_requested.emit(self._api_key.text()))
+        row.addWidget(check)
+        guide = QPushButton("How do I get one?")
+        guide.clicked.connect(self.key_guide_requested)
+        row.addWidget(guide)
+        row.addStretch(1)
+        card.body.addLayout(row)
+
+        self._key_state = QLabel()
+        self._key_state.setObjectName("CardCaption")
+        self._key_state.setWordWrap(True)
+        card.add_full(self._key_state)
+        return card.finish()
+
+    def show_geocode_result(self, text: str) -> None:
+        """What the address actually matched.
+
+        Shown rather than swallowed because a house number that quietly resolves to the next
+        city produces a perfectly plausible travel time, and being shown the match is the
+        only way anybody catches it.
+        """
+        self._home_found.setText(text)
+
+    def show_key_result(self, text: str) -> None:
+        self._key_state.setText(text)
+
     def _build_history(self) -> Card:
         card = Card(
             "History",
@@ -399,6 +491,12 @@ class SettingsView(QWidget):
         rule = self._sandwich.findData(config.leave_rules.sandwich_rule)
         self._sandwich.setCurrentIndex(rule if rule >= 0 else 0)
 
+        commute = config.commute
+        self._home.setText(commute.destination)
+        self._mode.setCurrentIndex(max(0, self._mode.findData(commute.mode)))
+        self._buffer.setValue(commute.buffer_minutes)
+        self._home_found.setText(_located(commute.destination_lat, commute.destination_lon))
+
     def _save(self) -> None:
         config = self._config
         updated = replace(
@@ -437,13 +535,45 @@ class SettingsView(QWidget):
                 **{field: box.isChecked() for field, box in self._alerts.items()},
             ),
             leave_rules=replace(config.leave_rules, sandwich_rule=self._sandwich.currentData()),
+            commute=replace(
+                config.commute,
+                # Clearing the address clears the point with it. Leaving stale coordinates
+                # behind would keep routing to the old house while the field looked empty.
+                **(
+                    {"destination": "", "destination_lat": 0.0, "destination_lon": 0.0}
+                    if not self._home.text().strip()
+                    else {"destination": self._home.text().strip()}
+                ),
+                mode=self._mode.currentData(),
+                buffer_minutes=self._buffer.value(),
+            ),
         )
         self._config = updated
         self.config_saved.emit(updated)
 
+    def typed_key(self) -> str:
+        """Whatever is in the key field right now, for the window to store."""
+        return self._api_key.text().strip()
+
+    def show_stored_key(self, present: bool) -> None:
+        """Say a key is on file without ever putting it back on screen.
+
+        Reading it back into the field would make it visible to anything that can screenshot
+        the window, and would tempt somebody into copying it out of an app that is supposed
+        to be the safe place for it.
+        """
+        if present and not self._api_key.text():
+            self._api_key.setPlaceholderText("A key is saved — paste a new one to replace it")
+
     def set_config(self, config: AppConfig) -> None:
         self._config = config
         self._load(config)
+
+
+def _located(latitude: float, longitude: float) -> str:
+    if latitude == 0.0 and longitude == 0.0:
+        return "Not found yet — type an address and press Find."
+    return f"Resolved to {latitude:.4f}, {longitude:.4f}."
 
 
 # --- control factories ----------------------------------------------------------------

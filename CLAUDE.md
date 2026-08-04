@@ -98,6 +98,19 @@ someone did not work. Five months of history cached zero punches this way before
 noticed, because every screen fell back to the grid-derived first-in/last-out pair and simply
 looked like a day with one In and one Out.
 
+**11. `History` is a superset, not a sixth status.** The swipe list's History view re-lists
+every decided request the Approved/Rejected/Lapsed views already carry — nineteen rows in
+Approved, the identical nineteen in History, confirmed from captures. Walking all five views
+would therefore double every decided request. `SWIPE_STATUS_VIEWS` excludes it deliberately.
+
+**12. One day and one punch can carry two live requests.** Confirmed against the portal: a
+second request filed because the first looked like it had not gone through. That is what
+`duplicate_requests` exists to warn about, and until 0.13 the swipe table's primary key was
+`(employee, date, direction)` — narrower than the identity the fetch used — so the second
+one was silently dropped on save, and the warning could never fire because the schema made
+its condition impossible. `SwipeRequest.identity` is now the single definition, used by both
+the fetch and the repository.
+
 ## Architecture
 
 Dependency flow is strictly one way:
@@ -105,6 +118,12 @@ Dependency flow is strictly one way:
 ```
 ui → services → {repository, intelligence, transport} → core
 ```
+
+`commute/` sits beside `transport/` rather than inside it: `transport/` is the SpineHR
+WebForms client — cookies, `__VIEWSTATE`, menu privilege tokens — and none of that applies to
+a JSON maps API. Nothing in attendance depends on the commute, so a maps outage costs one
+card on Today and must never surface as a portal or session problem; `CommuteError` is
+outside the transport/protocol hierarchy for that reason.
 
 | Layer | Responsibility |
 |---|---|
@@ -187,6 +206,14 @@ per-scope `degraded` path — re-raises it. And an evicted session has a third s
 reports that as a session error, not a `ParserError`, because a live session always gets a
 menu.
 
+**A fetch that covers a whole entity replaces it; a partial one must never save.** Swipe
+requests, applications and holidays are each fetched across every status view, so a merge
+could only ever add — a withdrawn request sat on the timeline forever, and a holiday the
+company moved stayed on both dates, which matters because the optimizer and every
+working-day count read that table. Replacing is safe *only* because `_status_views` yields
+lazily and any view that fails aborts the fetch before a save is attempted. Nothing may call
+`save_all` with "what we managed to get".
+
 **Parsers raise `ParserError` rather than returning empty.** A vendor UI change must surface
 as a diagnostic, not as a silently blank screen. `parse_swipe_requests` broke this rule and
 the cost was invisible: a failed fetch returned `[]`, `save_all([])` wrote nothing,
@@ -214,6 +241,27 @@ block or partition them. The login succeeds inside the frame and the auth cookie
 reaches the top-level context. This shipped in 0.11 and was caught by a user, not a test,
 because it was verified with an HTTP client — which cannot reproduce the one behaviour that
 matters. `tests/auth/test_handover.py` asserts the absence of the iframe for that reason.
+
+**Removing a widget from a layout does not stop it drawing.** `takeAt` detaches the layout
+item but leaves the widget parented, painting at its last geometry until `deleteLater` is
+serviced — which happens when the event loop next drains, not when you asked. The Records
+timeline is rebuilt once per source per sync, so a sync painted up to four stacked copies of
+every row. `setParent(None)` first, and coalesce the rebuilds. Counting the layout will
+never catch this; count the child widgets.
+
+**No API key ships in the build.** A key inside a public release is a published key: the
+downloads are public, a PyInstaller folder is a zip of bytecode, and TomTom's terms require
+keys stay confidential. The user pastes their own, it goes to the Credential Manager, and it
+is validated when pasted rather than when first needed — a key that fails at 6 PM on the one
+evening somebody relied on it is worse than useless. The check has **four** outcomes, and
+the one that matters is that an unreachable provider is never reported as a bad key.
+
+**The refresh button always answers.** It is never disabled and never refuses; what varies
+is whether answering costs an API call. A control that greys out to save a call looks broken,
+and looking broken is what makes people click it repeatedly. The guards are an in-flight
+lock, a 60-second freshness floor, and a hard daily ceiling — and the in-flight guard has to
+be explicit, because `TaskRunner`'s single slot **serialises** rather than drops: ten clicks
+would become ten sequential calls, each answering a question the one before it had answered.
 
 **Voice appends, never substitutes.** `intelligence/voice.py` may only add a sentence to an
 insight's detail. It cannot change a number, reword a warning, or drop a line, so no tone
@@ -260,6 +308,9 @@ links to the portal; it never files one.
   earned date to count from. It reports `UNKNOWN` rather than inventing a deadline.
 - **Leave-year end (31 Dec) and the 90-day comp-off window are defaults, not confirmed
   company policy.** Both are configurable in `LeavePolicy`.
+- **No traffic baseline.** The commute card reports what the journey costs now, not whether
+  that is worse than usual. A baseline needs estimates stored over time, and TomTom's terms
+  restrict caching results beyond their own headers — so it says what it knows and no more.
 - **Tray mode is read at startup.** Switching it in Settings saves but applies next launch.
 - **Start-with-Windows refuses source runs**, since the registry entry would point into
   `.venv` and break on rebuild. It works from an installed build.

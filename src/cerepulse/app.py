@@ -33,6 +33,7 @@ from cerepulse.repository.leave import (
     SyncMetadataRepository,
 )
 from cerepulse.services.attendance import AttendanceService
+from cerepulse.services.commute import CommuteService
 from cerepulse.services.leave import LeaveService
 from cerepulse.services.portal import PortalGateway
 from cerepulse.services.sync import SyncCoordinator
@@ -51,6 +52,7 @@ class AppContext:
     attendance: AttendanceService
     leave: LeaveService
     sync: SyncCoordinator
+    commute: CommuteService
     employees: EmployeeRepository
 
     # --- lifecycle ------------------------------------------------------------------
@@ -124,6 +126,7 @@ class AppContext:
         self.config = config
         self.attendance.use_config(config)
         self.leave.use_config(config)
+        self.commute.use_config(config)
 
     def sign_out(self, *, forget: bool = False) -> None:
         self.auth.logout()
@@ -191,6 +194,9 @@ def build_app(
         config=resolved,
     )
     sync = SyncCoordinator(auth=auth, gateway=gateway, attendance=attendance, leave=leave)
+    # Deliberately outside SyncCoordinator: the journey home has nothing to do with SpineHR,
+    # and a maps outage must never look like the HR portal being down.
+    commute = CommuteService(config=resolved, api_key=secrets.get_secret(secrets.TOMTOM_KEY))
 
     context = AppContext(
         config=resolved,
@@ -201,6 +207,7 @@ def build_app(
         attendance=attendance,
         leave=leave,
         sync=sync,
+        commute=commute,
         employees=employee_repo,
     )
 

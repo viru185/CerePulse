@@ -34,11 +34,13 @@ from cerepulse.intelligence.insights import Insight, InsightKind
 from cerepulse.intelligence.next_action import NextActionKind, Presence, presence_of
 from cerepulse.models.attendance import PunchDirection
 from cerepulse.models.values import Duration
+from cerepulse.services.commute import CommuteView
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette, Space
 from cerepulse.ui.widgets import (
     Banner,
     Card,
+    CommuteCard,
     DayJourney,
     DayTimeline,
     InsightStrip,
@@ -72,6 +74,8 @@ class TodayView(QWidget):
     back_to_today = Signal()
     sync_day_requested = Signal(object)  # date
     date_selected = Signal(object)  # date
+    commute_refresh_requested = Signal()
+    commute_setup_requested = Signal()
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -130,6 +134,15 @@ class TodayView(QWidget):
         body.addWidget(self._insights)
 
         body.addWidget(self._build_cards())
+
+        # Deliberately its own row rather than a third card beside Worked and Break. Those
+        # two share one grammar — what has been *done*, then whether it is enough — and this
+        # is a prediction about something that has not happened. Putting it in that row
+        # would break the pairing that made them readable as a pair in the first place.
+        self.commute = CommuteCard(palette)
+        self.commute.refresh_requested.connect(self.commute_refresh_requested)
+        self.commute.setup_requested.connect(self.commute_setup_requested)
+        body.addWidget(self.commute)
 
         body.addWidget(SectionTitle("Your day"))
         self._timeline = DayTimeline(palette)
@@ -259,6 +272,10 @@ class TodayView(QWidget):
         return card_row(self.worked, self.break_taken)
 
     # --- rendering ------------------------------------------------------------------
+
+    def show_commute(self, view: CommuteView, *, now: datetime | None = None) -> None:
+        """Render the journey home. Delegated wholesale, so the view decides nothing."""
+        self.commute.show_view(view, now=now)
 
     def set_loading(self, loading: bool) -> None:
         """Show placeholders instead of empty cards while the first day is being read."""
