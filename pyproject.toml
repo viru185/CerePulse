@@ -19,6 +19,7 @@ dependencies = [
     # Shell_NotifyIcon call, which Win10/11 re-skins to look like a toast but never writes to
     # the notification store — so it flashes once and leaves no trace in the Action Center.
     "windows-toasts>=1.3.1; sys_platform == 'win32'",
+    "openlocationcode>=1.0.1",
 ]
 
 [project.optional-dependencies]

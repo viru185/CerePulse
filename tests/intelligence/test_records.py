@@ -327,22 +327,12 @@ def test_non_comp_off_ledger_rows_are_left_out() -> None:
     assert build_records(transactions=[planned]) == []
 
 
-def test_holidays_are_bounded_by_the_attendance_range() -> None:
-    """The holiday calendar runs a year ahead; listing all of it buries what happened."""
-    records = build_records(
-        days=[day(date(2026, 6, 1)), day(date(2026, 6, 30))],
-        holidays=[
-            holiday(date(2026, 6, 15), "Inside"),
-            holiday(date(2026, 12, 25), "Months away"),
-        ],
-    )
-    holidays = [entry for entry in records if entry.kind is RecordKind.HOLIDAY]
-    assert [entry.title for entry in holidays] == ["Inside"]
-
-
-def test_holidays_need_an_attendance_range_to_be_bounded_by() -> None:
-    records = build_records(holidays=[holiday(date(2026, 6, 15), "Anything")])
-    assert records == []
+def test_the_timeline_carries_no_holidays() -> None:
+    """They lived here until 0.13.1 — and also in the calendar section directly above, so
+    the same holiday sat on screen twice: the exact duplication merging the Leave and
+    Requests screens was meant to end. A company holiday is not something that happened to
+    *your* time; the calendar section is where the year lives."""
+    assert not hasattr(RecordKind, "HOLIDAY")
 
 
 # --- ordering -----------------------------------------------------------------------------
@@ -359,12 +349,12 @@ def test_the_timeline_runs_newest_first() -> None:
 
 
 def test_within_one_day_the_thing_needing_action_leads() -> None:
-    """A rejection and a holiday on one date should not be ordered by which list they
-    came from."""
+    """A rejection and a comp-off credit on one date should not be ordered by which list
+    they came from."""
     when = date(2026, 6, 15)
     records = build_records(
         days=[day(when), day(when + timedelta(days=1))],
-        holidays=[holiday(when, "Company holiday")],
+        transactions=[ledger(when, credit=1.0)],
         requests=[request(when, SwipeStatus.REJECTED)],
     )
     same_day = [entry for entry in records if entry.day == when]
@@ -374,7 +364,7 @@ def test_within_one_day_the_thing_needing_action_leads() -> None:
 # --- everything at once ---------------------------------------------------------------------
 
 
-def test_all_four_sources_merge_into_one_stream() -> None:
+def test_every_source_merges_into_one_stream() -> None:
     """The whole point: one place to answer "what happened to my time"."""
     records = build_records(
         days=[
@@ -384,7 +374,6 @@ def test_all_four_sources_merge_into_one_stream() -> None:
         ],
         requests=[request(date(2026, 6, 18), SwipeStatus.IN_PROCESS)],
         transactions=[ledger(date(2026, 6, 20), credit=1.0)],
-        holidays=[holiday(date(2026, 6, 12), "Company holiday")],
     )
 
     kinds = [entry.kind for entry in records]
@@ -392,6 +381,5 @@ def test_all_four_sources_merge_into_one_stream() -> None:
     assert RecordKind.LEAVE in kinds
     assert RecordKind.SWIPE_REQUEST in kinds
     assert RecordKind.COMP_OFF_EARNED in kinds
-    assert RecordKind.HOLIDAY in kinds
     # And the ordinary working day is still not among them.
     assert date(2026, 6, 22) not in {entry.day for entry in records}

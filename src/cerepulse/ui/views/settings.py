@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cerepulse.core.config import AppConfig
+from cerepulse.core.config import AppConfig, CommuteConfig
 from cerepulse.intelligence.sandwich import SandwichRule
 from cerepulse.ui.widgets import Banner
 
@@ -47,6 +47,103 @@ TIME_WIDTH = 108
 #: extra space and the other column's cards are clipped, since setColumnStretch only shares
 #: out what is left *after* minimum sizes are met.
 COLUMN_MIN_WIDTH = 380
+
+
+class AddressField(QWidget):
+    """One end of the journey: a field that takes anything Google Maps can copy.
+
+    An address, a full Maps link, bare coordinates, a DMS string or a Plus Code all go in
+    the same box — the parsing decides which path a paste is on, not the user. What comes
+    back differs by path, and the difference is the whole design:
+
+    * a **pinned point** is saved as soon as it is named, because there is nothing to
+      choose between;
+    * a **typed address** returns candidates, and nothing is saved until one is picked —
+      the best match is a guess, and a guess must be the user's to confirm.
+
+    "Open in Google Maps" is the confirmation of last resort: it costs nothing, needs no
+    key, and it is the only check that is genuinely conclusive, because you look at the map
+    and see your building.
+    """
+
+    #: (which end, the pasted text). The text rides in the signal so the worker never
+    #: touches a Qt widget.
+    lookup_requested = Signal(str, str)
+    #: (which end, the chosen Place).
+    place_picked = Signal(str, object)
+    #: (which end,) — open the saved point in the browser.
+    open_maps_requested = Signal(str)
+
+    def __init__(self, end: str, placeholder: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._end = end
+        self._candidates: list[object] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.field = QLineEdit()
+        self.field.setPlaceholderText(placeholder)
+        self.field.setMinimumWidth(320)
+        row.addWidget(self.field, 1)
+        find = QPushButton("Find")
+        find.clicked.connect(lambda: self.lookup_requested.emit(self._end, self.field.text()))
+        row.addWidget(find)
+        layout.addLayout(row)
+
+        # The candidate picker, hidden until a text search returns more than nothing.
+        pick_row = QHBoxLayout()
+        pick_row.setSpacing(8)
+        self.candidates = QComboBox()
+        self.candidates.setMinimumWidth(320)
+        pick_row.addWidget(self.candidates, 1)
+        self.use = QPushButton("Use this")
+        self.use.setObjectName("Primary")
+        self.use.clicked.connect(self._pick)
+        pick_row.addWidget(self.use)
+        self._pick_host = QWidget()
+        self._pick_host.setLayout(pick_row)
+        self._pick_host.setVisible(False)
+        layout.addWidget(self._pick_host)
+
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        self.status = QLabel()
+        self.status.setObjectName("CardCaption")
+        self.status.setWordWrap(True)
+        status_row.addWidget(self.status, 1)
+        self.open_maps = QPushButton("Open in Google Maps")
+        self.open_maps.clicked.connect(lambda: self.open_maps_requested.emit(self._end))
+        self.open_maps.setVisible(False)
+        status_row.addWidget(self.open_maps)
+        layout.addLayout(status_row)
+
+    def show_candidates(self, places: list[object]) -> None:
+        """Offer a choice, and save nothing until it is made."""
+        self._candidates = list(places)
+        self.candidates.clear()
+        for place in self._candidates:
+            self.candidates.addItem(str(getattr(place, "resolved", place)))
+        self._pick_host.setVisible(bool(self._candidates))
+        if len(self._candidates) > 1:
+            self.status.setText(f"{len(self._candidates)} places matched — pick the right one.")
+        elif self._candidates:
+            self.status.setText("One match — check it is the right place before using it.")
+
+    def show_status(self, text: str, *, located: bool = False) -> None:
+        """The line under the field: what was matched, or what to fix."""
+        self.status.setText(text)
+        self.open_maps.setVisible(located)
+        if located:
+            self._pick_host.setVisible(False)
+
+    def _pick(self) -> None:
+        index = self.candidates.currentIndex()
+        if 0 <= index < len(self._candidates):
+            self.place_picked.emit(self._end, self._candidates[index])
 
 
 class Card(QFrame):
@@ -105,9 +202,14 @@ class SettingsView(QWidget):
     sync_history_requested = Signal()
     cancel_history_requested = Signal()
     test_notification_requested = Signal()
-    #: The typed address, to resolve to a point. Carries the text rather than reading it
-    #: back from the widget, so nothing off the GUI thread ever touches a Qt object.
-    geocode_requested = Signal(str)
+    #: (end, text) — resolve whatever was pasted for one end of the journey. The text rides
+    #: in the signal rather than being read back from the widget, so nothing off the GUI
+    #: thread ever touches a Qt object.
+    address_lookup_requested = Signal(str, str)
+    #: (end, Place) — the user chose one of the offered candidates.
+    place_picked = Signal(str, object)
+    #: (end,) — show the saved point in the browser.
+    open_in_maps_requested = Signal(str)
     key_check_requested = Signal(str)
     key_guide_requested = Signal()
 
@@ -307,22 +409,22 @@ class SettingsView(QWidget):
             "Works out when you would actually get home, from your predicted leave time. "
             "Needs a free TomTom API key — 20,000 lookups a month, no card. The key is "
             "yours rather than built in, because a key inside a public download is a "
-            "published key. It is kept in the Windows Credential Manager, never in a file.",
+            "published key. It is kept in the Windows Credential Manager, never in a file. "
+            "For an exact point, copy it straight out of Google Maps — right-click the "
+            "place and click the numbers, or paste the whole link.",
         )
 
-        self._home = QLineEdit()
-        self._home.setPlaceholderText("Where you live — street, area, city")
-        self._home.setMinimumWidth(320)
-        card.add("Home address", self._home)
+        self._home = AddressField("home", "Address, Google Maps link, coordinates, or Plus Code")
+        self._home.lookup_requested.connect(self.address_lookup_requested)
+        self._home.place_picked.connect(self.place_picked)
+        self._home.open_maps_requested.connect(self.open_in_maps_requested)
+        card.add("Home", self._home)
 
-        self._home_found = QLabel()
-        self._home_found.setObjectName("CardCaption")
-        self._home_found.setWordWrap(True)
-
-        find = QPushButton("Find this address")
-        find.clicked.connect(lambda: self.geocode_requested.emit(self._home.text()))
-        card.add("", find)
-        card.add_full(self._home_found)
+        self._office = AddressField("office", "Where you work — pin it the same way")
+        self._office.lookup_requested.connect(self.address_lookup_requested)
+        self._office.place_picked.connect(self.place_picked)
+        self._office.open_maps_requested.connect(self.open_in_maps_requested)
+        card.add("Office", self._office)
 
         self._mode = _choice(
             [
@@ -368,14 +470,13 @@ class SettingsView(QWidget):
         card.add_full(self._key_state)
         return card.finish()
 
-    def show_geocode_result(self, text: str) -> None:
-        """What the address actually matched.
+    def address_field(self, end: str) -> AddressField:
+        """The field for one end of the journey, addressed by name.
 
-        Shown rather than swallowed because a house number that quietly resolves to the next
-        city produces a perfectly plausible travel time, and being shown the match is the
-        only way anybody catches it.
+        The main window's lookup handlers work per end, and routing their results through a
+        name keeps them from holding widget references across a worker call.
         """
-        self._home_found.setText(text)
+        return self._home if end == "home" else self._office
 
     def show_key_result(self, text: str) -> None:
         self._key_state.setText(text)
@@ -436,10 +537,19 @@ class SettingsView(QWidget):
         bar.setObjectName("Sidebar")  # reuse the elevated surface
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(24, 12, 24, 12)
-        layout.addStretch(1)
+
+        # The outcome lives beside the button that caused it. It used to go to the banner
+        # at the top of the scrolling page — and the save bar is pinned *outside* the
+        # scroll precisely so it is always reachable, which meant the button and its answer
+        # were never on screen at the same time. Saving from the bottom of the page looked
+        # like nothing happening.
+        self._save_status = QLabel()
+        self._save_status.setObjectName("CardCaption")
+        self._save_status.setWordWrap(True)
+        layout.addWidget(self._save_status, 1)
 
         revert = QPushButton("Revert")
-        revert.clicked.connect(lambda: self._load(self._config))
+        revert.clicked.connect(self._revert)
         layout.addWidget(revert)
 
         save = QPushButton("Save changes")
@@ -447,6 +557,17 @@ class SettingsView(QWidget):
         save.clicked.connect(self._save)
         layout.addWidget(save)
         return bar
+
+    def _revert(self) -> None:
+        self._load(self._config)
+        self.show_save_result("Reverted to the last saved settings.")
+
+    def show_save_result(self, text: str, *, failed: bool = False) -> None:
+        """Report a save outcome where the Save button is, styled by how it went."""
+        self._save_status.setText(text)
+        # One hex rather than a palette lookup: this view is built before a Palette reaches
+        # it, and the colour reads as "wrong" on both themes, which is all it must do.
+        self._save_status.setStyleSheet("color: #e5484d;" if failed else "")
 
     # --- state ----------------------------------------------------------------------
 
@@ -492,10 +613,18 @@ class SettingsView(QWidget):
         self._sandwich.setCurrentIndex(rule if rule >= 0 else 0)
 
         commute = config.commute
-        self._home.setText(commute.destination)
+        self._home.field.setText(commute.destination)
+        self._home.show_status(
+            _located(commute.destination_lat, commute.destination_lon),
+            located=commute.destination_lat != 0.0 or commute.destination_lon != 0.0,
+        )
+        self._office.field.setText(commute.origin)
+        self._office.show_status(
+            _located(commute.origin_lat, commute.origin_lon),
+            located=commute.origin_lat != 0.0 or commute.origin_lon != 0.0,
+        )
         self._mode.setCurrentIndex(max(0, self._mode.findData(commute.mode)))
         self._buffer.setValue(commute.buffer_minutes)
-        self._home_found.setText(_located(commute.destination_lat, commute.destination_lon))
 
     def _save(self) -> None:
         config = self._config
@@ -535,21 +664,28 @@ class SettingsView(QWidget):
                 **{field: box.isChecked() for field, box in self._alerts.items()},
             ),
             leave_rules=replace(config.leave_rules, sandwich_rule=self._sandwich.currentData()),
-            commute=replace(
-                config.commute,
-                # Clearing the address clears the point with it. Leaving stale coordinates
-                # behind would keep routing to the old house while the field looked empty.
-                **(
-                    {"destination": "", "destination_lat": 0.0, "destination_lon": 0.0}
-                    if not self._home.text().strip()
-                    else {"destination": self._home.text().strip()}
-                ),
-                mode=self._mode.currentData(),
-                buffer_minutes=self._buffer.value(),
-            ),
+            commute=self._collect_commute(config),
         )
         self._config = updated
         self.config_saved.emit(updated)
+
+    def _collect_commute(self, config: AppConfig) -> CommuteConfig:
+        """The commute section on Save.
+
+        The addresses and coordinates are written by the Find flow at the moment a place is
+        confirmed, so Save deliberately does not copy the field text over them — that would
+        overwrite a picked pin with whatever draft happened to be sitting in the box. The
+        one exception is a *cleared* field: emptying it clears the stored point too, or the
+        app would keep routing to the old house behind a blank box.
+        """
+        commute = replace(
+            config.commute,
+            mode=self._mode.currentData(),
+            buffer_minutes=self._buffer.value(),
+        )
+        if not self._home.field.text().strip():
+            commute = replace(commute, destination="", destination_lat=0.0, destination_lon=0.0)
+        return commute
 
     def typed_key(self) -> str:
         """Whatever is in the key field right now, for the window to store."""

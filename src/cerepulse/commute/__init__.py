@@ -6,8 +6,15 @@ applies to a JSON maps API. Nothing here knows about attendance, and nothing in 
 depends on this: a provider outage costs one card on Today and nothing else.
 """
 
+from cerepulse.commute.locations import coordinates_in, describe_paste, is_short_link
 from cerepulse.commute.models import Place, TravelEstimate
-from cerepulse.commute.tomtom import KeyCheck, KeyVerdict, TomTomClient, TravelMode
+from cerepulse.commute.tomtom import (
+    KeyCheck,
+    KeyVerdict,
+    TomTomClient,
+    TravelMode,
+    expand_short_link,
+)
 
 __all__ = [
     "KeyCheck",
@@ -16,4 +23,8 @@ __all__ = [
     "TomTomClient",
     "TravelEstimate",
     "TravelMode",
+    "coordinates_in",
+    "describe_paste",
+    "expand_short_link",
+    "is_short_link",
 ]

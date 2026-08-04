@@ -155,33 +155,67 @@ class TomTomClient:
         return KeyCheck(KeyVerdict.VALID, "Key works. Traffic-aware arrival times are on.")
 
     def geocode(self, query: str, *, country: str = DEFAULT_COUNTRY) -> Place | None:
-        """Resolve an address to a point, or ``None`` when nothing matched.
+        """The single best match for an address, or ``None`` when nothing matched.
 
-        ``None`` rather than an exception: a typed address that finds nothing is an ordinary
-        thing for a person to do, and it wants a message under the field, not a stack trace.
+        Kept for the key check and any caller that genuinely wants one answer;
+        :meth:`search` is what the Settings flow uses, because "the best match" is a guess
+        and a guess must be the user's to confirm, not the app's to make.
+        """
+        found = self.search(query, country=country, limit=1)
+        return found[0] if found else None
+
+    def search(self, query: str, *, country: str = DEFAULT_COUNTRY, limit: int = 5) -> list[Place]:
+        """The top matches for a typed address or building name, best first.
+
+        TomTom's *fuzzy search*, not its geocoder. Geocoding is built for street addresses
+        and largely ignores building and complex names — which is how most Indian addresses
+        are actually identified, so "The Elixir, PDPU Road, Raysan" fell back to the road:
+        close enough to look right, and not what was asked for. Fuzzy search resolves
+        points of interest and addresses through one call.
+
+        A list rather than a single answer, because several places can legitimately match
+        and the person typing is the only one who knows which they meant. Empty means
+        nothing matched — an ordinary thing to happen to a typo, wanting a message under
+        the field rather than a stack trace.
         """
         text = query.strip()
         if not text:
-            return None
+            return []
         payload = self._get(
-            f"/search/2/geocode/{quote(text)}.json",
-            {"limit": "1", "countrySet": country},
+            f"/search/2/search/{quote(text)}.json",
+            {"limit": str(limit), "countrySet": country},
         )
-        results = payload.get("results") or []
-        if not results:
-            return None
+        places = []
+        for result in payload.get("results") or []:
+            place = _to_place(result, label=text)
+            if place is not None:
+                places.append(place)
+        return places
 
-        first = results[0]
-        position = first.get("position") or {}
-        latitude, longitude = position.get("lat"), position.get("lon")
-        if latitude is None or longitude is None:
-            return None
-        address = (first.get("address") or {}).get("freeformAddress") or text
+    def locate(self, latitude: float, longitude: float) -> Place:
+        """A point the user pinned themselves, named by whatever stands on it.
+
+        This never fails: the coordinates are already the answer, and the reverse lookup
+        only supplies a human-readable name for the confirmation line. Refusing a pin
+        because the *naming* call was unreachable would fail the one input that cannot be
+        wrong.
+        """
+        label = f"{latitude:.6f}, {longitude:.6f}"
+        resolved = ""
+        try:
+            payload = self._get(
+                f"/search/2/reverseGeocode/{latitude},{longitude}.json", {"limit": "1"}
+            )
+            addresses = payload.get("addresses") or []
+            if addresses:
+                resolved = str((addresses[0].get("address") or {}).get("freeformAddress") or "")
+        except CommuteError:
+            logger.debug("Reverse geocode unavailable; keeping the bare coordinates")
         return Place(
-            label=text,
-            resolved=str(address),
-            latitude=float(latitude),
-            longitude=float(longitude),
+            label=label,
+            resolved=resolved or f"the pinned point {label}",
+            latitude=latitude,
+            longitude=longitude,
         )
 
     def route(
@@ -250,6 +284,55 @@ class TomTomClient:
         if not isinstance(payload, dict):
             raise CommuteError("TomTom returned an unexpected response shape")
         return payload
+
+
+def _to_place(result: dict[str, Any], *, label: str) -> Place | None:
+    position = result.get("position") or {}
+    latitude, longitude = position.get("lat"), position.get("lon")
+    if latitude is None or longitude is None:
+        return None
+    # A point of interest carries its name separately from its address; an address result
+    # has only the address. The name is what the person searched by, so it leads.
+    poi = (result.get("poi") or {}).get("name") or ""
+    address = (result.get("address") or {}).get("freeformAddress") or ""
+    resolved = f"{poi} — {address}" if poi and address else (poi or address or label)
+    return Place(
+        label=label,
+        resolved=str(resolved),
+        latitude=float(latitude),
+        longitude=float(longitude),
+    )
+
+
+def expand_short_link(url: str, *, timeout: float = TIMEOUT_SECONDS) -> str | None:
+    """Follow a ``maps.app.goo.gl`` redirect and return the full URL it points to.
+
+    The one place this feature talks to Google, and it is a header-only conversation: the
+    request asks for the redirect target and never downloads the page. No key, no cookies,
+    nothing identifying beyond an HTTP request. ``None`` when the link cannot be expanded —
+    offline, expired, or not actually a redirect — and the caller says so in terms of the
+    link rather than the address.
+    """
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            for _hop in range(5):
+                response = client.head(url)
+                target = response.headers.get("location")
+                if target is None:
+                    # Some shorteners answer HEAD with the page itself; a GET's final URL
+                    # is then the answer. follow_redirects on one request keeps it bounded.
+                    if response.status_code == httpx.codes.OK:
+                        followed = client.get(url, follow_redirects=True)
+                        return str(followed.url)
+                    return None
+                if not target.startswith("http"):
+                    return None
+                url = target
+                if "google" in url and "/maps" in url:
+                    return url
+            return url
+    except httpx.HTTPError:
+        return None
 
 
 class _HttpStatus(CommuteError):

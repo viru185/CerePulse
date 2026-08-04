@@ -33,7 +33,6 @@ class RecordKind(Enum):
     COMP_OFF_EARNED = "comp_off_earned"
     COMP_OFF_SPENT = "comp_off_spent"
     SWIPE_REQUEST = "swipe_request"
-    HOLIDAY = "holiday"
     ABSENCE = "absence"
 
     @property
@@ -44,7 +43,6 @@ class RecordKind(Enum):
             RecordKind.COMP_OFF_EARNED: "Comp-off earned",
             RecordKind.COMP_OFF_SPENT: "Comp-off taken",
             RecordKind.SWIPE_REQUEST: "Swipe request",
-            RecordKind.HOLIDAY: "Holiday",
             RecordKind.ABSENCE: "Absence",
         }[self]
 
@@ -75,27 +73,31 @@ def build_records(
     days: list[AttendanceDay] | None = None,
     requests: list[SwipeRequest] | None = None,
     transactions: list[LeaveTransaction] | None = None,
-    holidays: list[Holiday] | None = None,
     applications: list[Application] | None = None,
 ) -> list[Record]:
     """Assemble every non-ordinary day into one list, newest first.
 
     Ordinary working days are excluded on purpose. A record of everything is a copy of the
     attendance table, and the point of this screen is what stands out from it.
+
+    Holidays are deliberately absent. They lived here until 0.13.1 — and also in the
+    calendar section directly above the timeline, so the same holiday sat on screen twice,
+    the exact duplication merging the Leave and Requests screens was meant to end. A company
+    holiday is not something that happened to *your* time, which is what this timeline is
+    for; the calendar section is where the year lives.
     """
     filed = applications or []
     records: list[Record] = []
     records += _from_days(days or [], filed)
     records += _from_requests(requests or [])
     records += _from_transactions(transactions or [], filed)
-    records += _from_holidays(holidays or [], days or [])
     # Last, and only what the muster and the ledger did not already account for. An approved
     # week of outdoor duty is on the muster; listing the application beside it would be the
-    # same week twice, which is the duplication merging the two screens was meant to end.
+    # same week twice.
     records += _from_applications(filed, records)
 
-    # Newest first, and within a day the things needing attention lead. A rejection and a
-    # holiday on the same date should not be ordered by which list they came from.
+    # Newest first, and within a day the things needing attention lead. A rejection and an
+    # absence on the same date should not be ordered by which list they came from.
     return sorted(
         records, key=lambda item: (item.day, item.needs_action, item.pending), reverse=True
     )
@@ -370,22 +372,6 @@ def _from_transactions(
                 )
             )
     return records
-
-
-def _from_holidays(holidays: list[Holiday], days: list[AttendanceDay]) -> list[Record]:
-    """Company holidays, but only the ones inside the range the attendance covers.
-
-    The holiday calendar runs a full year ahead. Listing all of it would bury the things
-    that actually happened under a column of dates nobody has reached yet.
-    """
-    if not days:
-        return []
-    first, last = min(day.day for day in days), max(day.day for day in days)
-    return [
-        Record(holiday.day, RecordKind.HOLIDAY, holiday.name or "Company holiday")
-        for holiday in holidays
-        if first <= holiday.day <= last
-    ]
 
 
 #: What the portal writes in Remarks on an ordinary day; it says nothing.

@@ -76,9 +76,26 @@ Getting one takes about three minutes and costs nothing:
 3. Copy the key it issues.
 4. In CerePulse, open **Settings → Journey home**, paste it, and press **Check key**.
 
-Then set your home address and press **Find this address**. The app shows you what it
-matched, because an address that quietly resolves to the next city still produces a
-perfectly believable travel time.
+Then pin your home — and the exact way to do it is to **copy the point straight out of
+Google Maps** rather than typing the address:
+
+- **Desktop:** right-click your building on the map; the numbers at the top of the menu are
+  the coordinates, and clicking copies them. Paste them into the Home field and press
+  *Find*.
+- Or just search your place on Google Maps and **copy the whole address bar** — CerePulse
+  reads the pin out of the URL, and knows the difference between the place and wherever the
+  map camera happened to be.
+- A **Plus Code** from the place card (like `5M2R+2M Gandhinagar`) works too. Short codes
+  are resolved near your office, which is exact while home and office are within about
+  40 km of each other.
+- A **phone share link** (`maps.app.goo.gl/…`) is expanded by asking Google where it points
+  — a header-only request, nothing more.
+
+A pasted pin is saved as soon as it is named, because there is nothing to guess about it.
+A *typed address* is different: it is a search, so CerePulse shows you the top matches and
+saves nothing until you pick one — an address that quietly resolves to the next city still
+produces a perfectly believable travel time. Either way, **Open in Google Maps** shows the
+saved point on the map, which is the one check that is genuinely conclusive.
 
 **On usage.** The app asks once when you are within half an hour of leaving, and again only
 if that prediction moves by more than a quarter of an hour — roughly one lookup per working

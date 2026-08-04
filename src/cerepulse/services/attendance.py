@@ -345,6 +345,16 @@ class AttendanceService:
             ScopeStatus(Scope.HOLIDAYS, self._sync_meta.last_synced(Scope.HOLIDAYS.value)),
         ]
 
+    def days_between(self, employee_code: str, *, start: date, end: date) -> list[AttendanceDay]:
+        """Every cached day in a range, oldest first. Offline by design.
+
+        Exists for the Records timeline, whose period can span more months than the one on
+        the Attendance picker. Reads whatever the cache holds rather than fetching — a
+        timeline that triggered a sync per period change would spend the portal's patience
+        answering a question the cache already could.
+        """
+        return self._attendance.find_days_between(employee_code, start, end)
+
     def leave_days(self, employee_code: str, *, start: date, end: date) -> list[date]:
         """Dates the portal recorded as leave, for the calendar export."""
         return [

@@ -121,25 +121,87 @@ def test_clearing_the_address_clears_the_point_with_it(qapp: QApplication) -> No
     saved: list[AppConfig] = []
     view.config_saved.connect(saved.append)
 
-    view._home.setText("")
+    view._home.field.setText("")
     view._save()
 
     assert saved[0].commute.destination == ""
     assert saved[0].commute.destination_lat == 0.0
 
 
+def test_saving_does_not_overwrite_a_picked_pin_with_draft_text(qapp: QApplication) -> None:
+    """The Find flow writes the point when a place is confirmed. Save copying the field
+    text over it would replace a confirmed pin with whatever was half-typed above it."""
+    from dataclasses import replace
+
+    config = replace(
+        AppConfig(),
+        commute=replace(
+            AppConfig().commute,
+            destination="The Elixir — PDPU Road, Raysan",
+            destination_lat=23.157234,
+            destination_lon=72.664512,
+        ),
+    )
+    view = SettingsView(config)
+    saved: list[AppConfig] = []
+    view.config_saved.connect(saved.append)
+
+    view._home.field.setText("some half typed draft")
+    view._save()
+
+    assert saved[0].commute.destination == "The Elixir — PDPU Road, Raysan"
+    assert saved[0].commute.destination_lat == 23.157234
+
+
 def test_the_resolved_address_is_shown_back(qapp: QApplication) -> None:
     """An address that quietly geocoded to the next city gives a plausible travel time, and
     seeing the match is the only way anybody catches it."""
     view = SettingsView(AppConfig())
-    view.show_geocode_result("Found: Satellite, Ahmedabad, Gujarat. Saved.")
+    view.address_field("home").show_status(
+        "Saved: Satellite, Ahmedabad, Gujarat (23.02250, 72.57140).", located=True
+    )
 
-    assert "Satellite" in view._home_found.text()
+    assert "Satellite" in view._home.status.text()
+    assert view._home.open_maps.isVisibleTo(view._home)
 
 
 def test_an_unresolved_address_says_so(qapp: QApplication) -> None:
     view = SettingsView(AppConfig())
-    assert "Not found yet" in view._home_found.text()
+    assert "Not found yet" in view._home.status.text()
+
+
+def test_candidates_offer_a_choice_and_save_nothing(qapp: QApplication) -> None:
+    """The search's best answer is a guess, and a guess is the user's to confirm."""
+    from cerepulse.commute.models import Place
+
+    view = SettingsView(AppConfig())
+    saved: list[AppConfig] = []
+    view.config_saved.connect(saved.append)
+    picked: list[tuple[str, object]] = []
+    view.place_picked.connect(lambda end, place: picked.append((end, place)))
+
+    matches = [
+        Place("raysan", "Raysan, Gandhinagar", 23.15, 72.66),
+        Place("raysan", "Raysan, Patan", 23.85, 72.12),
+    ]
+    field = view.address_field("home")
+    field.show_candidates(matches)
+
+    assert field.candidates.count() == 2
+    assert "pick the right one" in field.status.text()
+    assert saved == []  # nothing stored by merely searching
+
+    field.candidates.setCurrentIndex(1)
+    field.use.click()
+    assert picked == [("home", matches[1])]
+
+
+def test_the_office_gets_the_same_controls(qapp: QApplication) -> None:
+    """Both ends feed the same route, and a default address string is exactly the kind of
+    thing that is quietly wrong for someone in a different building."""
+    view = SettingsView(AppConfig())
+    assert view.address_field("office") is view._office
+    assert view._office.field.text() != ""  # the GIFT City default rides in
 
 
 def test_the_travel_mode_round_trips(qapp: QApplication) -> None:

@@ -193,6 +193,7 @@ class MainWindow(QMainWindow):
         self.records.refresh_requested.connect(self._refresh_records)
         self.records.open_portal.connect(lambda: self._open_portal(pages.SWIPE_REQUESTS))
         self.records.day_selected.connect(self._open_day)
+        self.records.period_changed.connect(self._rebuild_records)
         self.week.week_changed.connect(self._change_week)
         self.week.day_selected.connect(self._open_day)
         self.insights.refresh_requested.connect(self._refresh_insights)
@@ -206,7 +207,9 @@ class MainWindow(QMainWindow):
         self.settings.sync_history_requested.connect(self.sync_history)
         self.settings.cancel_history_requested.connect(self.cancel_history)
         self.settings.test_notification_requested.connect(self._test_notification)
-        self.settings.geocode_requested.connect(self._find_home)
+        self.settings.address_lookup_requested.connect(self._find_address)
+        self.settings.place_picked.connect(self._place_chosen)
+        self.settings.open_in_maps_requested.connect(self._open_in_maps)
         self.settings.key_check_requested.connect(self._check_key)
         self.settings.key_guide_requested.connect(self._open_key_guide)
         self.today.commute_refresh_requested.connect(self._refresh_commute)
@@ -797,21 +800,45 @@ class MainWindow(QMainWindow):
         self._records_pending.start(0)
 
     def _rebuild_records_now(self) -> None:
-        from cerepulse.intelligence.records import build_records
+        """Load the period's days off the GUI thread, then assemble the timeline.
 
+        The days come from the cache by date range rather than from the month on the
+        Attendance picker. They used to share it — which meant "the timeline" was one month
+        of leave and absence beside *every* request ever filed, and changing the displayed
+        month silently changed what Records claimed had happened.
+        """
         self.records.show_holidays(
             self._month_view.holidays if self._month_view else [],
             today=date.today(),
         )
-        self.records.show_records(
-            build_records(
-                days=list(self._month_view.month.days) if self._month_view else [],
-                requests=self._swipes,  # type: ignore[arg-type]
-                transactions=self._ledger,  # type: ignore[arg-type]
-                holidays=self._month_view.holidays if self._month_view else [],
-                applications=self._applications,  # type: ignore[arg-type]
-            )
+        today = date.today()
+        start = self.records.period_start(today=today)
+        # "Everything" is bounded only by the cache; any date before the portal's own
+        # records serves as no floor at all.
+        floor = start or date(2000, 1, 1)
+        self._runner.submit(
+            "records-window",
+            lambda: self._context.attendance.days_between(
+                self._employee_code, start=floor, end=today
+            ),
+            on_success=lambda days: self._render_records(list(days), start),
+            on_error=lambda exc: logger.warning("Could not load the records window: {}", exc),
         )
+
+    def _render_records(self, days: list[object], start: date | None) -> None:
+        from cerepulse.intelligence.records import build_records
+
+        records = build_records(
+            days=days,  # type: ignore[arg-type]
+            requests=self._swipes,  # type: ignore[arg-type]
+            transactions=self._ledger,  # type: ignore[arg-type]
+            applications=self._applications,  # type: ignore[arg-type]
+        )
+        if start is not None:
+            # The other sources are all-time in memory; the window has to bound them too,
+            # or "last 2 months" would show two months of leave beside years of requests.
+            records = [record for record in records if record.day >= start]
+        self.records.show_records(records)
 
     def _on_swipes_decided(self, changes: list[object]) -> None:
         """News the portal never volunteers: a request has been approved or turned down.
@@ -926,7 +953,10 @@ class MainWindow(QMainWindow):
         try:
             save_config(config)  # type: ignore[arg-type]
         except CerePulseError as exc:
-            self.settings.banner.show_message(str(exc), Severity.CRITICAL)
+            # Next to the Save button, not the top-of-page banner: the save bar is pinned
+            # outside the scroll area, so on a long page the banner and the button were
+            # never visible together and a failed save looked like nothing happening.
+            self.settings.show_save_result(f"Could not save: {exc}", failed=True)
             return
 
         # The services keep their own reference to the config, so pushing it through the
@@ -951,9 +981,8 @@ class MainWindow(QMainWindow):
                 note = " Start-with-Windows needs an installed build."
 
         self.about.refresh(channel=config.updates.channel)  # type: ignore[attr-defined]
-        self.settings.banner.show_message(
-            f"Saved. Switching tray mode or theme fully applies on the next start.{note}",
-            Severity.SUCCESS,
+        self.settings.show_save_result(
+            f"Saved. Switching tray mode or theme fully applies on the next start.{note}"
         )
 
     # --- the journey home -----------------------------------------------------------
@@ -980,60 +1009,156 @@ class MainWindow(QMainWindow):
         # it rather than describing a departure that has moved on.
         self.today.show_commute(service.estimate(leaving))
 
-    def _find_home(self, address: str) -> None:
-        """Resolve the typed address and show what it matched.
+    def _find_address(self, end: str, text: str) -> None:
+        """Resolve whatever was pasted for one end of the journey.
 
-        Shown rather than swallowed: an address that quietly geocodes to the next city
-        produces a perfectly plausible travel time, and seeing the match is the only way
-        anybody catches it.
+        The three paths, in the order they are tried:
+
+        * **A pinned point** — coordinates in any form Google copies. Exact by definition,
+          so it saves as soon as the reverse lookup has named it. Nothing to choose.
+        * **A short link** — the phone's Share button. Expanded by asking Google for the
+          redirect target (a header-only request, no key, no page), then parsed again.
+        * **An address** — a search, whose best answer is a guess. The top matches come
+          back as candidates and nothing is saved until the user picks one.
         """
-        from cerepulse.commute.tomtom import TomTomClient
+        from cerepulse.commute.locations import (
+            coordinates_in,
+            describe_paste,
+            is_short_link,
+        )
+        from cerepulse.commute.tomtom import TomTomClient, expand_short_link
 
-        text = address.strip()
-        if not text:
-            self.settings.show_geocode_result("Type an address first.")
+        field = self.settings.address_field(end)
+        typed = text.strip()
+        if not typed:
+            field.show_status("Type or paste something first.")
             return
         key = self._tomtom_key()
         if not key:
-            self.settings.show_geocode_result("Add a TomTom key first — the lookup needs one.")
+            field.show_status("Add a TomTom key first — the lookup needs one.")
             return
 
-        self.settings.show_geocode_result("Looking it up…")
+        commute = self._context.config.commute
+        office = (commute.origin_lat, commute.origin_lon)
+        near = office if office != (0.0, 0.0) else None
+
+        pinned = coordinates_in(typed, near=near)
+        if pinned is not None:
+            field.show_status("Naming that point…")
+            self._runner.submit(
+                "locate",
+                lambda: TomTomClient(key).locate(*pinned),
+                on_success=lambda place: self._save_place(end, place),
+                on_error=lambda exc: field.show_status(
+                    f"Could not name that point: {_message_for(exc)}"
+                ),
+            )
+            return
+
+        if is_short_link(typed):
+            field.show_status("Expanding the short link…")
+
+            def resolve_link() -> object:
+                expanded = expand_short_link(typed)
+                if expanded is None:
+                    return None
+                point = coordinates_in(expanded, near=near)
+                return TomTomClient(key).locate(*point) if point else None
+
+            self._runner.submit(
+                "expand-link",
+                resolve_link,
+                on_success=lambda place: (
+                    self._save_place(end, place)
+                    if place is not None
+                    else field.show_status(
+                        "Could not read that link. Open it in a browser and copy the full "
+                        "address bar instead."
+                    )
+                ),
+                on_error=lambda exc: field.show_status(
+                    f"Could not expand that link: {_message_for(exc)}"
+                ),
+            )
+            return
+
+        from cerepulse.commute.locations import looks_like_maps_url
+
+        if looks_like_maps_url(typed):
+            # A Maps URL with no point in it. Searching TomTom for a URL would return
+            # *something*, which is exactly the silent wrong answer this field must not give.
+            field.show_status(describe_paste(typed))
+            return
+
+        field.show_status("Searching…")
         self._runner.submit(
             "geocode",
-            lambda: TomTomClient(key).geocode(text),
-            on_success=self._home_found,
-            on_error=lambda exc: self.settings.show_geocode_result(
-                f"Could not look that up: {_message_for(exc)}"
-            ),
+            lambda: TomTomClient(key).search(typed),
+            on_success=lambda places: self._offer_places(end, places),
+            on_error=lambda exc: field.show_status(f"Could not look that up: {_message_for(exc)}"),
         )
 
-    def _home_found(self, place: object) -> None:
-        if place is None:
-            self.settings.show_geocode_result("Nothing matched that address. Try adding the city.")
+    def _offer_places(self, end: str, places: object) -> None:
+        field = self.settings.address_field(end)
+        found = list(places)  # type: ignore[call-overload]
+        if not found:
+            field.show_status("Nothing matched that. Try adding the area or city.")
             return
+        field.show_candidates(found)
 
+    def _place_chosen(self, end: str, place: object) -> None:
+        self._save_place(end, place)
+
+    def _save_place(self, end: str, place: object) -> None:
+        """Write a confirmed point into config. The only path that stores coordinates."""
         from cerepulse.core.config import save_config
 
-        config = replace(
-            self._context.config,
-            commute=replace(
-                self._context.config.commute,
-                destination=place.label,  # type: ignore[attr-defined]
-                destination_lat=place.latitude,  # type: ignore[attr-defined]
-                destination_lon=place.longitude,  # type: ignore[attr-defined]
-            ),
-        )
+        resolved = str(place.resolved)  # type: ignore[attr-defined]
+        latitude = float(place.latitude)  # type: ignore[attr-defined]
+        longitude = float(place.longitude)  # type: ignore[attr-defined]
+        commute = self._context.config.commute
+        if end == "office":
+            commute = replace(commute, origin=resolved, origin_lat=latitude, origin_lon=longitude)
+        else:
+            commute = replace(
+                commute,
+                destination=resolved,
+                destination_lat=latitude,
+                destination_lon=longitude,
+            )
+        config = replace(self._context.config, commute=commute)
         try:
             save_config(config)
         except CerePulseError as exc:
-            self.settings.show_geocode_result(f"Found it, but could not save: {exc}")
+            self.settings.address_field(end).show_status(f"Found it, but could not save: {exc}")
             return
         self._context.apply_config(config)
         self.settings.set_config(config)
-        self.settings.show_geocode_result(
-            f"Found: {place.resolved}. Saved."  # type: ignore[attr-defined]
+        self.settings.address_field(end).show_status(
+            f"Saved: {resolved} ({latitude:.5f}, {longitude:.5f}). "
+            "Check it on the map if in doubt.",
+            located=True,
         )
+
+    def _open_in_maps(self, end: str) -> None:
+        """Show the saved point in the browser — the one confirmation that is conclusive.
+
+        Free and keyless: it is a plain Google Maps URL, so checking the pin costs nothing
+        and works whether or not TomTom is reachable.
+        """
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        commute = self._context.config.commute
+        latitude, longitude = (
+            (commute.origin_lat, commute.origin_lon)
+            if end == "office"
+            else (commute.destination_lat, commute.destination_lon)
+        )
+        if latitude == 0.0 and longitude == 0.0:
+            self.settings.address_field(end).show_status("Nothing saved to show yet.")
+            return
+        QDesktopServices.openUrl(QUrl(f"https://www.google.com/maps?q={latitude},{longitude}"))
 
     def _check_key(self, key: str) -> None:
         """Validate a pasted key, and store it only when that means something.

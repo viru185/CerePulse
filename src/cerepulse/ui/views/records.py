@@ -81,7 +81,6 @@ KIND_FILTERS: tuple[tuple[str, Callable[[Record], bool]], ...] = (
     # Absence had no entry at all under the old single dropdown, so the one kind that always
     # needs an explanation was the one kind that could not be filtered to.
     ("Absence", lambda record: record.kind is RecordKind.ABSENCE),
-    ("Holidays", lambda record: record.kind is RecordKind.HOLIDAY),
 )
 
 #: "Needs doing" leads because it is the only one that is urgent.
@@ -92,6 +91,34 @@ STATE_FILTERS: tuple[tuple[str, Callable[[Record], bool]], ...] = (
     ("Settled", lambda record: record.is_settled),
 )
 
+#: How far back the timeline reaches. Whole calendar months, because "the last 2 months"
+#: read as a day count would slide a request off the screen mid-conversation about it.
+#: ``0`` means the calendar year; ``None`` means everything the cache holds.
+PERIODS: tuple[tuple[str, int | None], ...] = (
+    ("Last 2 months", 2),
+    ("Last 6 months", 6),
+    ("This year", 0),
+    ("Everything", None),
+)
+
+#: The most rows one render will build. The timeline is a widget per row, and "Everything"
+#: against a long history is real widget count; past this the answer is a narrower period,
+#: not more scrolling. The cut always announces itself — a silent truncation reads as
+#: "this is all there is", which is worse than the big list it avoids.
+MAX_ROWS = 200
+
+
+def period_start(months: int | None, *, today: date) -> date | None:
+    """The first day the selected period covers, or ``None`` for no bound."""
+    if months is None:
+        return None
+    if months == 0:
+        return date(today.year, 1, 1)
+    year, month = today.year, today.month - (months - 1)
+    while month < 1:
+        year, month = year - 1, month + 12
+    return date(year, month, 1)
+
 
 class RecordsView(QWidget):
     """Leave balances, the breaks they can buy, and everything that happened."""
@@ -99,6 +126,8 @@ class RecordsView(QWidget):
     refresh_requested = Signal()
     open_portal = Signal()
     day_selected = Signal(object)  # date
+    #: The period combo moved — the window reloads the timeline's days from the cache.
+    period_changed = Signal()
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -165,6 +194,13 @@ class RecordsView(QWidget):
         timeline_host.setLayout(self._timeline)
         layout.addWidget(timeline_host)
 
+        # The cut always announces itself; a silently bounded list reads as complete.
+        self._overflow = QLabel()
+        self._overflow.setObjectName("CardCaption")
+        self._overflow.setWordWrap(True)
+        self._overflow.setVisible(False)
+        layout.addWidget(self._overflow)
+
         self._nothing = EmptyState(
             "Nothing recorded.",
             "Leave, outdoor duty, comp-off and swipe requests all appear here once the "
@@ -193,12 +229,25 @@ class RecordsView(QWidget):
         row = QHBoxLayout()
         row.setSpacing(Space.SNUG)
         row.addWidget(SectionTitle("What happened"))
+        # The period re-loads from the cache rather than re-filtering what is on screen, so
+        # it signals the window instead of rendering locally like the other two.
+        self._period = QComboBox()
+        self._period.setMinimumWidth(140)
+        for label, _months in PERIODS:
+            self._period.addItem(label)
+        self._period.currentIndexChanged.connect(lambda _index: self.period_changed.emit())
         self._kind = self._filter_box(KIND_FILTERS, width=160)
         self._state = self._filter_box(STATE_FILTERS, width=170)
         row.addStretch(1)
+        row.addWidget(self._period)
         row.addWidget(self._kind)
         row.addWidget(self._state)
         return row
+
+    def period_start(self, *, today: date | None = None) -> date | None:
+        """The first day the selected period covers, or ``None`` for everything."""
+        _label, months = PERIODS[max(0, self._period.currentIndex())]
+        return period_start(months, today=today or date.today())
 
     def _filter_box(
         self, entries: tuple[tuple[str, Callable[[Record], bool]], ...], *, width: int
@@ -388,10 +437,17 @@ class RecordsView(QWidget):
         shown = [record for record in self._records if by_kind(record) and by_state(record)]
         self._nothing.setVisible(not shown)
 
-        for record in shown:
+        for record in shown[:MAX_ROWS]:
             row = _RecordRow(record, self._palette)
             row.clicked.connect(lambda day=record.day: self.day_selected.emit(day))
             self._timeline.addWidget(row)
+
+        if len(shown) > MAX_ROWS:
+            self._overflow.setText(
+                f"Showing the {MAX_ROWS} most recent of {len(shown)} — narrow the period "
+                "or the filters to reach the rest."
+            )
+        self._overflow.setVisible(len(shown) > MAX_ROWS)
 
 
 def _empty(layout: QVBoxLayout | QHBoxLayout) -> None:
@@ -473,7 +529,6 @@ def _kind_colour(record: Record, palette: Palette) -> str:
         RecordKind.COMP_OFF_EARNED: palette.good,
         RecordKind.COMP_OFF_SPENT: palette.work,
         RecordKind.SWIPE_REQUEST: palette.good,
-        RecordKind.HOLIDAY: palette.text_muted,
         RecordKind.ABSENCE: palette.bad,
     }.get(record.kind, palette.text_muted)
 

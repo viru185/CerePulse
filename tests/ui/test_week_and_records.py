@@ -393,6 +393,67 @@ def test_every_filter_combination_survives_an_empty_timeline(qapp: QApplication)
             view._state.setCurrentIndex(state)
 
 
+# --- the period window ------------------------------------------------------------------
+
+
+def test_the_period_defaults_to_the_last_two_months(qapp: QApplication) -> None:
+    """Whole calendar months, not sixty days — a day count would slide a request off the
+    screen mid-conversation about it."""
+    view = RecordsView(DARK)
+    assert view.period_start(today=date(2026, 8, 5)) == date(2026, 7, 1)
+
+
+def test_each_period_computes_its_own_floor(qapp: QApplication) -> None:
+    from cerepulse.ui.views.records import PERIODS
+
+    view = RecordsView(DARK)
+    labels = [label for label, _months in PERIODS]
+    today = date(2026, 8, 5)
+
+    view._period.setCurrentIndex(labels.index("Last 6 months"))
+    assert view.period_start(today=today) == date(2026, 3, 1)
+
+    view._period.setCurrentIndex(labels.index("This year"))
+    assert view.period_start(today=today) == date(2026, 1, 1)
+
+    view._period.setCurrentIndex(labels.index("Everything"))
+    assert view.period_start(today=today) is None
+
+
+def test_a_period_crossing_the_year_boundary_lands_in_the_old_year(qapp: QApplication) -> None:
+    from cerepulse.ui.views.records import period_start
+
+    assert period_start(2, today=date(2026, 1, 15)) == date(2025, 12, 1)
+    assert period_start(6, today=date(2026, 2, 10)) == date(2025, 9, 1)
+
+
+def test_the_render_cap_announces_itself(qapp: QApplication) -> None:
+    """A silently bounded list reads as complete, which is worse than the big list it
+    avoids."""
+    from cerepulse.ui.views.records import MAX_ROWS
+
+    view = RecordsView(DARK)
+    many = [
+        Record(
+            date(2026, 1, 1) + __import__("datetime").timedelta(days=offset),
+            RecordKind.LEAVE,
+            "Leave",
+        )
+        for offset in range(MAX_ROWS + 50)
+    ]
+    view.show_records(many)
+
+    assert view._timeline.count() == MAX_ROWS
+    assert view._overflow.isVisibleTo(view)
+    assert f"{MAX_ROWS} most recent of {MAX_ROWS + 50}" in view._overflow.text()
+
+
+def test_a_list_inside_the_cap_shows_no_overflow_note(qapp: QApplication) -> None:
+    view = RecordsView(DARK)
+    view.show_records(records())
+    assert not view._overflow.isVisibleTo(view)
+
+
 # --- the holiday calendar ---------------------------------------------------------------
 
 
