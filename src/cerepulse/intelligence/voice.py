@@ -140,6 +140,16 @@ def _bucket(insight: Insight, analysis: DayAnalysis) -> str | None:
     if insight.kind is InsightKind.SWIPE_FILED:
         return "filed"
 
+    # The nudges. These are the one place the app may be pointed, because they carry no
+    # figure that a joke could soften — "four hours, no break" is the whole message, and a
+    # line after it changes nothing about what is true. Banded so a nudge at four hours and
+    # one at seven do not read the same, which is the difference between a remark and a nag.
+    if insight.kind is InsightKind.NO_BREAK_YET:
+        return _band(analysis.worked, (0, "due"), (330, "overdue"))
+
+    if insight.kind is InsightKind.LEAVE_UNUSED:
+        return "stale"
+
     if insight.kind is InsightKind.STILL_WORKING and analysis.state is DayState.INCOMPLETE:
         # Only the two ends of the day are worth a remark. At half past two with three
         # hours left there is nothing to say, and saying it anyway is how an app becomes
@@ -238,6 +248,21 @@ _QUIPS: dict[tuple[InsightKind, str], tuple[str, ...]] = {
         "Nearly there.",
         "The end is in sight.",
         "Home stretch.",
+    ),
+    (InsightKind.NO_BREAK_YET, "due"): (
+        "The kettle is right there.",
+        "Even ten minutes counts.",
+        "Nobody is giving out medals for this.",
+    ),
+    (InsightKind.NO_BREAK_YET, "overdue"): (
+        "This is no longer impressive, it is just a long time.",
+        "Whatever it is, it will survive fifteen minutes without you.",
+        "Go and look at something that is not a screen.",
+    ),
+    (InsightKind.LEAVE_UNUSED, "stale"): (
+        "Leave you never take is a pay cut you volunteered for.",
+        "The work will still be here. It is very good at that.",
+        "Somebody should book something.",
     ),
 }
 

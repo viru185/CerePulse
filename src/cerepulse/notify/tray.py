@@ -19,6 +19,7 @@ from cerepulse.core.config import NotificationConfig
 from cerepulse.intelligence.day import DayAnalysis, DayState
 from cerepulse.intelligence.insights import Insight, Severity
 from cerepulse.notify.policy import NotificationPolicy, notification_title
+from cerepulse.notify.toast import ToastSender
 from cerepulse.ui import formatting as fmt
 
 #: How often the countdown in the tooltip is recomputed.
@@ -48,6 +49,9 @@ class Tray(QObject):
         super().__init__(parent)
         self.policy = NotificationPolicy(config)
         self._analysis: DayAnalysis | None = None
+        #: Built once — creating it resolves COM interfaces. Falls back to the tray balloon
+        #: on any machine where the WinRT bindings are not usable.
+        self._toasts = ToastSender()
 
         self._tray = QSystemTrayIcon(icon, self)
         self._tray.setToolTip(about.NAME)
@@ -159,11 +163,23 @@ class Tray(QObject):
         return shown
 
     def notify(self, insight: Insight) -> bool:
-        """Show one toast, bypassing the policy. Returns whether it was actually delivered.
+        """Show one notification, bypassing the policy. Returns whether it was delivered.
 
         Callers need the answer: an update notice that was silently dropped should fall
         back to a dialog rather than vanishing.
+
+        A real Windows toast first, because that is the only kind Windows keeps — the tray
+        balloon this used to send is shown and then forgotten, so a notification missed by
+        thirty seconds was gone with nothing in the Action Center to go back to. The balloon
+        remains the fallback for any machine where the toast layer will not load.
         """
+        title = notification_title(insight)
+        body = insight.detail or insight.title
+
+        if self._toasts.send(title, body):
+            logger.info("Notified: {}", insight.title)
+            return True
+
         reason = self.delivery_problem()
         if reason is not None:
             # INFO, not DEBUG. This is the line that explains an absent notification, and
@@ -172,19 +188,26 @@ class Tray(QObject):
             return False
 
         self._tray.showMessage(
-            notification_title(insight),
-            insight.detail or insight.title,
+            title,
+            body,
             _ICONS.get(insight.severity, QSystemTrayIcon.MessageIcon.Information),
             8000,
         )
-        logger.info("Notified: {}", insight.title)
+        logger.info("Notified via the tray (no toast): {}", insight.title)
         return True
 
     def delivery_problem(self) -> str | None:
-        """What would stop a toast right now, or ``None`` if nothing would.
+        """What would stop a notification right now, or ``None`` if nothing would.
 
         Separate from :meth:`notify` so Settings can ask without sending anything.
+
+        A working toast sender answers this on its own. Both conditions below are about the
+        *tray*, and the tray is now only the fallback: a hidden icon says nothing about
+        whether Windows will accept a toast, and reporting it as a problem would have the
+        app claim it cannot notify while it demonstrably can.
         """
+        if self._toasts.available:
+            return None
         if not self._tray.isVisible():
             return "the tray icon is not showing"
         if not self._tray.supportsMessages():
@@ -213,14 +236,25 @@ class Tray(QObject):
                 f"held until morning."
             )
 
+        title = f"{about.NAME} is set up"
+        body = "Notifications are working. This is the only one you asked for."
+        if self._toasts.send(title, body):
+            return (
+                "Sent, and Windows will keep it — check the Action Center if you missed it. "
+                f"If nothing appeared at all, look at Settings → System → Notifications "
+                f"for {about.NAME}, and that Do Not Disturb is off."
+            )
+
         self._tray.showMessage(
-            f"{about.NAME} is set up",
-            "Notifications are working. This is the only one you asked for.",
+            title,
+            body,
             QSystemTrayIcon.MessageIcon.Information,
             8000,
         )
         return (
-            "Sent. If nothing appeared, check Windows Settings → System → Notifications "
+            f"Sent as a tray balloon rather than a toast ({self._toasts.unavailable}), so "
+            "Windows will show it but not keep it. "
+            "If nothing appeared, check Windows Settings → System → Notifications "
             f"for {about.NAME}, and that Do Not Disturb is off."
         )
 

@@ -24,14 +24,20 @@ from cerepulse.core.config import NotificationConfig
 from cerepulse.intelligence.insights import Insight, InsightKind, Severity
 
 #: Insight kinds that are worth interrupting someone for, mapped to their config toggle.
+#:
+#: ``SHORT_HOURS`` used to be here and is not, because nothing has ever constructed one:
+#: ``early_exit`` is ``COMPLETE and worked < target``, which is every finished short day, so
+#: ``EARLY_EXIT`` already covers the case. A toggle wired to an insight that cannot exist is
+#: a setting that does nothing.
 TOGGLES: dict[InsightKind, str] = {
     InsightKind.ON_TRACK: "work_target_reached",
     InsightKind.EARLY_EXIT: "short_hours_warning",
-    InsightKind.SHORT_HOURS: "short_hours_warning",
     InsightKind.SWIPE_NEEDED: "swipe_request_needed",
     InsightKind.SWIPE_DECIDED: "swipe_request_decided",
     InsightKind.LONG_BREAK: "break_exceeded",
     InsightKind.LEAVE_EXPIRING: "leave_expiring",
+    InsightKind.NO_BREAK_YET: "break_reminder",
+    InsightKind.LEAVE_UNUSED: "leave_reminder",
 }
 
 #: Kinds that never notify — informational only, shown in the window.

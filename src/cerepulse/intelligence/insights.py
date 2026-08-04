@@ -47,6 +47,13 @@ class InsightKind(Enum):
     ANOMALY = "anomaly"
     BREAK_HEADROOM = "break_headroom"
     GRID_ONLY = "grid_only"
+    #: Nudges — observations about a habit rather than about a day's figures. They exist
+    #: because the app was almost silent: most of the kinds above either never notify or
+    #: need a fifteen-minute tick to land inside a narrow window, so a whole week could pass
+    #: without a word. These are about how long something has been true, which is exactly
+    #: the sort of thing a person stops noticing for themselves.
+    NO_BREAK_YET = "no_break_yet"
+    LEAVE_UNUSED = "leave_unused"
 
 
 class ActionKind(Enum):

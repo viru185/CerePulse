@@ -13,8 +13,8 @@ before the tail of the month.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from datetime import date, datetime
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, timedelta
 
 from loguru import logger
 
@@ -23,7 +23,9 @@ from cerepulse.core.errors import CerePulseError, TransportError
 from cerepulse.intelligence.anomalies import Anomaly, detect_anomalies
 from cerepulse.intelligence.attention import Attention, find_attention, swipe_index
 from cerepulse.intelligence.day import DayAnalysis, analyze_day
+from cerepulse.intelligence.insights import Insight
 from cerepulse.intelligence.month import MonthAnalysis, analyze_month
+from cerepulse.intelligence.nudges import LEAVE_LOOKBACK_DAYS, day_nudges, leave_nudges
 from cerepulse.intelligence.policy import ShiftPolicy
 from cerepulse.intelligence.trends import (
     MIN_SAMPLE,
@@ -240,9 +242,31 @@ class AttendanceService:
             swipe_requests=self._swipes.find_all(employee_code),
             grid_only=grid_only,
         )
+        # Nudges are appended rather than produced by `analyze_day`, because they are about
+        # a habit rather than about the day's arithmetic and that separation is worth
+        # keeping visible. They are ordinary insights from here on, so the notification
+        # policy's quiet hours and once-a-day both apply to them unchanged.
+        nudges = [
+            *day_nudges(analysis, now=now),
+            *self._leave_nudges(employee_code, today=day),
+        ]
+        nudged = replace(analysis, insights=(*analysis.insights, *nudges))
         # Voiced here rather than in the views, so the window, the tray tooltip and the
         # notifications all say the same thing about the same day.
-        return voice_day(analysis, tone=Tone.parse(self._config.ui.tone))
+        return voice_day(nudged, tone=Tone.parse(self._config.ui.tone))
+
+    def _leave_nudges(self, employee_code: str, *, today: date) -> list[Insight]:
+        """How long since a day off, read from the muster.
+
+        Here rather than in :class:`LeaveService` because the answer is in the attendance
+        history, not in the leave ledger — the ledger this portal writes records credits and
+        leaves ``consumed_days`` at zero on every row, so a nudge built on it would have
+        stayed silent forever and looked like a threshold set too high.
+        """
+        window = self._attendance.find_days_between(
+            employee_code, today - timedelta(days=LEAVE_LOOKBACK_DAYS), today
+        )
+        return leave_nudges(window, today=today)
 
     def load_trends(
         self,

@@ -80,6 +80,12 @@ class NotificationConfig:
     #: which is why people re-check it for days.
     swipe_request_decided: bool = True
     leave_expiring: bool = True
+    #: Nudges: hours at the desk with no break, and a long stretch with no leave. Separate
+    #: toggles from the alerts above because they are a different kind of thing — an
+    #: observation about a habit rather than a warning about a figure — and somebody who
+    #: wants the facts and not the company should be able to say so.
+    break_reminder: bool = True
+    leave_reminder: bool = True
 
 
 @dataclass(frozen=True, slots=True)

@@ -24,6 +24,13 @@ ICON = ROOT / "src" / "cerepulse" / "ui" / "assets" / "icon.ico"
 HIDDEN = [
     "keyring.backends.Windows",
     "win32timezone",
+    # The toast layer is imported inside a try/except at call time, precisely so a machine
+    # that cannot load it falls back to the tray — which also means it never appears in the
+    # import graph and would be left out of the build. It would then "fail to load" in every
+    # packaged copy and nowhere else, so notifications would silently stop persisting in
+    # exactly the builds people actually run.
+    "windows_toasts",
+    *collect_submodules("winrt"),
     *collect_submodules("cerepulse"),
 ]
 

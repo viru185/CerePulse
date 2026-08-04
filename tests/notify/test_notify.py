@@ -13,6 +13,7 @@ from cerepulse.intelligence.insights import Insight, InsightKind, Severity
 from cerepulse.models.attendance import Punch, PunchDirection
 from cerepulse.notify.policy import SILENT, NotificationPolicy, Verdict, notification_title
 from cerepulse.notify.startup import RUN_KEY, VALUE_NAME, executable_command, is_frozen
+from cerepulse.notify.toast import ToastSender
 from cerepulse.notify.tray import Tray
 
 DAY = date(2026, 7, 28)
@@ -240,9 +241,47 @@ def test_tooltip_for_a_day_with_no_punches() -> None:
 
 @pytest.fixture
 def tray(qapp: object) -> Tray:
+    """A tray with no route out: no visible icon, and no Windows toast either.
+
+    Both have to be shut off. Since 0.12 a real toast is tried first and does not care
+    whether the tray icon is showing — which is correct, and means hiding the icon alone no
+    longer simulates "cannot deliver" on a machine where toasts actually work.
+    """
     from PySide6.QtGui import QIcon
 
-    return Tray(QIcon(), NotificationConfig())
+    built = Tray(QIcon(), NotificationConfig())
+    built._toasts = ToastSender(unavailable="disabled for this test")
+    return built
+
+
+@pytest.fixture
+def toasting_tray(qapp: object) -> Tray:
+    """A tray whose toasts always succeed, without touching the real notification centre."""
+    from PySide6.QtGui import QIcon
+
+    class Always(ToastSender):
+        def send(self, title: str, body: str) -> bool:
+            self.sent.append((title, body))  # type: ignore[attr-defined]
+            return True
+
+    built = Tray(QIcon(), NotificationConfig())
+    sender = Always()
+    sender.sent = []  # type: ignore[attr-defined]
+    built._toasts = sender
+    return built
+
+
+def test_a_real_toast_is_preferred_over_the_tray_balloon(toasting_tray: Tray) -> None:
+    """A balloon is shown and forgotten; only a toast reaches the notification history."""
+    assert toasting_tray.notify(insight(InsightKind.SWIPE_NEEDED)) is True
+    assert toasting_tray._toasts.sent, "it went to Windows, not to the tray"  # type: ignore[attr-defined]
+
+
+def test_a_hidden_tray_icon_no_longer_blocks_a_notification(toasting_tray: Tray) -> None:
+    """The tray is the fallback now. Reporting its state as the problem would have the app
+    claim it cannot notify while it demonstrably can."""
+    assert toasting_tray.delivery_problem() is None
+    assert toasting_tray.notify(insight(InsightKind.LONG_BREAK)) is True
 
 
 def test_an_undeliverable_toast_says_so_rather_than_pretending(tray: Tray) -> None:

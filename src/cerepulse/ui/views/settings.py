@@ -250,6 +250,11 @@ class SettingsView(QWidget):
             ("swipe_request_decided", "Swipe request approved or rejected"),
             ("break_exceeded", "Break ran over"),
             ("leave_expiring", "Leave expiring"),
+            # Nudges, listed with the alerts but separately switchable: they are remarks
+            # about a habit rather than warnings about a figure, and somebody who wants the
+            # facts without the company should be able to say so.
+            ("break_reminder", "Hours without a break"),
+            ("leave_reminder", "A long time since leave"),
         ):
             box = QCheckBox(label)
             self._alerts[field] = box

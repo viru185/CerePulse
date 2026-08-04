@@ -684,6 +684,19 @@ class MainWindow(QMainWindow):
             return
         self._sync.load_today(view)
 
+    def _notify_today(self) -> None:
+        """Let the tray judge today even while the screen is showing another day.
+
+        Reading Tuesday's punches should not switch the day's alerts off. The month view
+        already holds an analysis per day, so this needs no fetch — and going through the
+        same policy means quiet hours and once-per-day still apply.
+        """
+        if self._tray is None or self._month_view is None:
+            return
+        analysis = self._month_view.analyses.get(date.today())
+        if analysis is not None:
+            self._tray.notify_insights(list(analysis.insights))
+
     def _render_week(self, view: MonthView) -> None:
         week = analyze_week(
             list(view.month.days),
@@ -709,6 +722,12 @@ class MainWindow(QMainWindow):
         if self._tray is not None and is_today:
             self._tray.set_analysis(analysis)
             self._tray.notify_insights(list(analysis.insights))
+        elif self._tray is not None:
+            # Reading a past date must not switch notifications off. `_show_current_day`
+            # loads the day being *viewed* rather than today, so parking the screen on last
+            # Tuesday meant every refresh for the rest of the week arrived here with
+            # `is_today` False and told the tray nothing at all.
+            self._notify_today()
 
     def _render_status(self, view: MonthView) -> None:
         synced = fmt.relative_time(view.last_synced)
