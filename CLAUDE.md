@@ -152,6 +152,19 @@ from "am I behind".
 **An empty punch log is "loaded", not "unfetched".** Those two states drive different
 decisions and the sync backlog depends on telling them apart.
 
+**Today's punch log is never finished.** `days_missing_detail` asked which days were
+*missing* detail, and today needs asking whether its detail is *stale*: the 08:30 fetch
+stores the arrival, one punch row satisfies "has detail", and today drops out of the backlog
+for good — so lunch and the evening out were never read and every automatic path re-rendered
+the morning. Today is always eligible while it is still today, and `load_day` treats a live
+day as unsettled. `drain_detail` still terminates, because today stops being today.
+
+**The leave ledger records credits, never consumption.** Every row this portal writes has
+`consumed_days = 0.0`, for every leave type, across the whole year. Anything that needs to
+know when leave was actually *taken* reads the muster — a day marked leave or half-day — not
+the ledger. A feature built on `consumed_days` is silent forever and looks like a threshold
+set too high.
+
 **Replay expired sessions exactly once.** A retry loop turns a rejected credential into an
 authentication storm against the employer's HR system. A second expiry is surfaced.
 
@@ -193,6 +206,14 @@ for are dropped, not scored zero — the same reasoning as `unmeasured_days`.
 target and then the verdict — left, over, or met. Worked and Break used to be framed in
 opposite directions, which made two figures side by side impossible to read as a pair, and
 an overrun break reported the word "None" while never stating by how much.
+
+**The browser handover must post at the top level.** Submitting the login form into a hidden
+iframe lets the page survive and navigate onward, and silently stops signing anyone in: the
+iframe is cross-origin, so the portal's cookies are third-party there and modern browsers
+block or partition them. The login succeeds inside the frame and the auth cookie never
+reaches the top-level context. This shipped in 0.11 and was caught by a user, not a test,
+because it was verified with an HTTP client — which cannot reproduce the one behaviour that
+matters. `tests/auth/test_handover.py` asserts the absence of the iframe for that reason.
 
 **Voice appends, never substitutes.** `intelligence/voice.py` may only add a sentence to an
 insight's detail. It cannot change a number, reword a warning, or drop a line, so no tone
