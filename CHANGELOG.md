@@ -2,10 +2,22 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.14.0-beta.1] - 2026-08-05
+
+### Bug Fixes
+- One truth per day, months that switch, and chrome that works
+
+### Chores
+- Bump to 0.14.0-beta.1
+
+### Features
+- This week against your usual — and a migration that can be retried
+
 ## [0.13.1-beta.1] - 2026-08-04
 
 ### Chores
 - Bump to 0.13.1-beta.1
+- Regenerate the changelog for 0.13.1-beta.1
 
 ### Features
 - A pin you can trust, and a Records page that stays readable
