@@ -86,9 +86,7 @@ def test_the_time_field_appears_only_for_a_custom_departure(qapp: QApplication) 
     card.show_view(ready())
     assert not card.at_time.isVisibleTo(card)
 
-    card.departure.setCurrentIndex(
-        [key for _label, key in CommuteCard.DEPARTURES].index("custom")
-    )
+    card.departure.setCurrentIndex([key for _label, key in CommuteCard.DEPARTURES].index("custom"))
     assert card.departure_basis() == "custom"
     assert card.at_time.isVisibleTo(card)
 

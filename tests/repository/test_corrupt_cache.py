@@ -38,6 +38,34 @@ def test_the_damaged_file_is_kept_not_deleted(tmp_path: Path) -> None:
     assert kept[0].read_bytes().startswith(b"garbage")
 
 
+def test_damage_that_only_a_migration_touches_is_still_survivable(tmp_path: Path) -> None:
+    """The quarantine used to cover only the *open*, whose worst statement is a PRAGMA.
+
+    Corruption living inside a table therefore opened cleanly and detonated during
+    ``migrate`` instead — and a MigrationError out of ``connect`` means the application
+    does not start at all, which inverts the whole point of the quarantine. It matters
+    more from 0.14 on: migration 006 rebuilds a table rather than adding a column, so it
+    reads and rewrites every row and touches pages a lighter migration walks past.
+
+    Simulated by corrupting the page bytes of a real, already-migrated database — a file
+    that opens and answers a PRAGMA, then fails once something reads the table.
+    """
+    target = tmp_path / "cerepulse.db"
+    open_database(target).close()  # a genuine, fully migrated database
+
+    raw = bytearray(target.read_bytes())
+    # Leave the 100-byte header intact so the file still identifies as SQLite and opens.
+    for offset in range(200, len(raw)):
+        raw[offset] = 0x5A
+    target.write_bytes(bytes(raw))
+
+    database = open_database(target)
+
+    assert database.connection.execute("SELECT 1").fetchone()[0] == 1
+    assert list(tmp_path.glob("cerepulse.db.corrupt-*"))
+    database.close()
+
+
 def test_no_stale_write_ahead_log_survives_the_recovery(tmp_path: Path) -> None:
     """Leaving one beside a fresh database is how damage becomes unopenable.
 

@@ -24,16 +24,18 @@ from cerepulse.intelligence.anomalies import Anomaly, detect_anomalies
 from cerepulse.intelligence.attention import Attention, find_attention, swipe_index
 from cerepulse.intelligence.day import DayAnalysis, analyze_day
 from cerepulse.intelligence.insights import Insight
-from cerepulse.intelligence.month import MonthAnalysis, analyze_month
+from cerepulse.intelligence.month import MonthAnalysis, analyze_month, week_start_for
 from cerepulse.intelligence.nudges import LEAVE_LOOKBACK_DAYS, day_nudges, leave_nudges
 from cerepulse.intelligence.policy import ShiftPolicy
 from cerepulse.intelligence.trends import (
     MIN_SAMPLE,
     TrendReport,
     analyze_trends,
+    build_facts,
     working_days_left,
 )
 from cerepulse.intelligence.voice import Tone, voice_day
+from cerepulse.intelligence.week_vs_usual import WeekComparison, compare_week
 from cerepulse.models.attendance import (
     AttendanceDay,
     AttendanceMonth,
@@ -99,6 +101,8 @@ class TrendsView:
     #: The daily work target every figure here was measured against, so a chart can scale
     #: itself against the same number the text beside it used.
     work_target: Duration = Duration(0)
+    #: This week against the baseline — the part of the screen that changes every day.
+    week: WeekComparison | None = None
 
     @property
     def is_thin(self) -> bool:
@@ -319,6 +323,12 @@ class AttendanceService:
             months_available=len(self.synced_months()),
             today=now,
             work_target=self.policy.work_target,
+            week=compare_week(
+                build_facts(days, policy=self.policy, analyses=analyses),
+                report.habits,
+                week_start=week_start_for(now),
+                today=now,
+            ),
         )
 
     def scope_statuses(self, employee_code: str, *, year: int, month: int) -> list[ScopeStatus]:

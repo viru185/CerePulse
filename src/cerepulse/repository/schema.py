@@ -217,8 +217,19 @@ def _migration_006(connection: sqlite3.Connection) -> None:
     SQLite cannot alter a primary key, so the table is rebuilt. Rows that collided under the
     old key are already lost and cannot be recovered here — the next sync refetches them,
     which is the whole reason nothing but parsed models is ever stored.
+
+    Statement by statement rather than through ``executescript``, which is not a stylistic
+    choice: ``executescript`` **implicitly commits** whatever transaction is open before it
+    runs, so the ``with connection`` wrapper in :func:`migrate` would not protect it. A
+    failure part-way through — a corrupt page in the source table is enough — then left the
+    half-built scratch table committed on disk, and every later launch died on "table
+    swipe_request_rebuilt already exists" instead. A migration that cannot be retried turns
+    one bad page into an application that never starts again.
     """
-    connection.executescript("""
+    # Belt and braces for a database already carrying the scratch table from a build that
+    # failed this way before the rollback was fixed.
+    connection.execute("DROP TABLE IF EXISTS swipe_request_rebuilt")
+    connection.execute("""
         CREATE TABLE swipe_request_rebuilt (
             employee_code TEXT NOT NULL,
             for_date      TEXT NOT NULL,
@@ -232,22 +243,21 @@ def _migration_006(connection: sqlite3.Connection) -> None:
             synced_at     TEXT NOT NULL,
             kind          TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (employee_code, for_date, direction, remark)
-        );
-
+        )
+    """)
+    connection.execute("""
         INSERT INTO swipe_request_rebuilt (
             employee_code, for_date, direction, in_time, out_time,
             remark, status, approve_date, category, synced_at, kind
         )
         SELECT employee_code, for_date, direction, in_time, out_time,
                remark, status, approve_date, category, synced_at, kind
-          FROM swipe_request;
-
-        DROP TABLE swipe_request;
-        ALTER TABLE swipe_request_rebuilt RENAME TO swipe_request;
-
-        -- Dropped with the old table; the month query depends on it.
-        CREATE INDEX idx_swipe_request_for_date ON swipe_request (for_date);
+          FROM swipe_request
     """)
+    connection.execute("DROP TABLE swipe_request")
+    connection.execute("ALTER TABLE swipe_request_rebuilt RENAME TO swipe_request")
+    # Dropped with the old table; the month query depends on it.
+    connection.execute("CREATE INDEX idx_swipe_request_for_date ON swipe_request (for_date)")
 
 
 #: Ordered migrations. Append only; never edit one that has shipped.

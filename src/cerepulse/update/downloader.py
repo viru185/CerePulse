@@ -191,9 +191,7 @@ def clear_spent_installers(current_version: str) -> int:
             size = file.stat().st_size
             file.unlink()
             removed += 1
-            logger.info(
-                "Removed the spent installer {} ({} MB)", file.name, size // 1_048_576
-            )
+            logger.info("Removed the spent installer {} ({} MB)", file.name, size // 1_048_576)
         except OSError as exc:
             # Locked is normal right after an update — the installer may still be open.
             logger.debug("Could not remove {}: {}", file.name, exc)

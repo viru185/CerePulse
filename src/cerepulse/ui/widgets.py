@@ -1018,6 +1018,7 @@ class BarChart(QWidget):
         self._bars: tuple[tuple[str, float, str], ...] = ()
         self._reference: float | None = None
         self._reference_label = ""
+        self._values: tuple[str, ...] = ()
         self.setMinimumHeight(self.HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -1027,11 +1028,18 @@ class BarChart(QWidget):
         *,
         reference: float | None = None,
         reference_label: str = "",
+        value_labels: Sequence[str] | None = None,
     ) -> None:
-        """``bars`` is (label, value, tooltip-ish caption) in display order."""
+        """``bars`` is (label, value, tooltip-ish caption) in display order.
+
+        ``value_labels`` puts the figure on the bar itself. The values used to live only in
+        the tooltip, which on a chart that is scanned rather than hovered is the same as
+        not being there — the stated complaint was a chart of unlabeled heights.
+        """
         self._bars = tuple(bars)
         self._reference = reference
         self._reference_label = reference_label
+        self._values = tuple(value_labels) if value_labels else ()
         self.setVisible(bool(self._bars))
         self.setToolTip("\n".join(f"{label}: {caption}" for label, _value, caption in self._bars))
         self.update()
@@ -1050,6 +1058,10 @@ class BarChart(QWidget):
         ceiling = max([value for _l, value, _c in self._bars] + [self._reference or 0.0])
         if ceiling <= 0:
             return
+        if self._values:
+            # Headroom for the value labels, so the tallest bar's figure is not pushed off
+            # the top of the widget and silently dropped.
+            ceiling *= 1.18
 
         slot = self.width() / len(self._bars)
         width = max(6.0, slot - self.GAP)
@@ -1066,6 +1078,24 @@ class BarChart(QWidget):
             path = QPainterPath()
             path.addRoundedRect(bar, 3, 3)
             painter.fillPath(path, QColor(colour))
+
+            if index < len(self._values):
+                # Above the bar when there is headroom, inside its top when there is not —
+                # a label pushed off the top edge of the widget is no label at all.
+                if bar.top() >= 14:
+                    painter.setPen(QColor(self._palette.text_muted))
+                    painter.drawText(
+                        QRectF(index * slot, bar.top() - 14, slot, 12),
+                        Qt.AlignmentFlag.AlignCenter,
+                        self._values[index],
+                    )
+                elif height >= 16:
+                    painter.setPen(QColor(self._palette.surface))
+                    painter.drawText(
+                        QRectF(index * slot, bar.top() + 2, slot, 12),
+                        Qt.AlignmentFlag.AlignCenter,
+                        self._values[index],
+                    )
 
             painter.setPen(QColor(self._palette.text_faint))
             painter.drawText(

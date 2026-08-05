@@ -17,7 +17,7 @@ from typing import Self
 
 from loguru import logger
 
-from cerepulse.core.errors import RepositoryError
+from cerepulse.core.errors import MigrationError, RepositoryError
 from cerepulse.repository.schema import migrate
 
 
@@ -61,8 +61,34 @@ class Database:
             raise RepositoryError(f"Could not open the local cache at {self.path}: {exc}") from exc
 
         self._connection = connection
-        migrate(connection)
+        self._migrate_or_quarantine(connection)
         return self
+
+    def _migrate_or_quarantine(self, connection: sqlite3.Connection) -> None:
+        """Migrate, and treat a corrupt file the same way opening one does.
+
+        The quarantine used to cover only :meth:`_open`, whose worst statement is a PRAGMA —
+        so corruption living in a *table* opened fine and blew up here instead, and a
+        ``MigrationError`` out of ``connect`` means the application does not start at all.
+        That inverts the rule this module is built on: every byte in here can be fetched
+        again, and refusing to start is a far worse outcome than re-syncing.
+
+        It matters more from 0.14 on, because migration 006 rebuilds a table rather than
+        adding a column — it reads and rewrites every row, so it touches the pages a lighter
+        migration would have walked straight past.
+        """
+        try:
+            migrate(connection)
+        except MigrationError as exc:
+            if not _is_corruption(exc) or not isinstance(self.path, Path):
+                raise
+            # Close first: on Windows the open handle blocks moving the file aside.
+            connection.close()
+            self._connection = None
+            self._quarantine(exc)
+            fresh = self._open()
+            self._connection = fresh
+            migrate(fresh)
 
     def _open(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
@@ -84,7 +110,7 @@ class Database:
             raise
         return connection
 
-    def _quarantine(self, exc: sqlite3.DatabaseError) -> None:
+    def _quarantine(self, exc: BaseException) -> None:
         """Move a damaged cache aside, sidecars and all, so a fresh one can be created.
 
         The ``-wal`` and ``-shm`` files have to go with it. Leaving a write-ahead log next
@@ -189,7 +215,7 @@ _CORRUPTION_SIGNS = (
 )
 
 
-def _is_corruption(exc: sqlite3.DatabaseError) -> bool:
+def _is_corruption(exc: BaseException) -> bool:
     """Whether the file is damaged, as opposed to merely busy or unreadable.
 
     A locked or permission-denied database must not be quarantined — it is fine, and moving

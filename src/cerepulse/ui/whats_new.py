@@ -100,9 +100,7 @@ class WhatsNewDialog(QDialog):
     def show_full_changelog(self) -> None:
         """Swap the body for the entire bundled changelog."""
         text = _bundled_changelog()
-        self._notes.setHtml(
-            render_notes(text or "The changelog did not ship with this build.")
-        )
+        self._notes.setHtml(render_notes(text or "The changelog did not ship with this build."))
         self._heading.setText("Everything that has changed")
         self._full.setVisible(False)
 

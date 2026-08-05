@@ -100,8 +100,19 @@ class InsightsView(QWidget):
         self.footing = Banner()
         layout.addWidget(self.footing)
 
-        # Four groups, in the order the questions actually get asked. Predictions leads
-        # because it is the only part of this screen anyone can still act on; the rest is
+        # The week leads because it is the only section that is different every day. A page
+        # of long-run medians moves by minutes a month, reads identically on Tuesday and
+        # Thursday, and stops being opened — which was the stated complaint.
+        layout.addWidget(SectionTitle("This week vs your usual"))
+        self._week = QVBoxLayout()
+        self._week.setSpacing(4)
+        week_host = QWidget()
+        week_host.setLayout(self._week)
+        layout.addWidget(week_host)
+        self._week_note = _caption()
+        layout.addWidget(self._week_note)
+
+        # Predictions next: the one part of the record anyone can still act on; the rest is
         # the record, and a record is read after the forecast, not before it.
         layout.addWidget(SectionTitle("Predictions — how this month lands"))
         self.projected = Card("Projected")
@@ -184,11 +195,47 @@ class InsightsView(QWidget):
         self._today = view.today
         self._target = view.work_target
         self._render_footing(view)
+        self._render_week(view.week)
         self._render_forecast(report.forecast)
         self._render_habits(report.habits)
         self._render_records(report.records)
         self._render_months(report.months)
         self._render_anomalies(view.anomalies, view.today)
+
+    def _render_week(self, week: object) -> None:
+        """One line per day of this week, measured against that weekday's own baseline."""
+        from cerepulse.intelligence.week_vs_usual import WeekComparison, describe
+
+        while self._week.count():
+            item = self._week.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+        if not isinstance(week, WeekComparison) or not week.has_baseline:
+            self._week_note.setText(
+                "Comparisons appear once enough history is cached to know what your usual "
+                "day looks like."
+            )
+            return
+        if not week.days:
+            self._week_note.setText("Nothing measured yet this week.")
+            return
+
+        for comparison in week.days:
+            row = QLabel(f"{comparison.weekday_name} —  {describe(comparison)}")
+            row.setWordWrap(True)
+            if comparison.is_notable:
+                row.setStyleSheet(f"color: {self._palette.text};")
+            else:
+                row.setObjectName("CardCaption")
+            self._week.addWidget(row)
+
+        self._week_note.setText(
+            f"Measured against {week.baseline_days} day(s) of your own history. "
+            "Deltas under 15m read as usual."
+        )
 
     def _render_footing(self, view: TrendsView) -> None:
         """State what the screen is standing on before it says anything else.
@@ -310,6 +357,7 @@ class InsightsView(QWidget):
             self.weekday_chart.set_bars(())
             return
 
+        with_sample = [entry for entry in habits.weekdays if entry.sample]
         self.weekday_chart.set_bars(
             [
                 (
@@ -317,11 +365,13 @@ class InsightsView(QWidget):
                     float(entry.typical_worked.minutes),
                     f"{fmt.duration(entry.typical_worked)} across {entry.sample} day(s)",
                 )
-                for entry in habits.weekdays
-                if entry.sample
+                for entry in with_sample
             ],
             reference=float(self._target.minutes) if self._target.minutes else None,
             reference_label=f"target {fmt.duration(self._target)}",
+            # On the bars, not in the tooltip: a chart that is scanned rather than hovered
+            # never shows its tooltip, which made these unlabeled heights.
+            value_labels=[fmt.duration(entry.typical_worked) for entry in with_sample],
         )
 
     def _render_weekdays(self, habits: Habits) -> None:
@@ -414,6 +464,7 @@ class InsightsView(QWidget):
             ],
             reference=float(target) if target else None,
             reference_label="full month",
+            value_labels=[fmt.duration(summary.worked) for summary in months],
         )
 
     def _render_months(self, months: tuple[MonthSummary, ...]) -> None:
