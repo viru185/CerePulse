@@ -79,6 +79,14 @@ class UpdateController(QObject):
         self._pending: Release | None = None
         self._downloaded: Download | None = None
 
+        # Housekeeping, not policy: every installer this build has already superseded is
+        # dead weight (~48 MB each), and nothing else ever looks at that directory again.
+        # Installers newer than this build are pending updates and are left alone.
+        from cerepulse import __about__ as about
+        from cerepulse.update.downloader import clear_spent_installers
+
+        clear_spent_installers(about.VERSION)
+
     def use_config(self, *, channel: Channel, download_automatically: bool) -> None:
         self._channel = channel
         self._auto_download = download_automatically

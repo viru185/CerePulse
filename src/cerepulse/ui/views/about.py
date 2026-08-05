@@ -129,6 +129,10 @@ class AboutView(QWidget):
         whats_new.clicked.connect(self._show_whats_new)
         row.addWidget(whats_new)
 
+        changelog = QPushButton("Full changelog")
+        changelog.clicked.connect(self._show_changelog)
+        row.addWidget(changelog)
+
         # Only offered when there is genuinely something to go back to — a button that
         # explains it cannot do anything is worse than no button.
         self._rollback = QPushButton("Roll back")
@@ -260,6 +264,14 @@ class AboutView(QWidget):
         from cerepulse.ui.whats_new import WhatsNewDialog
 
         WhatsNewDialog(version=about.VERSION, parent=self).exec()
+
+    def _show_changelog(self) -> None:
+        """The same dialog, opened straight onto the whole history."""
+        from cerepulse.ui.whats_new import WhatsNewDialog
+
+        dialog = WhatsNewDialog(version=about.VERSION, parent=self)
+        dialog.show_full_changelog()
+        dialog.exec()
 
 
 def _link(text: str, url: str) -> QPushButton:

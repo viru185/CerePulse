@@ -76,6 +76,33 @@ def test_a_configured_card_does_not_nag_about_setup(qapp: QApplication) -> None:
     assert not card.setup.isVisibleTo(card)
 
 
+def test_the_departure_selector_defaults_to_the_predicted_exit(qapp: QApplication) -> None:
+    card = CommuteCard(DARK)
+    assert card.departure_basis() == "target"
+
+
+def test_the_time_field_appears_only_for_a_custom_departure(qapp: QApplication) -> None:
+    card = CommuteCard(DARK)
+    card.show_view(ready())
+    assert not card.at_time.isVisibleTo(card)
+
+    card.departure.setCurrentIndex(
+        [key for _label, key in CommuteCard.DEPARTURES].index("custom")
+    )
+    assert card.departure_basis() == "custom"
+    assert card.at_time.isVisibleTo(card)
+
+
+def test_changing_the_basis_announces_itself(qapp: QApplication) -> None:
+    """The window recomputes; the card only reports which question is being asked."""
+    card = CommuteCard(DARK)
+    moved: list[bool] = []
+    card.departure_changed.connect(lambda: moved.append(True))
+
+    card.departure.setCurrentIndex(1)
+    assert moved
+
+
 def test_a_warning_rides_alongside_the_number_rather_than_replacing_it(
     qapp: QApplication,
 ) -> None:

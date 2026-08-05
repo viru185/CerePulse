@@ -65,19 +65,29 @@ class WhatsNewDialog(QDialog):
             published.setObjectName("CardCaption")
             layout.addWidget(published)
 
-        notes = QTextBrowser()
-        notes.setOpenExternalLinks(True)
+        self._heading = heading
+        self._notes = QTextBrowser()
+        self._notes.setOpenExternalLinks(True)
         # Falls back to the bundled changelog. Both call sites open this without a Release,
         # so until now it always rendered "No release notes were published" — the dialog
         # shown after every single update said nothing at all.
-        notes.setHtml(render_notes(release.notes if release else changelog_section(shown_version)))
-        layout.addWidget(notes, 1)
+        self._notes.setHtml(
+            render_notes(release.notes if release else changelog_section(shown_version))
+        )
+        layout.addWidget(self._notes, 1)
 
         buttons = QHBoxLayout()
         if release is not None:
             releases = QPushButton("View on GitHub")
             releases.clicked.connect(lambda: _open(release.url))
             buttons.addWidget(releases)
+
+        # The whole history, not just this version. It ships in the build already — the
+        # per-version section is cut out of it — so showing everything costs nothing and
+        # answers "what changed since the version I skipped from".
+        self._full = QPushButton("Full changelog")
+        self._full.clicked.connect(self.show_full_changelog)
+        buttons.addWidget(self._full)
         buttons.addStretch(1)
 
         close = QPushButton("Close")
@@ -86,6 +96,15 @@ class WhatsNewDialog(QDialog):
         close.clicked.connect(self.accept)
         buttons.addWidget(close)
         layout.addLayout(buttons)
+
+    def show_full_changelog(self) -> None:
+        """Swap the body for the entire bundled changelog."""
+        text = _bundled_changelog()
+        self._notes.setHtml(
+            render_notes(text or "The changelog did not ship with this build.")
+        )
+        self._heading.setText("Everything that has changed")
+        self._full.setVisible(False)
 
 
 class UpdateAvailableDialog(QDialog):

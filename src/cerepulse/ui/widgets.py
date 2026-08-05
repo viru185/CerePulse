@@ -17,6 +17,7 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QTableWidget,
+    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -1640,6 +1642,15 @@ class CommuteCard(QFrame):
 
     refresh_requested = Signal()
     setup_requested = Signal()
+    #: The departure basis moved — the window recomputes with the same guards.
+    departure_changed = Signal()
+
+    #: What "leaving at" means. Data on the combo, so render code never matches labels.
+    DEPARTURES = (
+        ("When target met", "target"),
+        ("Now", "now"),
+        ("At…", "custom"),
+    )
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1652,10 +1663,26 @@ class CommuteCard(QFrame):
 
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(8)
         title = QLabel("HOME BY")
         title.setObjectName("CardTitle")
         head.addWidget(title)
         head.addStretch(1)
+
+        # "How long if I leave right now?" is a different question from "when am I home if
+        # I work my target?", and both are fair. The choice only changes which departure
+        # the service is asked about — every guard behind it still applies.
+        self.departure = QComboBox()
+        for label, key in self.DEPARTURES:
+            self.departure.addItem(label, key)
+        self.departure.currentIndexChanged.connect(lambda _index: self._departure_moved())
+        head.addWidget(self.departure)
+
+        self.at_time = QTimeEdit()
+        self.at_time.setDisplayFormat("h:mm AP")
+        self.at_time.setVisible(False)
+        self.at_time.editingFinished.connect(self.departure_changed)
+        head.addWidget(self.at_time)
 
         self.refresh = QPushButton("Refresh")
         self.refresh.clicked.connect(self.refresh_requested)
@@ -1676,6 +1703,18 @@ class CommuteCard(QFrame):
         self._caption.setWordWrap(True)
         layout.addWidget(self._caption)
 
+    def _departure_moved(self) -> None:
+        self.at_time.setVisible(self.departure.currentData() == "custom")
+        self.departure_changed.emit()
+
+    def departure_basis(self) -> str:
+        """``target`` | ``now`` | ``custom`` — what "leaving at" currently means."""
+        return str(self.departure.currentData() or "target")
+
+    def custom_departure(self) -> time:
+        picked = self.at_time.time()
+        return time(picked.hour(), picked.minute())
+
     def show_view(self, view: CommuteView, *, now: datetime | None = None) -> None:
         from cerepulse.intelligence.commute import describe
 
@@ -1683,6 +1722,8 @@ class CommuteCard(QFrame):
         # Refresh is pointless before there is anything configured to refresh, but it is
         # hidden rather than disabled — a greyed-out control invites clicking at it.
         self.refresh.setVisible(not view.needs_setup)
+        self.departure.setVisible(not view.needs_setup)
+        self.at_time.setVisible(not view.needs_setup and self.departure_basis() == "custom")
 
         if view.arrival is None:
             self._value.setText(EMPTY_VALUE)

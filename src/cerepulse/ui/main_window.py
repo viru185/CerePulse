@@ -45,7 +45,6 @@ from cerepulse.intelligence.month import analyze_week, week_start_for
 from cerepulse.notify.startup import set_registered
 from cerepulse.notify.tray import Tray
 from cerepulse.services.attendance import MonthView
-from cerepulse.services.commute import CommuteView
 from cerepulse.services.leave import LeaveView as LeaveData
 from cerepulse.services.scopes import Scope
 from cerepulse.transport import pages
@@ -112,6 +111,10 @@ class MainWindow(QMainWindow):
         self._swipes: list[object] = []
         self._ledger: list[object] = []
         self._applications: list[object] = []
+        #: Months known synced or cached, refreshed on every month render. Held so stepping
+        #: the period can decide "does this month need a fetch" without a database read on
+        #: the GUI thread.
+        self._synced_months: set[tuple[int, int]] = set()
         #: Collapses a burst of "the timeline changed" calls into one render. A sync delivers
         #: all four sources within a turn or two of the event loop, and rebuilding four times
         #: means three renders that nothing ever sees.
@@ -213,6 +216,7 @@ class MainWindow(QMainWindow):
         self.settings.key_check_requested.connect(self._check_key)
         self.settings.key_guide_requested.connect(self._open_key_guide)
         self.today.commute_refresh_requested.connect(self._refresh_commute)
+        self.today.commute.departure_changed.connect(self._commute_departure_changed)
         self.today.commute_setup_requested.connect(
             lambda: self._navigation.drill_to(SETTINGS_SCREEN)
         )
@@ -302,6 +306,13 @@ class MainWindow(QMainWindow):
             lambda message: self.about.banner.show_message(message, Severity.WARNING)
         )
         self._updates.handover.connect(self._quit)
+
+        # Say a TomTom key is on file. The field itself never shows the key back — but
+        # without this the difference between "configured" and "never set up" was invisible,
+        # and a stored key read as a bug.
+        from cerepulse.core.secrets import TOMTOM_KEY, get_secret
+
+        self.settings.show_stored_key(bool(get_secret(TOMTOM_KEY)))
 
         self._sync = SyncController(
             context=self._context,
@@ -671,8 +682,16 @@ class MainWindow(QMainWindow):
     # --- rendering ------------------------------------------------------------------
 
     def _apply_month(self, view: MonthView) -> None:
-        self._month_view = view
         year, month = self._sync.period
+        # A payload for a month that is no longer current is dropped, not rendered. The
+        # runner serialises, so a load queued before a second period change delivers late —
+        # and rendering it made the table lag the picker by one stale month.
+        if (view.analysis.year, view.analysis.month) != (year, month):
+            logger.debug(
+                "Dropping a stale month view for {}-{:02d}", view.analysis.year, view.analysis.month
+            )
+            return
+        self._month_view = view
 
         # Offer every month the portal can serve, not only what is cached, so history is
         # reachable from the picker. The fetchable list needs the portal, so fall back to
@@ -682,6 +701,8 @@ class MainWindow(QMainWindow):
         cached = self._context.attendance.synced_months() | set(
             self._context.attendance.cached_months(self._employee_code)
         )
+        # Kept for _change_month, which must not pay a database read per step.
+        self._synced_months = cached
         months = sorted(cached | {(year, month)}, reverse=True)
         if self._fetchable_months:
             months = sorted(set(self._fetchable_months) | cached | {(year, month)}, reverse=True)
@@ -865,9 +886,18 @@ class MainWindow(QMainWindow):
     # --- actions --------------------------------------------------------------------
 
     def _change_month(self, year: int, month: int) -> None:
+        """Move the period. A step is a cache read, not a sync.
+
+        Every step used to start a full five-scope sync on the single-slot runner, so
+        stepping twice queued the second month's load behind the first month's network
+        round trip — the table lagged the picker by however long the portal took, which
+        read as months not switching at all. A cached month renders instantly; only a
+        month never synced costs a fetch, and only its own attendance scope.
+        """
         self._sync.period = (year, month)
         self._sync.load_from_cache()
-        self.refresh(force=False, quiet=True)
+        if (year, month) not in self._synced_months:
+            self._sync.sync_scope(Scope.ATTENDANCE)
 
     def _change_week(self, week_start: date) -> None:
         """Move the week, pulling in another month when the week has left this one.
@@ -990,16 +1020,16 @@ class MainWindow(QMainWindow):
     def _maybe_estimate_commute(self, analysis: DayAnalysis, *, is_today: bool) -> None:
         """Render the card, and spend a call only when one could change the answer.
 
-        Two separate decisions. The card always renders — including its "set this up"
-        state, which is how anybody discovers the feature exists. Whether that render costs
-        a request is the service's judgement, and for a past day or a day with no predicted
-        exit the answer is always no: there is nothing to be on time for.
+        On any day but today the card is hidden outright — an arrival time for a journey
+        already made answers nothing, and an inert card with a dash in it reads as broken
+        rather than as not applicable.
         """
-        if not is_today or analysis.leave_at is None:
-            self.today.show_commute(CommuteView(message="", needs_setup=False))
+        leaving = self._departure_for(analysis) if is_today else None
+        if leaving is None:
+            self.today.commute.setVisible(False)
             return
+        self.today.commute.setVisible(True)
 
-        leaving = analysis.leave_at
         service = self._context.commute
         if service.should_ask(leaving, now=datetime.now()):
             self._refresh_commute(force=False)
@@ -1008,6 +1038,38 @@ class MainWindow(QMainWindow):
         # departure — the exit time drifts as punches land, and the arrival must drift with
         # it rather than describing a departure that has moved on.
         self.today.show_commute(service.estimate(leaving))
+
+    def _departure_for(self, analysis: DayAnalysis) -> datetime | None:
+        """Which departure the card is asking about, from its own selector.
+
+        Three bases: the predicted exit (the default question), right now ("how long if I
+        left this minute?"), or a time the user typed. The basis only changes the departure
+        the service is asked for — the freshness floor, the in-flight lock and the budget
+        neither know nor care which question is being asked.
+        """
+        basis = self.today.commute.departure_basis()
+        if basis == "now":
+            return datetime.now()
+        if basis == "custom":
+            picked = self.today.commute.custom_departure()
+            return datetime.combine(date.today(), picked)
+        return analysis.leave_at
+
+    def _commute_departure_changed(self) -> None:
+        analysis = self._analysis
+        if analysis is None:
+            return
+        leaving = self._departure_for(analysis)
+        if leaving is None:
+            return
+        # From the held estimate when the bucket is unchanged; a new bucket is a new
+        # question and fetches through the ordinary guards.
+        self._runner.submit(
+            "commute",
+            lambda: self._context.commute.estimate(leaving),
+            on_success=lambda view: self.today.show_commute(view),
+            on_error=lambda exc: logger.warning("Commute refresh failed: {}", exc),
+        )
 
     def _find_address(self, end: str, text: str) -> None:
         """Resolve whatever was pasted for one end of the journey.
@@ -1190,6 +1252,7 @@ class MainWindow(QMainWindow):
         if check.is_usable or check.is_uncertain:  # type: ignore[attr-defined]
             store_secret(TOMTOM_KEY, key)
             self._context.commute.use_key(key)
+            self.settings.show_stored_key(True)
             if check.is_uncertain:  # type: ignore[attr-defined]
                 message += " Saved anyway — it may well be fine."
             self._refresh_commute()
@@ -1212,10 +1275,11 @@ class MainWindow(QMainWindow):
     def _refresh_commute(self, *, force: bool = True) -> None:
         """Ask for an arrival estimate. The button never refuses; the service decides cost."""
         analysis = self._analysis
-        if analysis is None or analysis.leave_at is None:
+        if analysis is None:
             return
-
-        leaving = analysis.leave_at
+        leaving = self._departure_for(analysis)
+        if leaving is None:
+            return
         self._runner.submit(
             "commute",
             lambda: self._context.commute.estimate(leaving, force=force),

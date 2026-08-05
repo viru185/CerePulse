@@ -56,10 +56,15 @@ def test_traffic_is_called_out_when_there_is_some() -> None:
     assert "18 min of it traffic" in caption
 
 
-def test_a_clear_road_says_nothing_about_traffic() -> None:
-    """Reporting "0 min of traffic" is noise, and it invites reading the absence as a
-    measurement that failed."""
-    assert "traffic" not in describe(arrival_at(LEAVING, estimate(43, delay=0)))
+def test_a_clear_road_says_so_in_words() -> None:
+    """Silence left "no congestion" indistinguishable from "congestion not measured" — and
+    the answer was fetched with live traffic either way, so the card knows which it is."""
+    assert "no traffic delay" in describe(arrival_at(LEAVING, estimate(43, delay=0)))
+
+
+def test_the_distance_is_always_stated() -> None:
+    """The API returned it; withholding it made the card say less than the app knew."""
+    assert "27.4 km" in describe(arrival_at(LEAVING, estimate(43)))
 
 
 def test_the_caption_says_how_stale_the_number_is() -> None:

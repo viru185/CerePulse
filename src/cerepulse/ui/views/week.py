@@ -165,7 +165,10 @@ class WeekView(QWidget):
         """One sentence saying whether the week is fine, and what it would take if not."""
         palette = self._palette
         required = analysis.required_daily_average
-        settled = max(0, analysis.working_days - analysis.days_ahead)
+        # The analysis's own count, not a re-derivation. Subtracting days_ahead from
+        # working_days hit zero with today in progress, printing "0 day(s) already
+        # worked" beside a sixteen-hour total summed from the very days it denied.
+        settled = analysis.completed_days
 
         if analysis.target.minutes <= 0:
             # The target covers completed working days only, so a zero target means there
@@ -215,7 +218,10 @@ class WeekView(QWidget):
 
     def _render_cards(self, analysis: WeekAnalysis) -> None:
         palette = self._palette
-        settled = max(0, analysis.working_days - analysis.days_ahead)
+        # The analysis's own count, not a re-derivation. Subtracting days_ahead from
+        # working_days hit zero with today in progress, printing "0 day(s) already
+        # worked" beside a sixteen-hour total summed from the very days it denied.
+        settled = analysis.completed_days
 
         self.total.set_value(fmt.duration(analysis.total_worked), accent=palette.work)
         self.total.set_caption(f"across {settled} completed day(s)")

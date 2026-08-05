@@ -604,12 +604,19 @@ class AttendanceService:
         # Fetched once. Reading it per day put one query per day of punch detail behind a
         # dict comprehension, which is a lot of round trips for a value that never changes.
         requests = self._swipes.find_all(code)
+        # Today gets the clock; every other day is genuinely finished. Without it, today was
+        # analysed as a *completed* day here — its open punch pair read as a missing punch
+        # and its worked time as zero — while the Today screen analysed the same punches
+        # with `now` and inferred the in-progress pair. Same day, two answers, and this one
+        # fed the Week timelines, the day drawer and `find_attention`.
+        current = today or date.today()
         analyses = {
             day.day: analyze_day(
                 list(day.punches),
                 day=day.day,
                 policy=self.policy,
                 swipe_requests=requests,
+                now=datetime.now() if day.day == current else None,
             )
             for day in month.days
             if day.detail_loaded and day.punches

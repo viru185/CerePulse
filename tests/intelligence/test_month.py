@@ -289,6 +289,37 @@ def test_progress_counts_todays_hours_even_though_the_delta_does_not() -> None:
     assert week.progress > 0.0
 
 
+def test_completed_days_is_the_count_behind_the_worked_total() -> None:
+    """The Week header used to re-derive this as working_days - days_ahead, which hit zero
+    with today in progress while the worked total beside it — summed from the very days the
+    subtraction denied — said sixteen hours. The count and the sum come from one list."""
+    monday = date(2026, 7, 27)
+    detail = analyze_day(
+        punches(("09:00", "in")), day=date(2026, 7, 29), now=time_on(date(2026, 7, 29), 10)
+    )
+    days = [
+        day(date(2026, 7, 27), gross="8.32"),
+        day(date(2026, 7, 28), gross="8.10"),
+        AttendanceDay(
+            day=date(2026, 7, 29),
+            weekday="Wed",
+            status=DayStatus.PRESENT,
+            first_in=time(9, 0),
+            last_out=None,
+            total_hours=Duration(0),
+        ),
+    ]
+    week = analyze_week(
+        days,
+        week_start=monday,
+        today=date(2026, 7, 29),
+        analyses={date(2026, 7, 29): detail},
+    )
+
+    assert week.completed_days == 2
+    assert week.total_worked.minutes > 0
+
+
 def test_week_start_helper() -> None:
     assert week_start_for(date(2026, 7, 29)) == date(2026, 7, 27)  # Wed -> Mon
     assert week_start_for(date(2026, 7, 27)) == date(2026, 7, 27)

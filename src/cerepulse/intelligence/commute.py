@@ -75,9 +75,18 @@ def describe(arrival: Arrival, *, now: datetime | None = None) -> str:
     it was measured this second; saying when it was fetched lets them decide whether to
     believe it, which is the only honest thing to do with a number that ages.
     """
-    parts = [_span(arrival.total), f"leaving {_clock(arrival.leave_at.time())}"]
+    parts = [
+        _span(arrival.total),
+        f"{arrival.estimate.distance_km:.1f} km",
+        f"leaving {_clock(arrival.leave_at.time())}",
+    ]
+    # The traffic share is stated in both directions. Saying nothing on a clear road left
+    # the reader unable to tell "no congestion" from "congestion not measured" — and the
+    # answer was fetched with live traffic either way, so the card knows which it is.
     if arrival.estimate.is_congested:
         parts.append(f"{_span(arrival.estimate.delay)} of it traffic")
+    else:
+        parts.append("no traffic delay")
     if arrival.estimate.fetched_at is not None:
         parts.append(f"checked {_age(arrival.estimate.fetched_at, now=now)}")
     return " · ".join(parts)

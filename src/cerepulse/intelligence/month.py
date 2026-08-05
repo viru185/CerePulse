@@ -85,6 +85,17 @@ class WeekAnalysis:
         return sum(1 for day in self.days if day.is_working_day)
 
     @property
+    def completed_days(self) -> int:
+        """Days already worked to the end — the count behind ``total_worked``.
+
+        A property of the same list the totals are summed from, because the Week header
+        used to *re-derive* it as ``working_days - days_ahead`` — and with today in
+        progress that subtraction hit zero while the worked total beside it said sixteen
+        hours. A figure and its count must come from one place.
+        """
+        return sum(1 for day in self.days if day.is_working_day and not day.in_progress)
+
+    @property
     def full_target(self) -> Duration:
         """The whole week's target, including the days still to come."""
         return self.target + Duration(self.days_ahead * self.policy.work_target.minutes)

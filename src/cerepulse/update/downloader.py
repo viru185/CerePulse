@@ -162,6 +162,44 @@ def clear_downloads(keep: str | None = None) -> int:
     return removed
 
 
+def clear_spent_installers(current_version: str) -> int:
+    """Delete every staged installer the running version has already made obsolete.
+
+    Existed as :func:`clear_downloads` since 0.4 with **zero callers**, so every update
+    left its ~48 MB Setup.exe behind forever — a directory quietly growing by a build per
+    release. Installers *newer* than the running version stay: those are pending updates,
+    downloaded and waiting for the user's yes, and deleting one would silently undo the
+    background download. Anything unparseable stays too — refusing to delete what we
+    cannot identify is cheaper than being wrong.
+    """
+    from cerepulse.update.version import Version
+
+    running = Version.parse(current_version)
+    directory = downloads_dir()
+    if running is None or not directory.exists():
+        return 0
+
+    prefix, suffix = f"{about.NAME}-", "-Setup.exe"
+    removed = 0
+    for file in directory.iterdir():
+        if not (file.name.startswith(prefix) and file.name.endswith(suffix)):
+            continue
+        staged = Version.parse(file.name[len(prefix) : -len(suffix)])
+        if staged is None or staged > running:
+            continue
+        try:
+            size = file.stat().st_size
+            file.unlink()
+            removed += 1
+            logger.info(
+                "Removed the spent installer {} ({} MB)", file.name, size // 1_048_576
+            )
+        except OSError as exc:
+            # Locked is normal right after an update — the installer may still be open.
+            logger.debug("Could not remove {}: {}", file.name, exc)
+    return removed
+
+
 __all__ = [
     "CHUNK_BYTES",
     "Download",

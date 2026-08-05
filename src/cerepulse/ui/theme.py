@@ -179,9 +179,60 @@ def _system_prefers_dark() -> bool:
         return True
 
 
+def _arrow_glyphs(palette: Palette) -> dict[str, str]:
+    """Write themed arrow SVGs for the combo and spin-box subcontrols; return url() paths.
+
+    Once the box is styled, Qt's own arrow primitives draw as small near-black triangles
+    whatever the palette — invisible on the dark theme. QSS can only replace them with an
+    ``image:``, and an image needs a real file: these are two hundred bytes each, written
+    beside the cache (never beside the executable, which is read-only when installed) and
+    named by colour so switching themes writes a second pair rather than repainting the
+    first. Failure degrades to the default arrows, not to a broken sheet.
+    """
+    from cerepulse.core import paths
+
+    colour = palette.text_muted
+    shapes = {"up": "M2,8 L6,3.5 L10,8", "down": "M2,4 L6,8.5 L10,4"}
+    urls: dict[str, str] = {}
+    try:
+        directory = paths.data_root() / "cache" / "glyphs"
+        directory.mkdir(parents=True, exist_ok=True)
+        for name, line in shapes.items():
+            svg = (
+                '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12">'
+                f'<path d="{line}" fill="none" stroke="{colour}" stroke-width="1.6" '
+                'stroke-linecap="round" stroke-linejoin="round"/></svg>'
+            )
+            file = directory / f"arrow-{name}-{colour.lstrip('#')}.svg"
+            if not file.exists():
+                file.write_text(svg, encoding="utf-8")
+            urls[name] = file.as_posix()
+    except OSError:
+        return {}
+    return urls
+
+
+def _arrow_rules(palette: Palette) -> str:
+    glyphs = _arrow_glyphs(palette)
+    if not glyphs:
+        return ""
+    return f"""
+    QComboBox::down-arrow {{ image: url({glyphs["down"]}); width: 12px; height: 12px; }}
+    QSpinBox::up-arrow, QDoubleSpinBox::up-arrow,
+    QTimeEdit::up-arrow, QDateEdit::up-arrow {{
+        image: url({glyphs["up"]}); width: 10px; height: 10px;
+    }}
+    QSpinBox::down-arrow, QDoubleSpinBox::down-arrow,
+    QTimeEdit::down-arrow, QDateEdit::down-arrow {{
+        image: url({glyphs["down"]}); width: 10px; height: 10px;
+    }}
+    """
+
+
 def stylesheet(palette: Palette) -> str:
     """Build the application stylesheet for a palette."""
     return f"""
+    {_arrow_rules(palette)}
     /* No font-family here on purpose. A style-sheet font *overrides* the one set through
        QApplication::setFont, and a QSS font-family carries no fallback chain — so naming
        it on the QWidget rule (which matches everything) silently discarded the fallback
@@ -338,7 +389,7 @@ def stylesheet(palette: Palette) -> str:
     }}
     QPushButton#Primary:disabled {{ background-color: {palette.text_faint}; }}
 
-    QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
+    QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTimeEdit, QDateEdit {{
         background-color: {palette.surface};
         border: 1px solid {palette.border};
         border-radius: 8px;
@@ -346,8 +397,52 @@ def stylesheet(palette: Palette) -> str:
         selection-background-color: {palette.work};
         selection-color: {palette.surface};
     }}
-    QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
+    QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
+    QTimeEdit:focus, QDateEdit:focus {{
         border-color: {palette.work};
+    }}
+
+    /* Styling the box switches Qt to stylesheet rendering for the WHOLE control, and the
+       subcontrols it stops drawing natively have to be declared or they misbehave two
+       different ways: the combo's drop-down kept its native raised button, painted square
+       over the themed rounded corner; and the spin boxes' up/down buttons were left with
+       no reserved area at all, so the editable text owned the pixels under the arrows and
+       clicking them planted a text cursor instead of stepping. */
+    QComboBox {{ padding-right: 30px; }}
+    QComboBox::drop-down {{
+        subcontrol-origin: border;
+        subcontrol-position: center right;
+        width: 28px;
+        border: none;
+        background: transparent;
+    }}
+    QSpinBox, QDoubleSpinBox, QTimeEdit, QDateEdit {{ padding-right: 26px; }}
+    QSpinBox::up-button, QDoubleSpinBox::up-button,
+    QTimeEdit::up-button, QDateEdit::up-button {{
+        subcontrol-origin: border;
+        subcontrol-position: top right;
+        width: 22px;
+        border: none;
+        border-left: 1px solid {palette.border};
+        /* One less than the box's own radius, so the fill stays inside the border curve. */
+        border-top-right-radius: 7px;
+        background: {palette.overlay};
+    }}
+    QSpinBox::down-button, QDoubleSpinBox::down-button,
+    QTimeEdit::down-button, QDateEdit::down-button {{
+        subcontrol-origin: border;
+        subcontrol-position: bottom right;
+        width: 22px;
+        border: none;
+        border-left: 1px solid {palette.border};
+        border-bottom-right-radius: 7px;
+        background: {palette.overlay};
+    }}
+    QSpinBox::up-button:hover, QSpinBox::down-button:hover,
+    QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover,
+    QTimeEdit::up-button:hover, QTimeEdit::down-button:hover,
+    QDateEdit::up-button:hover, QDateEdit::down-button:hover {{
+        background: {palette.border};
     }}
     QComboBox QAbstractItemView {{
         background-color: {palette.elevated};
