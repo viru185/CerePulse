@@ -2,6 +2,14 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.14.1-beta.1] - 2026-08-06
+
+### Bug Fixes
+- The month picker matched by identity, not by value
+
+### Chores
+- Bump to 0.14.1-beta.1
+
 ## [0.14.0-beta.1] - 2026-08-05
 
 ### Bug Fixes
@@ -9,6 +17,7 @@ All notable changes to CerePulse are documented here.
 
 ### Chores
 - Bump to 0.14.0-beta.1
+- Regenerate the changelog for 0.14.0-beta.1
 
 ### Features
 - This week against your usual — and a migration that can be retried
