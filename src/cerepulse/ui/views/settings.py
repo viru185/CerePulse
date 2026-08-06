@@ -252,9 +252,13 @@ class SettingsView(QWidget):
         grid.addWidget(self._build_appearance(), 2, 1)
         grid.addWidget(self._build_history(), 3, 0)
         grid.addWidget(self._build_cache(), 3, 1)
-        grid.addWidget(self._build_leave_rules(), 4, 0, 1, 2)
+        # Leave rules and Updates were a full-width row each — two cards of four controls
+        # between them, each leaving half the page empty. Paired, they cost one row instead
+        # of two. Journey home keeps the full width: its address fields are the only
+        # controls on this page that genuinely need it.
+        grid.addWidget(self._build_leave_rules(), 4, 0)
+        grid.addWidget(self._build_updates(), 4, 1)
         grid.addWidget(self._build_commute(), 5, 0, 1, 2)
-        grid.addWidget(self._build_updates(), 6, 0, 1, 2)
 
         page.addStretch(1)
 
@@ -350,24 +354,34 @@ class SettingsView(QWidget):
         card.add("Quiet hours until", self._quiet_end)
 
         self._alerts: dict[str, QCheckBox] = {}
-        # Kept terse: a long checkbox label inflates this card's minimum width and
-        # squeezes the neighbouring column.
-        for field, label in (
-            ("work_target_reached", "Target reached"),
-            ("short_hours_warning", "Short of hours"),
-            ("swipe_request_needed", "Swipe request needed"),
-            ("swipe_request_decided", "Swipe request approved or rejected"),
-            ("break_exceeded", "Break ran over"),
-            ("leave_expiring", "Leave expiring"),
-            # Nudges, listed with the alerts but separately switchable: they are remarks
-            # about a habit rather than warnings about a figure, and somebody who wants the
-            # facts without the company should be able to say so.
-            ("break_reminder", "Hours without a break"),
-            ("leave_reminder", "A long time since leave"),
+        # Two columns. Eight checkboxes stacked one per line made this the tallest thing on
+        # the page and left the whole right half of the card empty; the labels are terse
+        # enough to sit two-up without inflating the card's minimum width.
+        alerts = QGridLayout()
+        alerts.setHorizontalSpacing(18)
+        alerts.setVerticalSpacing(6)
+        alerts.setColumnStretch(1, 1)
+        for index, (field, label) in enumerate(
+            (
+                ("work_target_reached", "Target reached"),
+                ("short_hours_warning", "Short of hours"),
+                ("swipe_request_needed", "Swipe request needed"),
+                ("swipe_request_decided", "Request decided"),
+                ("break_exceeded", "Break ran over"),
+                ("leave_expiring", "Leave expiring"),
+                # Nudges, listed with the alerts but separately switchable: they are remarks
+                # about a habit rather than warnings about a figure, and somebody who wants
+                # the facts without the company should be able to say so.
+                ("break_reminder", "Hours without a break"),
+                ("leave_reminder", "A long time since leave"),
+            )
         ):
             box = QCheckBox(label)
             self._alerts[field] = box
-            card.add_full(box)
+            alerts.addWidget(box, index // 2, index % 2)
+        alerts_host = QWidget()
+        alerts_host.setLayout(alerts)
+        card.add_full(alerts_host)
 
         # The commonest complaint about notifications is that nothing happens, and until
         # this button the app had no way to say which of half a dozen reasons applied.

@@ -56,6 +56,11 @@ from cerepulse.ui.widgets import (
 #: Insight kinds each next action has already said, so repeating them as a chip directly
 #: below the instruction is padding. Kept as data rather than branching in the render path,
 #: so adding a next action is one entry rather than an extra condition.
+#: Least width the date popup's calendar may have. Seven "Mon"-sized columns plus the
+#: navigation bar; below this Qt elides the day names to "T…" and the header stops meaning
+#: anything.
+CALENDAR_WIDTH = 320
+
 _COVERED_BY: dict[NextActionKind, set[InsightKind]] = {
     NextActionKind.CLOCK_IN: {InsightKind.NO_PUNCHES},
     NextActionKind.FILE_SWIPE_REQUEST: {InsightKind.SWIPE_NEEDED, InsightKind.NO_PUNCHES},
@@ -177,7 +182,13 @@ class TodayView(QWidget):
         # way out. The button names its actual destination: arriving here by double-clicking
         # a date in Attendance and being offered only "Back to today" is a dead end, because
         # the thing the user wants back is the month they were reading.
+        #
+        # It rides *in* the header row rather than above it. As its own row it pushed the
+        # whole screen down by a line the moment a past day was opened, which is a lot of
+        # vertical space to spend on a mode that is already obvious from the date in the
+        # picker beside it.
         context = QHBoxLayout()
+        context.setContentsMargins(0, 0, 0, 0)
         context.setSpacing(Space.SNUG)
         self._viewing = QLabel()
         self._viewing.setObjectName("CardCaption")
@@ -190,17 +201,16 @@ class TodayView(QWidget):
         context.addWidget(self._viewing)
         context.addWidget(self._back)
         context.addWidget(self._sync_day)
-        context.addStretch(1)
         self._context_bar = QWidget()
         self._context_bar.setLayout(context)
         self._context_bar.setVisible(False)
-        layout.addWidget(self._context_bar)
 
         top = QHBoxLayout()
         top.setSpacing(Space.SNUG)
         self._hero_label = QLabel("You can leave at")
         self._hero_label.setObjectName("HeroLabel")
         top.addWidget(self._hero_label)
+        top.addWidget(self._context_bar)
         top.addStretch(1)
 
         # Reading back through a week is the common case, and a calendar popup makes it
@@ -217,6 +227,7 @@ class TodayView(QWidget):
         self._picker.setMaximumDate(QDate.currentDate())
         self._picker.setToolTip("Jump to another date")
         self._picker.dateChanged.connect(self._on_date_picked)
+        _dress_calendar(self._picker)
         top.addWidget(self._picker)
 
         self._next_day = step_button("▶", "Next day", lambda: self._step_day(1))
@@ -564,6 +575,25 @@ class TodayView(QWidget):
         QApplication.clipboard().setText(summary_text(self._analysis))
         self._copy.setText("Copied")
         QTimer.singleShot(1500, lambda: self._copy.setText("Copy summary"))
+
+
+def _dress_calendar(picker: QDateEdit) -> None:
+    """Make the date popup's calendar readable.
+
+    The popup inherits its width from the field it hangs off, and the field is sized for
+    "5 Aug 2026" — so the calendar's day-name header had nowhere to draw and elided to
+    "…", "T…", "Fri". Short names plus a width that actually fits seven of them is the
+    whole fix; the theme styles the rest so the popup stops looking like a different app.
+    """
+    from PySide6.QtWidgets import QCalendarWidget
+
+    calendar = picker.calendarWidget()
+    if calendar is None:  # pragma: no cover — only on a platform with no popup
+        return
+    calendar.setHorizontalHeaderFormat(QCalendarWidget.HorizontalHeaderFormat.ShortDayNames)
+    calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+    calendar.setGridVisible(False)
+    calendar.setMinimumWidth(CALENDAR_WIDTH)
 
 
 def _verdict(target: Duration, *, left: Duration, over: Duration, over_word: str) -> str:

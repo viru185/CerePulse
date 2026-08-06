@@ -504,6 +504,60 @@ def test_days_with_nothing_filed_leave_the_swipe_column_blank(qapp: QApplication
     assert view.table.item(0, 7).text() == ""
 
 
+# --- the month picker -------------------------------------------------------------------
+#
+# These build their periods at runtime, on purpose. `QComboBox.findData` matches Python
+# objects by *identity* rather than equality, and CPython folds two identical tuple literals
+# into one object — so a test written with literals passes against code that is broken, which
+# is exactly how this survived from 0.6 to 0.14.
+
+
+def _picker(months: list[tuple[int, int]], current: tuple[int, int]):  # type: ignore[no-untyped-def]
+    from cerepulse.ui.views.attendance import AttendanceView
+
+    view = AttendanceView(DARK)
+    # Rebuilt, not passed straight through, so nothing here shares an object with the code.
+    built = [(year, month) for year, month in months]
+    view.set_available_months(built, (current[0], current[1]), cached=set(built))
+    return view
+
+
+def test_the_picker_shows_the_month_it_was_given(qapp: QApplication) -> None:
+    """It used to land on the newest month whatever it was asked for: findData returned −1,
+    setCurrentIndex was skipped, and the freshly repopulated combo sat on index 0."""
+    view = _picker([(2026, 8), (2026, 7), (2026, 6)], (2026, 7))
+    assert view.current_period() == (2026, 7)
+
+
+def test_every_month_can_be_selected_and_reports_itself(qapp: QApplication) -> None:
+    view = _picker([(2026, 8), (2026, 7), (2026, 6)], (2026, 8))
+    emitted: list[tuple[int, int]] = []
+    view.month_changed.connect(lambda year, month: emitted.append((year, month)))
+
+    for wanted in ((2026, 6), (2026, 7), (2026, 8)):
+        view._period.setCurrentIndex(view._index_of(wanted))
+        assert view.current_period() == wanted
+
+    assert emitted == [(2026, 6), (2026, 7), (2026, 8)]
+
+
+def test_repopulating_keeps_the_month_it_is_on(qapp: QApplication) -> None:
+    """A sync repopulates the picker; doing so must not drag the user back to today."""
+    view = _picker([(2026, 8), (2026, 7), (2026, 6)], (2026, 6))
+    for _ in range(4):
+        view.set_available_months([(2026, 8), (2026, 7), (2026, 6)], (2026, 6), cached={(2026, 8)})
+    assert view.current_period() == (2026, 6)
+
+
+def test_a_month_that_was_not_offered_is_added_rather_than_substituted(
+    qapp: QApplication,
+) -> None:
+    """Showing a different month than the table would recreate the very disagreement this
+    picker is supposed to prevent."""
+    view = _picker([(2026, 8), (2026, 7)], (2026, 3))
+    assert view.current_period() == (2026, 3)
+
+
 def _select_filter(view, label: str) -> None:  # type: ignore[no-untyped-def]
     from cerepulse.ui.views.attendance import FILTERS
 

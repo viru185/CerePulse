@@ -408,11 +408,14 @@ def stylesheet(palette: Palette) -> str:
        over the themed rounded corner; and the spin boxes' up/down buttons were left with
        no reserved area at all, so the editable text owned the pixels under the arrows and
        clicking them planted a text cursor instead of stepping. */
-    QComboBox {{ padding-right: 30px; }}
+    QComboBox {{ padding-right: 28px; }}
     QComboBox::drop-down {{
-        subcontrol-origin: border;
+        /* `padding`, not `border`: measured from the border edge the button's 24px covered
+           the 8px corner radius, so the arrow sat on the curve. From the padding edge it
+           lands inside the field, clear of it. */
+        subcontrol-origin: padding;
         subcontrol-position: center right;
-        width: 28px;
+        width: 22px;
         border: none;
         background: transparent;
     }}
@@ -449,6 +452,35 @@ def stylesheet(palette: Palette) -> str:
         border: 1px solid {palette.border};
         selection-background-color: {palette.overlay};
     }}
+
+    /* The date picker's popup. Unstyled it falls back to the native palette and lands as a
+       light calendar in the middle of a dark app. */
+    QCalendarWidget QWidget {{ alternate-background-color: {palette.elevated}; }}
+    QCalendarWidget QToolButton {{
+        background: transparent;
+        color: {palette.text};
+        border: none;
+        padding: 4px 8px;
+    }}
+    QCalendarWidget QToolButton:hover {{ background: {palette.overlay}; border-radius: 6px; }}
+    QCalendarWidget QMenu {{
+        background-color: {palette.elevated};
+        color: {palette.text};
+        border: 1px solid {palette.border};
+    }}
+    QCalendarWidget QSpinBox {{ background-color: {palette.surface}; color: {palette.text}; }}
+    #qt_calendar_navigationbar {{
+        background-color: {palette.elevated};
+        border-bottom: 1px solid {palette.border};
+    }}
+    QCalendarWidget QAbstractItemView {{
+        background-color: {palette.elevated};
+        color: {palette.text};
+        selection-background-color: {palette.work};
+        selection-color: {palette.surface};
+        outline: none;
+    }}
+    QCalendarWidget QAbstractItemView:disabled {{ color: {palette.text_faint}; }}
 
     QCheckBox {{ spacing: 8px; }}
     QCheckBox::indicator {{

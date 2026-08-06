@@ -253,6 +253,21 @@ class AttendanceView(QWidget):
 
         Months the portal can serve are all listed, not just the cached ones, so history is
         reachable. Uncached entries are marked, since choosing one costs a round trip.
+
+        The wanted month is located with :meth:`_index_of` rather than ``findData``, and
+        that is the whole bug this method used to have. ``QComboBox.findData`` matches a
+        Python object by **identity**, not equality, so a ``(year, month)`` tuple built here
+        never matched the equal-but-distinct tuple passed in — it returned −1 every time,
+        the ``setCurrentIndex`` was skipped, and the freshly repopulated combo sat on index
+        0, the newest month. The table then showed the month the user chose while the
+        selector read the current one, and choosing the current one back did nothing at all
+        because the combo was *already displaying* it, so no index change and no signal.
+
+        It stayed invisible from 0.6 to 0.14 because the wanted month was almost always
+        index 0 anyway, which made the accidental fallback the right answer. Note that a
+        naive check cannot see it either: CPython folds two identical tuple *literals* into
+        one object, so ``findData`` appears to work in any test that does not build its
+        tuples at runtime the way this loop does.
         """
         held = cached if cached is not None else set(months)
         self._period.blockSignals(True)
@@ -262,10 +277,37 @@ class AttendanceView(QWidget):
             if (year, month) not in held:
                 label = f"{label}  ·  not synced"
             self._period.addItem(label, (year, month))
-        index = self._period.findData(current)
+
+        index = self._index_of(current)
         if index >= 0:
             self._period.setCurrentIndex(index)
+        else:
+            # The caller asked for a month it did not offer. Showing a different one would
+            # put the selector and the table into the disagreement this method exists to
+            # prevent, so the month is added rather than quietly substituted.
+            self._period.addItem(f"{fmt.month_label(*current)}  ·  not synced", current)
+            self._period.setCurrentIndex(self._period.count() - 1)
         self._period.blockSignals(False)
+
+    def _index_of(self, period: tuple[int, int]) -> int:
+        """Where a period sits in the picker, compared by value. −1 when absent.
+
+        Never ``findData``: see :meth:`set_available_months` for why that cannot work with
+        tuple user-data.
+        """
+        return next(
+            (
+                index
+                for index in range(self._period.count())
+                if self._period.itemData(index) == period
+            ),
+            -1,
+        )
+
+    def current_period(self) -> tuple[int, int] | None:
+        """The month the picker is showing, for anything that needs to agree with it."""
+        data = self._period.currentData()
+        return (int(data[0]), int(data[1])) if data else None
 
     def show_month(self, view: MonthView) -> None:
         analysis = view.analysis

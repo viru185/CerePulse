@@ -714,12 +714,17 @@ class DayTimeline(QWidget):
         font.setPointSize(8)
         painter.setFont(font)
 
+        painter.setPen(QColor(self._palette.text_faint))
         for index in range(0, hours + 1, step):
             moment = self._start + timedelta(hours=index)
             x = self._x_for(moment)
-            painter.setPen(QColor(self._palette.text_faint))
+            # Centred on the tick, but never outside the widget. The rect used to be a flat
+            # `x - 24` wide 48, so the first label began 24px off the left edge and drew as
+            # "m" instead of "9am", and the last ran 24px past the right and lost its "m"
+            # too. Both ends of every timeline on Today and Week were clipped.
+            left = min(max(0.0, x - HOUR_LABEL_WIDTH / 2), self.width() - HOUR_LABEL_WIDTH)
             painter.drawText(
-                QRectF(x - 24, bar.bottom() + 18, 48, 14),
+                QRectF(left, bar.bottom() + 18, HOUR_LABEL_WIDTH, 14),
                 Qt.AlignmentFlag.AlignCenter,
                 _hour_label(moment),
             )
@@ -732,6 +737,9 @@ DOMAIN_EARLIEST = 6
 DOMAIN_LATEST = 23
 #: Least span worth drawing. Below it the bands are wider than the day they describe.
 DOMAIN_MIN_HOURS = 6
+
+#: Box an hour label is drawn in. Wide enough for "12pm" at 8pt with room to spare.
+HOUR_LABEL_WIDTH = 48.0
 
 #: Clear space between two time labels sharing a row.
 LABEL_GAP = 6.0

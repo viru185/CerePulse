@@ -117,15 +117,17 @@ class CommuteConfig:
     """
 
     enabled: bool = False
-    #: Where the working day ends. Configurable rather than hardcoded, but defaulted to the
-    #: office this was built for so the common case is one address to type, not two. The
-    #: default coordinates are the GIFT City campus — deliberately approximate, close enough
-    #: for a drive time, and re-pinnable in Settings for anyone in a different tower. They
-    #: also serve as the reference point for recovering a short Plus Code, which needs
-    #: *some* nearby anchor before the office has ever been pinned.
-    origin: str = "GIFT City, Gandhinagar, Gujarat, India"
-    origin_lat: float = 23.1571
-    origin_lon: float = 72.6841
+    #: Where the working day ends, pinned rather than approximated, so the office end is
+    #: right out of the box and only Home needs setting. Re-pinnable in Settings for anyone
+    #: in a different building.
+    #:
+    #: These coordinates do double duty: they are the reference point a *short* Plus Code
+    #: is recovered against, which needs some nearby anchor to exist before the user has
+    #: pinned anything at all. A default that were merely "somewhere in Gujarat" would make
+    #: that recovery a guess.
+    origin: str = "GIFT City, Gandhinagar, Gujarat (5M7H+9H)"
+    origin_lat: float = 23.1634
+    origin_lon: float = 72.6789
     destination: str = ""
     destination_lat: float = 0.0
     destination_lon: float = 0.0
