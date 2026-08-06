@@ -2,6 +2,11 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.14.1] - 2026-08-06
+
+### Features
+- Promote 0.14.1 to stable — the commute, and a lot of screens that now agree
+
 ## [0.14.1-beta.1] - 2026-08-06
 
 ### Bug Fixes
@@ -9,6 +14,7 @@ All notable changes to CerePulse are documented here.
 
 ### Chores
 - Bump to 0.14.1-beta.1
+- Regenerate the changelog for 0.14.1-beta.1
 
 ## [0.14.0-beta.1] - 2026-08-05
 
