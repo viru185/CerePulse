@@ -77,8 +77,8 @@ jobs:
         shell: pwsh
         run: |
           $missing = @()
-          if (-not (Get-ChildItem dist -Filter *-Setup.exe)) { $missing += "installer" }
-          if (-not (Get-ChildItem dist -Filter *-portable.zip)) { $missing += "portable zip" }
+          if (-not (Get-ChildItem dist -Filter *Setup*.exe)) { $missing += "installer" }
+          if (-not (Get-ChildItem dist -Filter *portable*.zip)) { $missing += "portable zip" }
           if ($missing) { Write-Error "Not produced: $($missing -join ', ')"; exit 1 }
           Get-ChildItem dist -File | ForEach-Object {
             "{0}  {1:N0} MB" -f $_.Name, ($_.Length / 1MB)
@@ -116,6 +116,6 @@ jobs:
         with:
           name: cerepulse-dev-build
           path: |
-            dist/*-Setup.exe
-            dist/*-portable.zip
+            dist/*Setup*.exe
+            dist/*portable*.zip
           retention-days: 7
