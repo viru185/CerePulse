@@ -6,11 +6,15 @@ analyses the working day, and answers one question: **when can I leave?**
 Everything below is either non-obvious or was learned the hard way. The obvious parts —
 what a repository is, how pytest works — are left out on purpose.
 
+For the map of the codebase, step-by-step recipes and the release machinery, see
+[`docs/`](docs/README.md). That guide points here for the facts and rules rather than
+repeating them: two copies of a rule is one copy that goes stale.
+
 ## Commands
 
 ```bash
 uv sync --all-extras          # install, including dev tools
-uv run pytest -q              # 435 tests, ~3s
+uv run pytest -q              # 1,082 tests, ~25s
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                   # strict, must stay clean
 ```
@@ -262,6 +266,40 @@ and looking broken is what makes people click it repeatedly. The guards are an i
 lock, a 60-second freshness floor, and a hard daily ceiling — and the in-flight guard has to
 be explicit, because `TaskRunner`'s single slot **serialises** rather than drops: ten clicks
 would become ten sequential calls, each answering a question the one before it had answered.
+
+**A gap between punches is not always a break.** The portal calls every Out-then-In a
+break and so do the punches; a trip to the other office downstairs is work, and nothing in
+the data can tell the two apart. Only the person who was there can, so `worked_gap` records
+it **one gap at a time** — no duration threshold, no rule, because a rule applied to days
+nobody looked at quietly inflates the hours. A flagged day carries `adjusted_gaps` so no
+screen presents it with the confidence of a measurement.
+
+**A past day whose Out never landed is still a day the portal counted.** The grid carries
+`last_out` and a total even when the punch log ends on an In, and reading only the log threw
+that away — the day sat open with no hours at all. `close_at` closes it, marked inferred.
+Never for today: a dangling In there is a shift still being worked, which is the same
+distinction `days_missing_detail` and `load_day` already turn on.
+
+**Cleanup must not delete what a feature depends on.** `clear_spent_installers` shipped in
+0.14 deleting every staged installer at or below the running version — which is exactly the
+set `rollback_candidates` offers, so Roll back silently had nothing to offer for two
+releases. The newest installer *below* the running version is now kept deliberately.
+
+**`QComboBox.findData` matches Python objects by identity, not equality.** A combo storing a
+tuple as user data can never be located with it, because the tuple passed in is a different
+object from the one stored. It hid from 0.6 to 0.14 because the wanted month was usually
+index 0, where the accidental fallback was right — and it hides from tests too: CPython
+folds identical tuple *literals* into one object, so a test must build its data at runtime
+to see the bug. Match by value.
+
+**Every fetch goes through `SyncCoordinator.run`.** It is the only thing that
+re-authenticates and replays once. `refresh_leave` called the leave service directly, and
+the cost was a login prompt on a saved password — the stored credential was never consulted
+on that path at all.
+
+**The date can change while the app is running.** The sync period, the week start and the
+date picker's maximum were each read once at construction, so an app left open overnight
+stayed on yesterday until restarted. One place owns the turnover.
 
 **Voice appends, never substitutes.** `intelligence/voice.py` may only add a sentence to an
 insight's detail. It cannot change a number, reword a warning, or drop a line, so no tone

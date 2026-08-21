@@ -116,8 +116,8 @@ up.
 
 Grab the latest [release](https://github.com/viru185/CerePulse/releases):
 
-- **`CerePulse-<version>-Setup.exe`** — per-user installer, no admin rights needed.
-- **`CerePulse-<version>-portable.zip`** — unzip and run. Keeps all its data in a `Data`
+- **`CerePulse-Setup-<version>.exe`** — per-user installer, no admin rights needed.
+- **`CerePulse-portable-<version>.zip`** — unzip and run. Keeps all its data in a `Data`
   folder beside the executable, so it travels on a USB stick.
 
 Both check for updates and tell you when one is available, then open the download.
@@ -128,6 +128,11 @@ Windows 10 or 11, 64-bit. No Python needed — the runtime is bundled.
 ---
 
 ## Development
+
+**Changing something? Start with the [development guide](docs/README.md)** — a map of the
+twelve packages, step-by-step recipes for the changes people actually make, how to debug the
+UI headlessly, and how releases and rollback work. The load-bearing rules and the
+reverse-engineered protocol facts live in [`CLAUDE.md`](CLAUDE.md).
 
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.13.
 
