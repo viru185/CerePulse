@@ -85,7 +85,7 @@ jobs:
       - name: Checksum the artifacts
         shell: pwsh
         run: |
-          $lines = Get-ChildItem dist -Include *-Setup.exe,*-portable.zip -Recurse |
+          $lines = Get-ChildItem dist -Include *Setup*.exe,*portable*.zip -Recurse |
             ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }
           $lines | Set-Content dist/SHA256SUMS.txt -Encoding ascii
           Get-Content dist/SHA256SUMS.txt
@@ -107,8 +107,8 @@ jobs:
           draft: false
           prerelease: ${{ steps.channel.outputs.prerelease }}
           files: |
-            dist/*-Setup.exe
-            dist/*-portable.zip
+            dist/*Setup*.exe
+            dist/*portable*.zip
             dist/SHA256SUMS.txt
 
       - name: Upload build artifacts
@@ -116,7 +116,7 @@ jobs:
         with:
           name: cerepulse-build
           path: |
-            dist/*-Setup.exe
-            dist/*-portable.zip
+            dist/*Setup*.exe
+            dist/*portable*.zip
             dist/SHA256SUMS.txt
           retention-days: 14

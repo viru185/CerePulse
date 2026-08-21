@@ -33,6 +33,9 @@ from cerepulse.ui.theme import Space
 from cerepulse.ui.widgets import Banner, Card, SectionTitle, card_row, data_table
 from cerepulse.update import UpdateEvent, rollback_candidates, update_history
 
+#: Update events shown on this page. The store keeps twenty; nobody reads twenty.
+HISTORY_SHOWN = 5
+
 HISTORY_COLUMNS = ("Version", "When", "Outcome", "Note")
 
 
@@ -228,8 +231,14 @@ class AboutView(QWidget):
     def _render_history(self, events: list[UpdateEvent]) -> None:
         from PySide6.QtWidgets import QTableWidgetItem
 
-        self.history.setRowCount(len(events))
-        for row, event in enumerate(events):
+        # The store is already bounded — `HISTORY_LIMIT` trims it on every write, so it can
+        # never grow without end. What was wrong is that all twenty rows were rendered, and
+        # twenty rows of "updated successfully" is a lot of page for something read once.
+        # Newest first, and the cut says so rather than silently ending the list.
+        newest = list(reversed(events))
+        shown = newest[:HISTORY_SHOWN]
+        self.history.setRowCount(len(shown))
+        for row, event in enumerate(shown):
             cells = (
                 event.version,
                 event.at.strftime("%d %b %Y, %H:%M").lstrip("0"),
@@ -239,10 +248,17 @@ class AboutView(QWidget):
             for column, text in enumerate(cells):
                 self.history.setItem(row, column, QTableWidgetItem(text))
 
-        self.history.setVisible(bool(events))
-        self._history_note.setText(
-            "" if events else "No updates recorded yet — this is the first version installed."
-        )
+        self.history.setVisible(bool(shown))
+        if not events:
+            self._history_note.setText(
+                "No updates recorded yet — this is the first version installed."
+            )
+        elif len(newest) > len(shown):
+            self._history_note.setText(
+                f"Showing the {len(shown)} most recent of {len(newest)} recorded updates."
+            )
+        else:
+            self._history_note.setText("")
 
     # --- actions ----------------------------------------------------------------------
 

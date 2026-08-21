@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from loguru import logger
 
@@ -245,6 +245,10 @@ class AttendanceService:
             now=now,
             swipe_requests=self._swipes.find_all(employee_code),
             grid_only=grid_only,
+            # For a past day whose punch log ends on an In, the portal's own last-out closes
+            # it. Dropped for today by `analyze_day`, which is where the distinction lives.
+            close_at=cached.last_out if cached else None,
+            worked_gaps=self._attendance.find_worked_gaps(employee_code, day),
         )
         # Nudges are appended rather than produced by `analyze_day`, because they are about
         # a habit rather than about the day's arithmetic and that separation is worth
@@ -354,6 +358,20 @@ class AttendanceService:
             ScopeStatus(Scope.APPLICATIONS, self._sync_meta.last_synced(Scope.APPLICATIONS.value)),
             ScopeStatus(Scope.HOLIDAYS, self._sync_meta.last_synced(Scope.HOLIDAYS.value)),
         ]
+
+    def set_gap_worked(
+        self, employee_code: str, day: date, gap_start: time, *, worked: bool
+    ) -> None:
+        """Tell the app a gap was work, or take that back.
+
+        Local only. It changes what CerePulse reports about a day and never what SpineHR
+        holds — filing the correction with the employer is still a swipe request the user
+        makes themselves, which is the read-only stance the whole app keeps.
+        """
+        if worked:
+            self._attendance.flag_worked_gap(employee_code, day, gap_start)
+        else:
+            self._attendance.clear_worked_gap(employee_code, day, gap_start)
 
     def days_between(self, employee_code: str, *, start: date, end: date) -> list[AttendanceDay]:
         """Every cached day in a range, oldest first. Offline by design.
@@ -620,6 +638,16 @@ class AttendanceService:
         # with `now` and inferred the in-progress pair. Same day, two answers, and this one
         # fed the Week timelines, the day drawer and `find_attention`.
         current = today or date.today()
+        # One query for the month rather than one per day — the same reason the swipe
+        # requests above are fetched once.
+        days = list(month.days)
+        flagged = (
+            self._attendance.find_worked_gaps_between(
+                code, min(d.day for d in days), max(d.day for d in days)
+            )
+            if days
+            else {}
+        )
         analyses = {
             day.day: analyze_day(
                 list(day.punches),
@@ -627,6 +655,11 @@ class AttendanceService:
                 policy=self.policy,
                 swipe_requests=requests,
                 now=datetime.now() if day.day == current else None,
+                # The portal's own last-out, for a finished day whose punch log ends on an
+                # In. Only ever reaches a past day: `analyze_day` drops it when `now` is
+                # given, because today's dangling In is a shift still being worked.
+                close_at=day.last_out,
+                worked_gaps=flagged.get(day.day),
             )
             for day in month.days
             if day.detail_loaded and day.punches

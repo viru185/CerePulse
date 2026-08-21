@@ -205,8 +205,10 @@ class SyncController(QObject):
         year, month = self.period
         self._runner.submit(
             "reload",
-            lambda: self._context.attendance.load_month(
-                self.employee_code, year, month, force_refresh=False, today=date.today()
+            lambda: self._context.sync.run(
+                lambda: self._context.attendance.load_month(
+                    self.employee_code, year, month, force_refresh=False, today=date.today()
+                )
             ),
             on_success=self.month_ready.emit,
             on_error=self.failed.emit,
@@ -241,7 +243,11 @@ class SyncController(QObject):
         today = date.today()
         self._runner.submit(
             "analyze-day",
-            lambda: self._context.attendance.load_day(self.employee_code, day, now=datetime.now()),
+            lambda: self._context.sync.run(
+                lambda: self._context.attendance.load_day(
+                    self.employee_code, day, now=datetime.now()
+                )
+            ),
             on_success=lambda analysis: self.day_ready.emit(analysis, day == today),
             on_error=lambda exc: self.degraded.emit("day", exc),
         )
@@ -249,21 +255,40 @@ class SyncController(QObject):
     # --- leave ------------------------------------------------------------------------
 
     def refresh_leave(self) -> None:
+        """Refresh everything the Records screen shows.
+
+        Every operation goes through :meth:`SyncCoordinator.run` — the wrapper that
+        re-authenticates and replays once when the session has expired. These three used to
+        call the leave service *directly*, which is the only place in the app that skipped
+        it, and the cost was a password prompt on a saved password: an expired session on
+        this path was never recovered from, so it surfaced as an authentication failure and
+        the window asked for a credential it already had. The stored one was never
+        consulted, which is why saving it changed nothing.
+
+        ``SessionTakenError`` still passes straight through, so standing down for a browser
+        session keeps working.
+        """
         self._runner.submit(
             "leave",
-            lambda: self._context.leave.load_leave(self.employee_code, today=date.today()),
+            lambda: self._context.sync.run(
+                lambda: self._context.leave.load_leave(self.employee_code, today=date.today())
+            ),
             on_success=self._on_leave,
             on_error=self.failed.emit,
         )
         self._runner.submit(
             "swipes",
-            lambda: self._context.leave.load_swipe_requests_with_changes(self.employee_code),
+            lambda: self._context.sync.run(
+                lambda: self._context.leave.load_swipe_requests_with_changes(self.employee_code)
+            ),
             on_success=self._on_swipes,
             on_error=lambda exc: self.degraded.emit("swipe requests", exc),
         )
         self._runner.submit(
             "applications",
-            lambda: self._context.leave.load_applications(self.employee_code),
+            lambda: self._context.sync.run(
+                lambda: self._context.leave.load_applications(self.employee_code)
+            ),
             on_success=self.applications_ready.emit,
             on_error=lambda exc: self.degraded.emit("applications", exc),
         )

@@ -94,6 +94,10 @@ class MainWindow(QMainWindow):
         self._runner = TaskRunner(self)
         self._employee_code = context.employee_code
         self._week_start = week_start_for(date.today())
+        #: The date the window believes it is. Left running overnight the app used to stay
+        #: on yesterday until it was restarted: the sync period, the week start and the
+        #: picker's maximum date were all read once, here, and never again.
+        self._today = date.today()
         self._month_view: MonthView | None = None
         #: A date the user explicitly asked to look at. Without it, any background refresh
         #: reloads the month and yanks the screen back to today mid-read.
@@ -135,10 +139,12 @@ class MainWindow(QMainWindow):
         self._runner.busy_changed.connect(self._on_busy_changed)
         self._runner.activity_changed.connect(self._on_activity)
 
-        # Background refresh, on the interval from settings.
+        # Background refresh, on the interval from settings. Every tick also asks whether
+        # the date has changed, because three pieces of state below were captured once at
+        # construction and would otherwise assume it never does.
         self._auto = QTimer(self)
         self._auto.setInterval(context.config.sync.refresh_interval_minutes * 60_000)
-        self._auto.timeout.connect(lambda: self.refresh(force=True, quiet=True))
+        self._auto.timeout.connect(self._on_tick)
         self._auto.start()
 
     # --- construction ---------------------------------------------------------------
@@ -217,6 +223,7 @@ class MainWindow(QMainWindow):
         self.settings.key_guide_requested.connect(self._open_key_guide)
         self.today.commute_refresh_requested.connect(self._refresh_commute)
         self.today.commute.departure_changed.connect(self._commute_departure_changed)
+        self.today.gap_flagged.connect(self._flag_gap)
         self.today.commute_setup_requested.connect(
             lambda: self._navigation.drill_to(SETTINGS_SCREEN)
         )
@@ -885,6 +892,40 @@ class MainWindow(QMainWindow):
 
     # --- actions --------------------------------------------------------------------
 
+    def _on_tick(self) -> None:
+        """The background tick: roll the date over first, then refresh."""
+        self._roll_over_if_the_day_changed()
+        self.refresh(force=True, quiet=True)
+
+    def _roll_over_if_the_day_changed(self) -> None:
+        """Notice midnight.
+
+        `load_today` always read `date.today()`, so this never looked like a date bug from
+        the inside — but it then looked that day up inside a month view still built for
+        last month, found nothing, and reported today as missing. Meanwhile the week stayed
+        on last week and the date picker refused to select the new day, because its maximum
+        was set once at construction.
+
+        One place owns the turnover rather than three that each assume it cannot happen.
+        """
+        today = date.today()
+        if today == self._today:
+            return
+
+        logger.info("The date has rolled over to {}", today)
+        previous, self._today = self._today, today
+        self.today.set_latest_date(today)
+
+        # Only follow the clock while the screen is actually on today. Somebody who left it
+        # parked on a past date is reading that date, and yanking them forward at midnight
+        # would be the same rudeness `_show_current_day` already avoids.
+        if self._viewing_day is None or self._viewing_day == previous:
+            self._viewing_day = None
+            self._week_start = week_start_for(today)
+
+        if (today.year, today.month) != self._sync.period:
+            self._change_month(today.year, today.month)
+
     def _change_month(self, year: int, month: int) -> None:
         """Move the period. A step is a cache read, not a sync.
 
@@ -1013,6 +1054,25 @@ class MainWindow(QMainWindow):
         self.about.refresh(channel=config.updates.channel)  # type: ignore[attr-defined]
         self.settings.show_save_result(
             f"Saved. Switching tray mode or theme fully applies on the next start.{note}"
+        )
+
+    def _flag_gap(self, day: object, gap_start: object, worked: bool) -> None:
+        """Store "that gap was work" and re-render the day it belongs to.
+
+        Local only, and deliberately so. It changes what CerePulse reports and never what
+        SpineHR holds — correcting the record with the employer is still a swipe request the
+        user files themselves, which is the read-only stance the whole app keeps.
+        """
+        self._runner.submit(
+            "flag-gap",
+            lambda: self._context.attendance.set_gap_worked(
+                self._employee_code,
+                day,  # type: ignore[arg-type]
+                gap_start,  # type: ignore[arg-type]
+                worked=worked,
+            ),
+            on_success=lambda _result: self._sync.load_day(day),  # type: ignore[arg-type]
+            on_error=lambda exc: self._set_status(f"Could not save that: {_message_for(exc)}"),
         )
 
     # --- the journey home -----------------------------------------------------------

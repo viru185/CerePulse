@@ -23,7 +23,7 @@ from loguru import logger
 from cerepulse.core.errors import MigrationError
 
 #: Bumped whenever a migration is added. Checked against the database on open.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def _migration_001(connection: sqlite3.Connection) -> None:
@@ -260,6 +260,32 @@ def _migration_006(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE INDEX idx_swipe_request_for_date ON swipe_request (for_date)")
 
 
+def _migration_007(connection: sqlite3.Connection) -> None:
+    """Let the user say a gap between punches was actually work.
+
+    The punches cannot tell a lunch from a trip to another floor, and the portal offers
+    nothing that could: both are simply time between an Out and an In. Only the person who
+    was there knows, so this is where they say it — one gap at a time, never a rule, because
+    a rule applied to days nobody looked at quietly inflates the hours.
+
+    Keyed on the gap's own start, which is a real punch time and therefore stable across
+    re-syncs. Purely local: it changes what CerePulse reports and never what SpineHR holds,
+    which is the read-only stance the whole app keeps.
+    """
+    connection.executescript("""
+        CREATE TABLE worked_gap (
+            employee_code TEXT NOT NULL,
+            day           TEXT NOT NULL,           -- ISO date
+            gap_start     TEXT NOT NULL,           -- ISO time of the Out that began it
+            note          TEXT NOT NULL DEFAULT '',
+            created_at    TEXT NOT NULL,
+            PRIMARY KEY (employee_code, day, gap_start)
+        );
+
+        CREATE INDEX idx_worked_gap_day ON worked_gap (employee_code, day);
+    """)
+
+
 #: Ordered migrations. Append only; never edit one that has shipped.
 MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migration_001,
@@ -268,6 +294,7 @@ MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migration_004,
     _migration_005,
     _migration_006,
+    _migration_007,
 )
 
 

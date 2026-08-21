@@ -17,7 +17,7 @@ Two deliberate upgrades over ninetofive's flat ``first_in + 9h``:
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from enum import Enum
 
 from cerepulse.intelligence.insights import (
@@ -89,6 +89,14 @@ class DayAnalysis:
     policy: ShiftPolicy = ShiftPolicy()
     #: The single thing worth doing about this day.
     next_action: NextAction | None = None
+    #: Gaps the user reclassified as work, by the clock time of the Out that began each.
+    #: Carried rather than merely applied so every screen can say the figures were adjusted
+    #: — a corrected day must never be presented with the confidence of a measured one.
+    adjusted_gaps: tuple[time, ...] = ()
+
+    @property
+    def is_adjusted(self) -> bool:
+        return bool(self.adjusted_gaps)
 
     @property
     def is_ongoing(self) -> bool:
@@ -138,15 +146,35 @@ def analyze_day(
     now: datetime | None = None,
     swipe_requests: list[SwipeRequest] | None = None,
     grid_only: bool = False,
+    close_at: time | None = None,
+    worked_gaps: set[time] | None = None,
 ) -> DayAnalysis:
     """Analyze one day. ``swipe_requests`` lets an existing request suppress the suggestion.
 
     ``grid_only`` marks a day whose times were reconstructed from the monthly grid because
     no punch log was available. The in and out are real; everything between them is not, so
     the break figure is a floor rather than a measurement and the day says so.
+
+    ``close_at`` is the grid's last-out, used to close a **past** day whose punch log ends on
+    an In. The portal counts such a day; without this the app left it open and reported no
+    hours at all. Ignored when ``now`` is given, because that is today and today's dangling
+    In is a shift still being worked.
+
+    ``worked_gaps`` are gaps the user has told us were work — a trip to another floor reads
+    as a break to the punches and to the portal alike, and only the person who was there can
+    say otherwise. A flagged day is marked ``adjusted``, so no screen presents it with the
+    confidence of a clean measurement.
     """
     policy = policy or ShiftPolicy.default()
-    pairing = pair_punches(punches, day=day, now=now)
+    # `close_at` is the portal's own last-out, and only ever applies to a finished day —
+    # the caller passes `now` for today, and a live shift must stay open.
+    pairing = pair_punches(
+        punches,
+        day=day,
+        now=now,
+        close_at=None if now else close_at,
+        worked_gaps=worked_gaps,
+    )
     if grid_only and pairing.segments:
         pairing = replace(
             pairing,
@@ -198,6 +226,7 @@ def analyze_day(
     swipe_request_needed = early_exit and filed is None
 
     analysis = DayAnalysis(
+        adjusted_gaps=tuple(sorted(worked_gaps or ())),
         day=day,
         state=state,
         first_in=first_in,

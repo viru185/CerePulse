@@ -45,7 +45,9 @@ DisableProgramGroupPage=yes
 DisableDirPage=no
 
 OutputDir={#OutputDir}
-OutputBaseFilename={#AppName}-{#AppVersion}-Setup
+; Version last, so a folder of releases sorts by name. The updater matches its asset
+; on "setup" appearing anywhere in the name, so this rename does not strand older builds.
+OutputBaseFilename={#AppName}-Setup-{#AppVersion}
 SetupIconFile=..\src\cerepulse\ui\assets\icon.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 WizardStyle=modern

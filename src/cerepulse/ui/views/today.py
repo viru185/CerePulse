@@ -53,14 +53,18 @@ from cerepulse.ui.widgets import (
     step_button,
 )
 
-#: Insight kinds each next action has already said, so repeating them as a chip directly
-#: below the instruction is padding. Kept as data rather than branching in the render path,
-#: so adding a next action is one entry rather than an extra condition.
 #: Least width the date popup's calendar may have. Seven "Mon"-sized columns plus the
 #: navigation bar; below this Qt elides the day names to "T…" and the header stops meaning
 #: anything.
 CALENDAR_WIDTH = 320
 
+#: The date field is sized to its content — "5 Aug 2026" plus the popup arrow — rather than
+#: stretching to whatever the header row has spare.
+PICKER_WIDTH = 132
+
+#: Insight kinds each next action has already said, so repeating them as a chip directly
+#: below the instruction is padding. Kept as data rather than branching in the render path,
+#: so adding a next action is one entry rather than an extra condition.
 _COVERED_BY: dict[NextActionKind, set[InsightKind]] = {
     NextActionKind.CLOCK_IN: {InsightKind.NO_PUNCHES},
     NextActionKind.FILE_SWIPE_REQUEST: {InsightKind.SWIPE_NEEDED, InsightKind.NO_PUNCHES},
@@ -81,6 +85,9 @@ class TodayView(QWidget):
     date_selected = Signal(object)  # date
     commute_refresh_requested = Signal()
     commute_setup_requested = Signal()
+    #: (date, gap start, whether it is work). The view knows which day is on screen; the
+    #: window owns the storage.
+    gap_flagged = Signal(object, object, bool)
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -159,6 +166,7 @@ class TodayView(QWidget):
 
         body.addWidget(SectionTitle("How the day went"))
         self._journey = DayJourney(palette)
+        self._journey.gap_flagged.connect(self._on_gap_flagged)
         body.addWidget(self._journey)
         self._no_punches = QLabel("No punches recorded for this day.")
         self._no_punches.setObjectName("CardCaption")
@@ -226,6 +234,7 @@ class TodayView(QWidget):
         self._picker.setDisplayFormat("d MMM yyyy")
         self._picker.setMaximumDate(QDate.currentDate())
         self._picker.setToolTip("Jump to another date")
+        self._picker.setFixedWidth(PICKER_WIDTH)
         self._picker.dateChanged.connect(self._on_date_picked)
         _dress_calendar(self._picker)
         top.addWidget(self._picker)
@@ -327,6 +336,25 @@ class TodayView(QWidget):
     def _on_next_action(self, action: object) -> None:
         if action is not None:
             self.action_triggered.emit(action)
+
+    def _on_gap_flagged(self, gap_start: object, worked: bool) -> None:
+        """Attach the day to the click before passing it on."""
+        if self._analysis is not None:
+            self.gap_flagged.emit(self._analysis.day, gap_start, worked)
+
+    def set_latest_date(self, today: date) -> None:
+        """Raise the ceiling when the day rolls over.
+
+        The maximum was set once at construction, so an app left running overnight refused
+        to select the new day — the picker simply would not go there, with nothing said.
+        """
+        self._picker.blockSignals(True)
+        self._picker.setMaximumDate(QDate(today.year, today.month, today.day))
+        self._picker.blockSignals(False)
+        self._next_day.setEnabled(self._shown_date() < today)
+
+    def _shown_date(self) -> date:
+        return self._analysis.day if self._analysis is not None else date.today()
 
     def set_back_target(self, origin: str | None) -> None:
         """Name where the exit leads. ``None`` means the only way out is back to today."""
@@ -542,7 +570,12 @@ class TodayView(QWidget):
 
     def _render_punches(self, analysis: DayAnalysis | None) -> None:
         segments = analysis.segments if analysis is not None else ()
-        self._journey.set_segments(segments)
+        self._journey.set_segments(
+            segments,
+            adjusted_gaps=analysis.adjusted_gaps if analysis is not None else (),
+            # Only where there is a day to attach a flag to.
+            can_flag=analysis is not None,
+        )
         self._no_punches.setVisible(not segments)
 
     # --- interaction ----------------------------------------------------------------

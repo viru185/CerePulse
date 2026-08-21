@@ -408,8 +408,12 @@ def stylesheet(palette: Palette) -> str:
        over the themed rounded corner; and the spin boxes' up/down buttons were left with
        no reserved area at all, so the editable text owned the pixels under the arrows and
        clicking them planted a text cursor instead of stepping. */
-    QComboBox {{ padding-right: 28px; }}
-    QComboBox::drop-down {{
+    /* QDateEdit and QTimeEdit belong here too. With `setCalendarPopup(True)` a date field
+       draws its arrow as a `::drop-down` — the same subcontrol a combo uses — so a rule
+       naming only QComboBox left the date picker's arrow native, sitting on the rounded
+       corner exactly as the combo's used to. */
+    QComboBox, QDateEdit[calendarPopup="true"] {{ padding-right: 28px; }}
+    QComboBox::drop-down, QDateEdit::drop-down, QTimeEdit::drop-down {{
         /* `padding`, not `border`: measured from the border edge the button's 24px covered
            the 8px corner radius, so the arrow sat on the curve. From the padding edge it
            lands inside the field, clear of it. */

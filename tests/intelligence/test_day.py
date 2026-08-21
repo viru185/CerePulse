@@ -9,6 +9,7 @@ import pytest
 from cerepulse.intelligence.day import DayState, analyze_day
 from cerepulse.intelligence.insights import ActionKind, InsightKind, Severity
 from cerepulse.intelligence.policy import ShiftPolicy
+from cerepulse.intelligence.segments import IssueKind
 from cerepulse.models.swipe import SwipeRequest, SwipeStatus
 from cerepulse.models.values import Duration
 from tests.intelligence.conftest import DAY, at, punches
@@ -385,3 +386,117 @@ def test_the_answer_outranks_the_footnote_within_a_severity() -> None:
     order = [i.kind for i in analysis.insights]
 
     assert order.index(InsightKind.STILL_WORKING) < order.index(InsightKind.BREAK_HEADROOM)
+
+
+# --- a past day whose Out never got punched ------------------------------------------------
+
+
+def test_a_past_day_closes_at_the_portals_own_last_out() -> None:
+    """The punch log ends on an In, but the grid still carries a last-out and a total — the
+    portal closes the day even when the punch never landed. Reading only the log threw that
+    away and left the day with no hours at all."""
+    analysis = analyze_day(
+        punches(("09:00", "in"), ("13:00", "out"), ("13:45", "in")),
+        day=DAY,
+        close_at=time(18, 30),
+    )
+
+    assert analysis.state is DayState.COMPLETE
+    assert not analysis.clocked_in
+    assert analysis.last_out == datetime.combine(DAY, time(18, 30))
+    # 09:00-13:00 is 240, 13:45-18:30 is 285.
+    assert analysis.worked == Duration(240 + 285)
+
+
+def test_the_closed_segment_is_marked_inferred_not_measured() -> None:
+    """Every screen already renders an inferred end as repaired, and the voice engine
+    refuses to be playful about one. Closing a day silently would launder a guess."""
+    analysis = analyze_day(punches(("09:00", "in")), day=DAY, close_at=time(17, 30))
+    assert analysis.segments[-1].end_inferred
+    assert any(issue.kind is IssueKind.INFERRED_OUT for issue in analysis.issues)
+
+
+def test_a_closed_day_that_is_still_short_says_so() -> None:
+    """The point of closing it: a day with a missing punch is usually a day needing one
+    filed, and that cannot be offered while the day reads as ongoing."""
+    analysis = analyze_day(punches(("09:00", "in")), day=DAY, close_at=time(13, 0))
+
+    assert analysis.state is DayState.COMPLETE
+    assert analysis.early_exit
+    assert analysis.swipe_request_needed
+
+
+def test_today_is_never_closed_from_the_grid() -> None:
+    """Today's dangling In is a live shift. Closing it would declare a departure in the
+    middle of the afternoon — the mistake `analyze_day` already guards against elsewhere."""
+    now = datetime.combine(DAY, time(14, 0))
+    analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=now, close_at=time(18, 30))
+
+    assert analysis.clocked_in
+    assert analysis.state is DayState.INCOMPLETE
+    assert analysis.last_out == now
+
+
+def test_a_last_out_before_the_open_punch_is_refused() -> None:
+    """A grid value that predates the dangling In cannot close it, and using it would
+    produce a negative segment."""
+    analysis = analyze_day(punches(("18:00", "in")), day=DAY, close_at=time(9, 0))
+    assert analysis.clocked_in
+
+
+def test_a_day_that_pairs_cleanly_ignores_the_grid_entirely() -> None:
+    analysis = analyze_day(
+        punches(("09:00", "in"), ("18:00", "out")), day=DAY, close_at=time(23, 0)
+    )
+    assert analysis.last_out == datetime.combine(DAY, time(18, 0))
+
+
+# --- a break that was actually work --------------------------------------------------------
+
+
+def test_a_flagged_gap_moves_minutes_from_break_to_worked() -> None:
+    """A trip to another floor reads as a break to the punches and to the portal alike.
+    Only the person who was there can say otherwise, and this is them saying it."""
+    log = punches(("09:00", "in"), ("13:00", "out"), ("13:45", "in"), ("18:00", "out"))
+
+    plain = analyze_day(log, day=DAY)
+    adjusted = analyze_day(log, day=DAY, worked_gaps={time(13, 0)})
+
+    assert plain.break_taken == Duration(45)
+    assert adjusted.break_taken == Duration(0)
+    # The same forty-five minutes, moved rather than invented.
+    assert adjusted.worked == plain.worked + Duration(45)
+
+
+def test_an_adjusted_day_says_it_was_adjusted() -> None:
+    """No screen may present a corrected day with the confidence of a measured one."""
+    log = punches(("09:00", "in"), ("13:00", "out"), ("13:45", "in"), ("18:00", "out"))
+    adjusted = analyze_day(log, day=DAY, worked_gaps={time(13, 0)})
+
+    assert adjusted.is_adjusted
+    assert adjusted.adjusted_gaps == (time(13, 0),)
+    assert not analyze_day(log, day=DAY).is_adjusted
+
+
+def test_only_the_flagged_gap_is_reclassified() -> None:
+    """No threshold, no heuristic: gaps the user has not spoken about stay breaks."""
+    log = punches(
+        ("09:00", "in"),
+        ("11:00", "out"),
+        ("11:20", "in"),  # the trip downstairs
+        ("13:00", "out"),
+        ("13:45", "in"),  # a real lunch
+        ("18:00", "out"),
+    )
+    adjusted = analyze_day(log, day=DAY, worked_gaps={time(11, 0)})
+
+    assert adjusted.break_taken == Duration(45)
+    assert len(adjusted.segments) == 2
+
+
+def test_flagging_a_gap_that_is_not_there_changes_nothing() -> None:
+    """A re-sync rewrites the punches; a flag left pointing at a time that no longer begins
+    a gap must be inert rather than wrong."""
+    log = punches(("09:00", "in"), ("13:00", "out"), ("13:45", "in"), ("18:00", "out"))
+
+    assert analyze_day(log, day=DAY, worked_gaps={time(15, 30)}).break_taken == Duration(45)

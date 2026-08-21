@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from cerepulse import __about__ as about  # noqa: E402
+from cerepulse.update.downloader import installer_name  # noqa: E402
 
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
@@ -122,7 +123,8 @@ def build_portable() -> Path:
         encoding="utf-8",
     )
 
-    target = DIST / f"{about.NAME}-{about.VERSION}-portable.zip"
+    # Version last, so a folder of releases sorts by name into something readable.
+    target = DIST / f"{about.NAME}-portable-{about.VERSION}.zip"
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for path in sorted(APP_DIR.rglob("*")):
             if path.is_file():
@@ -162,7 +164,7 @@ def build_installer() -> Path | None:
             str(ISS),
         ]
     )
-    target = DIST / f"{about.NAME}-{about.VERSION}-Setup.exe"
+    target = DIST / installer_name(about.VERSION)
     if target.exists():
         print(f"built {target.relative_to(ROOT)} ({target.stat().st_size / 1e6:.0f} MB)")
         return target

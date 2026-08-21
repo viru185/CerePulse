@@ -95,22 +95,24 @@ def rollback_to(version: str) -> None:
 
 
 def rollback_candidates(current: str | None = None) -> list[str]:
-    """Versions with a staged installer that are not the one running."""
-    from cerepulse.update.downloader import downloads_dir
+    """Versions with a staged installer that are not the one running, newest first.
+
+    Reads the filename through :func:`version_in_installer_name`, which understands both
+    the pre-0.15 layout and the current one — otherwise the build you upgraded *from* would
+    be invisible to the build you upgraded *to*, which is the only rollback anyone wants.
+    """
+    from cerepulse.update.downloader import downloads_dir, version_in_installer_name
 
     running = current or about.VERSION
     directory = downloads_dir()
     if not directory.exists():
         return []
 
-    found: list[str] = []
-    prefix, suffix = f"{about.NAME}-", "-Setup.exe"
-    for file in directory.iterdir():
-        name = file.name
-        if name.startswith(prefix) and name.endswith(suffix):
-            version = name[len(prefix) : -len(suffix)]
-            if version and version != running:
-                found.append(version)
+    found = [
+        str(version)
+        for version in (version_in_installer_name(file.name) for file in directory.iterdir())
+        if version is not None and str(version) != running
+    ]
     return sorted(found, reverse=True)
 
 

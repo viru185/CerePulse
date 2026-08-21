@@ -22,6 +22,7 @@ from loguru import logger
 
 from cerepulse import __about__ as about
 from cerepulse.core import paths
+from cerepulse.update.version import Version
 
 #: Generous: this runs in the background and a slow connection is not a failure.
 TIMEOUT_SECONDS = 120.0
@@ -51,8 +52,37 @@ def downloads_dir() -> Path:
     return paths.data_root() / "updates"
 
 
+def installer_name(version: str) -> str:
+    """``CerePulse-Setup-0.15.0.exe``."""
+    return f"{about.NAME}-Setup-{version}.exe"
+
+
 def installer_path(version: str) -> Path:
-    return downloads_dir() / f"{about.NAME}-{version}-Setup.exe"
+    return downloads_dir() / installer_name(version)
+
+
+def version_in_installer_name(name: str) -> Version | None:
+    """The version an installer's filename carries, in either naming, or ``None``.
+
+    Both layouts are read on purpose. Releases up to 0.14.1 wrote
+    ``CerePulse-0.14.1-Setup.exe``; from 0.15 the version moves to the end so a folder of
+    them sorts by name. A build that could only read the new form would look straight past
+    the installer it was upgraded *from*, which is the one file rollback needs.
+
+    The single definition lives here so the three callers that parse this name —
+    the cleanup, the rollback list, and the staging check — cannot drift apart.
+    """
+    stem = name[:-4] if name.lower().endswith(".exe") else name
+    prefix = f"{about.NAME}-"
+    if not stem.startswith(prefix):
+        return None
+    body = stem[len(prefix) :]
+
+    if body.startswith("Setup-"):  # CerePulse-Setup-0.15.0.exe
+        return Version.parse(body[len("Setup-") :])
+    if body.endswith("-Setup"):  # CerePulse-0.14.1-Setup.exe
+        return Version.parse(body[: -len("-Setup")])
+    return None
 
 
 def download_installer(
@@ -163,38 +193,56 @@ def clear_downloads(keep: str | None = None) -> int:
 
 
 def clear_spent_installers(current_version: str) -> int:
-    """Delete every staged installer the running version has already made obsolete.
+    """Delete staged installers this build has superseded — but keep one to roll back to.
 
-    Existed as :func:`clear_downloads` since 0.4 with **zero callers**, so every update
-    left its ~48 MB Setup.exe behind forever — a directory quietly growing by a build per
-    release. Installers *newer* than the running version stay: those are pending updates,
-    downloaded and waiting for the user's yes, and deleting one would silently undo the
-    background download. Anything unparseable stays too — refusing to delete what we
-    cannot identify is cheaper than being wrong.
+    Two mistakes are possible here and 0.14 made the second one.
+
+    Keeping everything was the first: the helper this replaced had **zero callers** since
+    0.4, so every update left its ~48 MB Setup.exe behind forever.
+
+    Deleting everything at or below the running version was the second, and worse. That is
+    exactly the set :func:`~cerepulse.update.installer.rollback_candidates` offers — the
+    previous build *is* at a lower version — so the Roll back button silently had nothing
+    to offer from 0.14 onward. Cleanup that removes the only file a feature depends on is
+    not cleanup.
+
+    So: the newest installer *below* the running version stays, as the one rollback target.
+    Anything older than that goes. Anything newer stays too — that is a pending update
+    already downloaded and waiting for a yes, and deleting it would silently undo the
+    background download. Unparseable names are left alone; refusing to delete what cannot
+    be identified is cheaper than being wrong.
     """
-    from cerepulse.update.version import Version
-
     running = Version.parse(current_version)
     directory = downloads_dir()
     if running is None or not directory.exists():
         return 0
 
-    prefix, suffix = f"{about.NAME}-", "-Setup.exe"
-    removed = 0
+    staged: list[tuple[Version, Path]] = []
     for file in directory.iterdir():
-        if not (file.name.startswith(prefix) and file.name.endswith(suffix)):
-            continue
-        staged = Version.parse(file.name[len(prefix) : -len(suffix)])
-        if staged is None or staged > running:
-            continue
+        version = version_in_installer_name(file.name)
+        if version is not None:
+            staged.append((version, file))
+
+    older = sorted((entry for entry in staged if entry[0] < running), key=lambda e: e[0])
+    # Everything below the running version except the newest of them, plus the running
+    # version's own installer, which has already been installed.
+    doomed = [path for _v, path in older[:-1]]
+    doomed += [path for version, path in staged if version == running]
+
+    removed = 0
+    for path in doomed:
         try:
-            size = file.stat().st_size
-            file.unlink()
+            size = path.stat().st_size
+            path.unlink()
             removed += 1
-            logger.info("Removed the spent installer {} ({} MB)", file.name, size // 1_048_576)
+            logger.info("Removed the spent installer {} ({} MB)", path.name, size // 1_048_576)
         except OSError as exc:
             # Locked is normal right after an update — the installer may still be open.
-            logger.debug("Could not remove {}: {}", file.name, exc)
+            logger.debug("Could not remove {}: {}", path.name, exc)
+
+    kept = [path.name for _v, path in older[-1:]]
+    if kept:
+        logger.info("Kept {} so a rollback is still possible", kept[0])
     return removed
 
 
@@ -206,5 +254,7 @@ __all__ = [
     "download_installer",
     "downloads_dir",
     "fetch_checksum",
+    "installer_name",
     "installer_path",
+    "version_in_installer_name",
 ]

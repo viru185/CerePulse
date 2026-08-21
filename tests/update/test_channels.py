@@ -236,3 +236,97 @@ def test_rollback_refuses_a_version_it_does_not_have(staged: Path) -> None:
 
     with pytest.raises(InstallError, match="kept locally"):
         rollback_to("0.1.0")
+
+
+# --- staged installers: cleanup must not eat the rollback target ---------------------------
+
+
+def test_cleanup_keeps_one_installer_to_roll_back_to(staged: Path) -> None:
+    """The 0.14 regression, pinned.
+
+    The cleanup added in 0.14 deleted every installer at or below the running version —
+    which is exactly the set `rollback_candidates` offers, so Roll back silently had
+    nothing to offer. Cleanup that removes the only file a feature depends on is not
+    cleanup.
+    """
+    from cerepulse.update.downloader import clear_spent_installers
+    from cerepulse.update.installer import rollback_candidates
+
+    staged.mkdir(parents=True, exist_ok=True)
+    for version in ("0.12.0", "0.13.0", "0.14.0", "0.14.1", "0.15.0"):
+        downloader.installer_path(version).write_bytes(b"x")
+
+    clear_spent_installers("0.14.1")
+    left = sorted(path.name for path in staged.iterdir())
+
+    # The newest below the running version survives, and is offered.
+    assert downloader.installer_path("0.14.0").name in left
+    assert rollback_candidates("0.14.1")
+    # Older ones, and the running version's own spent installer, are gone.
+    assert downloader.installer_path("0.12.0").name not in left
+    assert downloader.installer_path("0.13.0").name not in left
+    assert downloader.installer_path("0.14.1").name not in left
+    # A newer one is a pending update, not rubbish.
+    assert downloader.installer_path("0.15.0").name in left
+
+
+def test_cleanup_leaves_a_lone_previous_version_alone(staged: Path) -> None:
+    from cerepulse.update.downloader import clear_spent_installers
+
+    staged.mkdir(parents=True, exist_ok=True)
+    downloader.installer_path("0.14.0").write_bytes(b"x")
+
+    assert clear_spent_installers("0.14.1") == 0
+    assert downloader.installer_path("0.14.0").exists()
+
+
+def test_cleanup_ignores_names_it_cannot_identify(staged: Path) -> None:
+    """Refusing to delete what cannot be identified is cheaper than being wrong."""
+    from cerepulse.update.downloader import clear_spent_installers
+
+    staged.mkdir(parents=True, exist_ok=True)
+    (staged / "notes.txt").write_bytes(b"keep")
+    (staged / "CerePulse-Setup-nonsense.exe").write_bytes(b"keep")
+
+    clear_spent_installers("0.14.1")
+    assert (staged / "notes.txt").exists()
+    assert (staged / "CerePulse-Setup-nonsense.exe").exists()
+
+
+# --- the asset naming moved the version to the end ----------------------------------------
+
+
+def test_both_installer_namings_read_back_to_the_same_version() -> None:
+    """Releases up to 0.14.1 wrote the version in the middle; 0.15 moves it to the end. A
+    build that could only read the new form would look past the installer it was upgraded
+    *from* — the one file rollback needs."""
+    from cerepulse.update.downloader import version_in_installer_name
+
+    old = version_in_installer_name("CerePulse-0.14.1-Setup.exe")
+    new = version_in_installer_name("CerePulse-Setup-0.14.1.exe")
+    assert old is not None and str(old) == "0.14.1"
+    assert new is not None and str(new) == "0.14.1"
+
+
+def test_the_new_name_puts_the_version_last() -> None:
+    from cerepulse.update.downloader import installer_name
+
+    assert installer_name("0.15.0") == "CerePulse-Setup-0.15.0.exe"
+
+
+def test_a_pre_release_installer_name_round_trips() -> None:
+    from cerepulse.update.downloader import installer_name, version_in_installer_name
+
+    version = version_in_installer_name(installer_name("0.15.0-beta.1"))
+    assert version is not None and str(version) == "0.15.0-beta.1"
+
+
+def test_rollback_still_finds_an_installer_written_by_an_older_build(staged: Path) -> None:
+    """The upgrade path: 0.14.1 staged its files under the old name, and 0.15 has to see
+    them or the first rollback after the rename is impossible."""
+    from cerepulse.update.installer import rollback_candidates
+
+    staged.mkdir(parents=True, exist_ok=True)
+    (staged / "CerePulse-0.14.1-Setup.exe").write_bytes(b"x")
+
+    assert rollback_candidates("0.15.0") == ["0.14.1"]

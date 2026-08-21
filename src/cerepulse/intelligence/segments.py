@@ -19,7 +19,7 @@ instead of producing negative segments.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from enum import Enum
 
 from cerepulse.models.attendance import Punch, PunchDirection
@@ -105,12 +105,28 @@ class Pairing:
         return Duration(max(0, int((last - first).total_seconds() // 60)))
 
 
-def pair_punches(punches: list[Punch], *, day: date, now: datetime | None = None) -> Pairing:
+def pair_punches(
+    punches: list[Punch],
+    *,
+    day: date,
+    now: datetime | None = None,
+    close_at: time | None = None,
+    worked_gaps: set[time] | None = None,
+) -> Pairing:
     """Pair a day's punches into work segments.
 
     ``now`` closes an ongoing shift and is injected rather than read from the clock, so every
     in-progress case is deterministically testable. It is only consulted when the last punch
     is an unmatched ``In``.
+
+    ``close_at`` is the portal's own last-out for a day that is **over**. The punch log can
+    end on an In while the monthly grid still carries a last-out and a total — the portal
+    closes the day even when the punch never landed — and reading only the log threw that
+    away, leaving the day open and its hours unmeasured. Supplying it closes the segment,
+    marked inferred, and the day is settled rather than ongoing.
+
+    Never pass it for today: today's dangling In is a live shift, and closing it would
+    declare a departure in the middle of the afternoon.
     """
     if not punches:
         return Pairing(
@@ -151,6 +167,23 @@ def pair_punches(punches: list[Punch], *, day: date, now: datetime | None = None
             open_at = None
 
     ongoing = open_at is not None
+    if open_at is not None and now is None and close_at is not None:
+        # A finished day the portal closed for us. Not ongoing: the day is over, and saying
+        # "still clocked in" about last Tuesday is plainly wrong.
+        closing = datetime.combine(open_at.date(), close_at)
+        if closing > open_at:
+            ongoing = False
+            segments.append(WorkSegment(open_at, closing, end_inferred=True))
+            issues.append(
+                PunchIssue(
+                    IssueKind.INFERRED_OUT,
+                    f"No Out punch was recorded; closed at {_clock(closing)} from the "
+                    f"attendance summary.",
+                    closing,
+                )
+            )
+            open_at = None
+
     if open_at is not None:
         current = now or datetime.combine(day, open_at.time())
         if current < open_at:
@@ -164,7 +197,35 @@ def pair_punches(punches: list[Punch], *, day: date, now: datetime | None = None
             )
         )
 
+    if worked_gaps:
+        segments = _merge_worked_gaps(segments, worked_gaps)
+
     return Pairing(segments=tuple(segments), issues=tuple(issues), ongoing=ongoing)
+
+
+def _merge_worked_gaps(segments: list[WorkSegment], worked_gaps: set[time]) -> list[WorkSegment]:
+    """Join two segments across a gap the user has told us was work.
+
+    The punches cannot tell a lunch from a trip to another floor — both are an Out followed
+    by an In — and neither can the portal. Only the person who was there knows, so this
+    honours what they said and nothing more: no heuristic, no duration threshold, no
+    inference about gaps they have not spoken about.
+
+    Matched on the clock time of the Out that began the gap, which is what the user clicked
+    and what the flag is stored under.
+    """
+    if not segments:
+        return segments
+
+    merged = [segments[0]]
+    for segment in segments[1:]:
+        previous = merged[-1]
+        if previous.end.time() in worked_gaps:
+            # One continuous stretch of work: the gap between them was never a break.
+            merged[-1] = WorkSegment(previous.start, segment.end, end_inferred=segment.end_inferred)
+            continue
+        merged.append(segment)
+    return merged
 
 
 def _anchor_to_day(punches: list[Punch], day: date) -> list[tuple[Punch, datetime]]:

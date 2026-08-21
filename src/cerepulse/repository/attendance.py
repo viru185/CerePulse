@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 from loguru import logger
 
@@ -184,6 +184,65 @@ class AttendanceRepository:
             (employee_code, day.isoformat()),
         ).fetchall()
         return [row_to_punch(row) for row in rows]
+
+    # --- gaps the user has told us were work ----------------------------------------
+
+    def flag_worked_gap(
+        self, employee_code: str, day: date, gap_start: time, *, note: str = ""
+    ) -> None:
+        """Record that the gap beginning at ``gap_start`` was work, not a break.
+
+        Keyed on the gap's own start because that is a real punch time and therefore stable
+        across re-syncs — a re-fetch rewrites the punches but the Out that began the gap
+        keeps its clock time, so the flag stays attached to the thing it was set on.
+        """
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO worked_gap (employee_code, day, gap_start, note, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (employee_code, day, gap_start) DO UPDATE SET note = excluded.note
+                """,
+                (
+                    employee_code,
+                    day.isoformat(),
+                    gap_start.isoformat(timespec="minutes"),
+                    note,
+                    datetime.now().isoformat(),
+                ),
+            )
+
+    def clear_worked_gap(self, employee_code: str, day: date, gap_start: time) -> None:
+        with self.database.transaction() as connection:
+            connection.execute(
+                "DELETE FROM worked_gap WHERE employee_code = ? AND day = ? AND gap_start = ?",
+                (employee_code, day.isoformat(), gap_start.isoformat(timespec="minutes")),
+            )
+
+    def find_worked_gaps(self, employee_code: str, day: date) -> set[time]:
+        rows = self.database.execute(
+            "SELECT gap_start FROM worked_gap WHERE employee_code = ? AND day = ?",
+            (employee_code, day.isoformat()),
+        ).fetchall()
+        return {time.fromisoformat(row["gap_start"]) for row in rows}
+
+    def find_worked_gaps_between(
+        self, employee_code: str, start: date, end: date
+    ) -> dict[date, set[time]]:
+        """Every flag in a range, so a month can be analysed without a query per day."""
+        rows = self.database.execute(
+            """
+            SELECT day, gap_start FROM worked_gap
+             WHERE employee_code = ? AND day BETWEEN ? AND ?
+            """,
+            (employee_code, start.isoformat(), end.isoformat()),
+        ).fetchall()
+        flagged: dict[date, set[time]] = {}
+        for row in rows:
+            flagged.setdefault(date.fromisoformat(row["day"]), set()).add(
+                time.fromisoformat(row["gap_start"])
+            )
+        return flagged
 
     def find_days_between(self, employee_code: str, start: date, end: date) -> list[AttendanceDay]:
         """Every cached day in a date range, punches included, oldest first.

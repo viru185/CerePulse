@@ -829,11 +829,26 @@ class DayJourney(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
 
+    #: (gap start, whether it is now work). The window owns the storage; this only reports
+    #: the click.
+    gap_flagged = Signal(object, bool)
+
     #: A gap at or under this is an ordinary break. Past it, the day has a hole in it and
     #: the row says so rather than calling four hours "Break".
     LONG_BREAK = 90
 
-    def set_segments(self, segments: Sequence[WorkSegment]) -> None:
+    def set_segments(
+        self,
+        segments: Sequence[WorkSegment],
+        *,
+        adjusted_gaps: Sequence[time] = (),
+        can_flag: bool = False,
+    ) -> None:
+        """Render the day. ``can_flag`` offers each break a "this was work" action.
+
+        Offered only where it can mean something — a real gap on a day the app can store a
+        flag against — because a button that silently does nothing is worse than no button.
+        """
         while self._layout.count():
             item = self._layout.takeAt(0)
             widget = item.widget() if item is not None else None
@@ -848,26 +863,23 @@ class DayJourney(QWidget):
                 gap = _gap_between(previous, segment)
                 if gap.minutes > 0:
                     long_break = gap.minutes > self.LONG_BREAK
-                    rows.append(
-                        _JourneyRow(
-                            self._palette,
-                            when=f"{_clock_short(previous.end)} – {_clock_short(segment.start)}",
-                            title=f"{'Away' if long_break else 'Break'} · {gap}",
-                            detail="",
-                            colour=self._palette.bad if long_break else self._palette.rest,
-                            primary=False,
-                        )
+                    row = _JourneyRow(
+                        self._palette,
+                        when=f"{_clock_short(previous.end)} – {_clock_short(segment.start)}",
+                        title=f"{'Away' if long_break else 'Break'} · {gap}",
+                        detail="",
+                        colour=self._palette.bad if long_break else self._palette.rest,
+                        primary=False,
                     )
+                    if can_flag:
+                        row.offer_worked_flag(previous.end.time(), self.gap_flagged)
+                    rows.append(row)
             rows.append(
                 _JourneyRow(
                     self._palette,
                     when=f"{_clock_short(segment.start)} – {_clock_short(segment.end)}",
                     title=f"Worked · {segment.duration}",
-                    detail=(
-                        "the out punch is missing, so this end was inferred"
-                        if segment.end_inferred
-                        else ""
-                    ),
+                    detail=_segment_detail(segment, adjusted_gaps),
                     colour=self._palette.work,
                     muted=segment.end_inferred,
                 )
@@ -878,6 +890,20 @@ class DayJourney(QWidget):
         for index, row in enumerate(rows):
             row.set_position(first=index == 0, last=index == len(rows) - 1)
             self._layout.addWidget(row)
+
+
+def _segment_detail(segment: WorkSegment, adjusted_gaps: Sequence[time]) -> str:
+    """Why this row is not simply a measurement, when it is not.
+
+    Both cases are stated rather than hidden: an end the app inferred, and a stretch that
+    only reads as continuous because the user said a gap inside it was work.
+    """
+    notes = []
+    if segment.end_inferred:
+        notes.append("the out punch is missing, so this end was inferred")
+    if any(segment.start.time() < moment < segment.end.time() for moment in adjusted_gaps):
+        notes.append("includes a break you marked as work")
+    return "; ".join(notes)
 
 
 class _JourneyRow(QWidget):
@@ -915,6 +941,8 @@ class _JourneyRow(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(self.GUTTER, Space.TIGHT // 2, 0, Space.TIGHT // 2)
         layout.setSpacing(Space.ROW)
+        # Kept so a break row can be offered an action after it is built.
+        self._layout = layout
 
         stamp = QLabel(when)
         stamp.setFixedWidth(118)
@@ -942,6 +970,23 @@ class _JourneyRow(QWidget):
 
         if muted:
             stamp.setStyleSheet(f"color: {palette.text_muted}; font-variant-numeric: tabular-nums;")
+
+    def offer_worked_flag(self, gap_start: time, signal: object) -> None:
+        """Add "This was work" to a break row.
+
+        The punches call every Out-then-In a break, and so does the portal. Somebody who
+        went downstairs to the other office was working, and nothing in the data can know
+        that — so the row asks, once, rather than the app guessing from the duration.
+        """
+        from PySide6.QtWidgets import QPushButton
+
+        button = QPushButton("This was work")
+        button.setToolTip(
+            "Count this gap as work instead of a break. Stored on this device only; it "
+            "does not change anything in SpineHR."
+        )
+        button.clicked.connect(lambda: signal.emit(gap_start, True))  # type: ignore[attr-defined]
+        self._layout.addWidget(button)
 
     def set_position(self, *, first: bool, last: bool) -> None:
         """Tell the row where it sits, so the spine stops at the ends instead of overhanging."""
