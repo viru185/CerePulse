@@ -2,6 +2,20 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.15.0-beta.2] - 2026-08-21
+
+### Bug Fixes
+- Count to the portal's last out, and show the work you marked
+
+### CI/CD
+- Match the renamed artifacts
+
+### Chores
+- Bump to 0.15.0-beta.2
+
+### Documentation
+- Keep the test count honest
+
 ## [0.15.0-beta.1] - 2026-08-21
 
 ### Bug Fixes
@@ -9,6 +23,7 @@ All notable changes to CerePulse are documented here.
 
 ### Chores
 - Bump to 0.15.0-beta.1
+- Regenerate the changelog for 0.15.0-beta.1
 
 ### Documentation
 - A development guide, because the codebase outgrew reading it end to end
