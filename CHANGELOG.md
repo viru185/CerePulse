@@ -2,7 +2,21 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.15.0-beta.1] - 2026-08-21
+
+### Bug Fixes
+- Rollback, the Records password, midnight — and a break you can correct
+
+### Chores
+- Bump to 0.15.0-beta.1
+
+### Documentation
+- A development guide, because the codebase outgrew reading it end to end
+
 ## [0.14.1] - 2026-08-06
+
+### Chores
+- Regenerate the changelog for 0.14.1
 
 ### Features
 - Promote 0.14.1 to stable — the commute, and a lot of screens that now agree
