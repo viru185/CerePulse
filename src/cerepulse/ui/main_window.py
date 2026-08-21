@@ -1056,7 +1056,7 @@ class MainWindow(QMainWindow):
             f"Saved. Switching tray mode or theme fully applies on the next start.{note}"
         )
 
-    def _flag_gap(self, day: object, gap_start: object, worked: bool) -> None:
+    def _flag_gap(self, day: object, gap_start: object, worked: bool, note: str = "") -> None:
         """Store "that gap was work" and re-render the day it belongs to.
 
         Local only, and deliberately so. It changes what CerePulse reports and never what
@@ -1070,6 +1070,7 @@ class MainWindow(QMainWindow):
                 day,  # type: ignore[arg-type]
                 gap_start,  # type: ignore[arg-type]
                 worked=worked,
+                note=note,
             ),
             on_success=lambda _result: self._sync.load_day(day),  # type: ignore[arg-type]
             on_error=lambda exc: self._set_status(f"Could not save that: {_message_for(exc)}"),

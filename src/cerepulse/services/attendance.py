@@ -360,7 +360,13 @@ class AttendanceService:
         ]
 
     def set_gap_worked(
-        self, employee_code: str, day: date, gap_start: time, *, worked: bool
+        self,
+        employee_code: str,
+        day: date,
+        gap_start: time,
+        *,
+        worked: bool,
+        note: str = "",
     ) -> None:
         """Tell the app a gap was work, or take that back.
 
@@ -369,7 +375,7 @@ class AttendanceService:
         makes themselves, which is the read-only stance the whole app keeps.
         """
         if worked:
-            self._attendance.flag_worked_gap(employee_code, day, gap_start)
+            self._attendance.flag_worked_gap(employee_code, day, gap_start, note=note)
         else:
             self._attendance.clear_worked_gap(employee_code, day, gap_start)
 

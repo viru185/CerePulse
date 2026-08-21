@@ -18,6 +18,7 @@ instead of producing negative segments.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from enum import Enum
@@ -111,7 +112,7 @@ def pair_punches(
     day: date,
     now: datetime | None = None,
     close_at: time | None = None,
-    worked_gaps: set[time] | None = None,
+    worked_gaps: Mapping[time, str] | None = None,
 ) -> Pairing:
     """Pair a day's punches into work segments.
 
@@ -119,14 +120,21 @@ def pair_punches(
     in-progress case is deterministically testable. It is only consulted when the last punch
     is an unmatched ``In``.
 
-    ``close_at`` is the portal's own last-out for a day that is **over**. The punch log can
-    end on an In while the monthly grid still carries a last-out and a total — the portal
-    closes the day even when the punch never landed — and reading only the log threw that
-    away, leaving the day open and its hours unmeasured. Supplying it closes the segment,
-    marked inferred, and the day is settled rather than ongoing.
+    ``close_at`` is the portal's own last-out for a day that is **over**, and it repairs two
+    different shapes of incomplete punch log:
 
-    Never pass it for today: today's dangling In is a live shift, and closing it would
-    declare a departure in the middle of the afternoon.
+    * The log ends on an **In**. The portal still carries a last-out and a total — it closes
+      the day even when the punch never landed — so the open segment is closed at it and the
+      day is settled rather than ongoing.
+    * The log ends on an **Out that is earlier than the portal's last-out**. This is the
+      commoner one and it is silent: the day pairs cleanly, so nothing looks wrong, and the
+      app confidently reported a departure at 15:21 for a day the portal ended at 18:10 —
+      nearly three hours of work missing from a figure that looked exact.
+
+    Either way the end is marked inferred, so no screen presents it as measured.
+
+    Never pass it for today: today's last punch is a shift still being worked, and the grid's
+    last-out there is merely the latest swipe so far rather than a clock-off.
     """
     if not punches:
         return Pairing(
@@ -196,6 +204,21 @@ def pair_punches(
                 open_at,
             )
         )
+    elif now is None and close_at is not None and segments:
+        # The log paired cleanly but stopped short of where the portal ended the day. The
+        # trailing Out punches simply are not in the log; the grid counted them anyway.
+        last = segments[-1]
+        closing = datetime.combine(last.end.date(), close_at)
+        if closing > last.end:
+            segments[-1] = WorkSegment(last.start, closing, end_inferred=True)
+            issues.append(
+                PunchIssue(
+                    IssueKind.INFERRED_OUT,
+                    f"The punch log ends at {_clock(last.end)}, but the attendance summary "
+                    f"records {_clock(closing)}; the day was measured to the summary.",
+                    closing,
+                )
+            )
 
     if worked_gaps:
         segments = _merge_worked_gaps(segments, worked_gaps)
@@ -203,7 +226,9 @@ def pair_punches(
     return Pairing(segments=tuple(segments), issues=tuple(issues), ongoing=ongoing)
 
 
-def _merge_worked_gaps(segments: list[WorkSegment], worked_gaps: set[time]) -> list[WorkSegment]:
+def _merge_worked_gaps(
+    segments: list[WorkSegment], worked_gaps: Mapping[time, str]
+) -> list[WorkSegment]:
     """Join two segments across a gap the user has told us was work.
 
     The punches cannot tell a lunch from a trip to another floor — both are an Out followed

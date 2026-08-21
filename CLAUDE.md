@@ -274,11 +274,13 @@ it **one gap at a time** — no duration threshold, no rule, because a rule appl
 nobody looked at quietly inflates the hours. A flagged day carries `adjusted_gaps` so no
 screen presents it with the confidence of a measurement.
 
-**A past day whose Out never landed is still a day the portal counted.** The grid carries
-`last_out` and a total even when the punch log ends on an In, and reading only the log threw
-that away — the day sat open with no hours at all. `close_at` closes it, marked inferred.
-Never for today: a dangling In there is a shift still being worked, which is the same
-distinction `days_missing_detail` and `load_day` already turn on.
+**The punch log can stop short of where the portal ended the day, and it does so in two
+shapes.** The obvious one is a log ending on an In — the day sits open with no hours. The
+silent one is a log ending on an **Out earlier than the grid's `last_out`**: the day pairs
+cleanly, nothing looks wrong, and the app confidently reported a 15:21 departure for a day
+the portal ended at 18:10, with nearly three hours missing from a figure that looked exact.
+`close_at` repairs both, marked inferred. Never for today, where the grid's last-out is
+merely the latest swipe so far rather than a clock-off.
 
 **Cleanup must not delete what a feature depends on.** `clear_spent_installers` shipped in
 0.14 deleting every staged installer at or below the running version — which is exactly the

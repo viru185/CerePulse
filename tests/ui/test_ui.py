@@ -879,3 +879,77 @@ def test_busy_toggles_around_work(qapp: QApplication) -> None:
 def test_stylesheet_applies_cleanly(qapp: QApplication, theme: str) -> None:
     qapp.setStyleSheet(stylesheet(palette_for(theme)))
     assert qapp.styleSheet()
+
+
+# --- a break marked as work -----------------------------------------------------------
+
+
+def _flagged_day(note: str = "second-floor handover"):  # type: ignore[no-untyped-def]
+    from cerepulse.intelligence.day import analyze_day
+
+    log = punches(("09:00", "in"), ("13:00", "out"), ("13:45", "in"), ("18:00", "out"))
+    return analyze_day(log, day=DAY, worked_gaps={time(13, 0): note})
+
+
+def test_the_journey_says_what_the_marked_work_was(qapp: QApplication) -> None:
+    """A break marked as work, read back three weeks later, is a fact with its reason
+    missing — and the reason is the part that survives."""
+    from PySide6.QtWidgets import QLabel
+
+    from cerepulse.ui.widgets import DayJourney
+
+    analysis = _flagged_day()
+    journey = DayJourney(DARK)
+    journey.set_segments(analysis.segments, adjusted_gaps=analysis.adjusted_gaps, can_flag=True)
+
+    text = " ".join(label.text() for label in journey.findChildren(QLabel))
+    assert "second-floor handover" in text
+
+
+def test_a_flag_with_no_note_still_reads_as_marked(qapp: QApplication) -> None:
+    from PySide6.QtWidgets import QLabel
+
+    from cerepulse.ui.widgets import DayJourney
+
+    analysis = _flagged_day(note="")
+    journey = DayJourney(DARK)
+    journey.set_segments(analysis.segments, adjusted_gaps=analysis.adjusted_gaps, can_flag=True)
+
+    text = " ".join(label.text() for label in journey.findChildren(QLabel))
+    assert "includes work you marked" in text
+
+
+def test_a_marked_stretch_offers_the_way_back(qapp: QApplication) -> None:
+    """Merging removes the gap's own row, so the undo has to live on the row that swallowed
+    it — anything the user can set they must be able to unset."""
+    from PySide6.QtWidgets import QPushButton
+
+    from cerepulse.ui.widgets import DayJourney
+
+    analysis = _flagged_day()
+    journey = DayJourney(DARK)
+    journey.set_segments(analysis.segments, adjusted_gaps=analysis.adjusted_gaps, can_flag=True)
+
+    assert [b.text() for b in journey.findChildren(QPushButton)] == ["Not work"]
+
+
+def test_the_timeline_is_told_about_the_adjustment(qapp: QApplication) -> None:
+    """Merging the segments makes the figures right; drawing nothing there would make them
+    look measured."""
+    analysis = _flagged_day()
+    timeline = DayTimeline(DARK)
+    timeline.set_day(analysis.segments, adjusted_gaps=analysis.adjusted_gaps)
+
+    assert timeline._adjusted_gaps == ((time(13, 0), "second-floor handover"),)
+
+
+def test_the_date_field_is_wide_enough_for_the_year(qapp: QApplication) -> None:
+    """It was set before the popup arrow reserved its 28px, so the year fell off the end."""
+    from PySide6.QtGui import QFontMetrics
+
+    from cerepulse.ui.views.today import PICKER_WIDTH, TodayView
+
+    view = TodayView(DARK)
+    metrics = QFontMetrics(view._picker.font())
+    # Text, plus the stylesheet's left padding, the arrow's reserve, and the border.
+    assert PICKER_WIDTH >= metrics.horizontalAdvance("25 Aug 2026") + 10 + 28 + 2

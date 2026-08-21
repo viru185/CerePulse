@@ -408,6 +408,9 @@ class DayTimeline(QWidget):
         self._end: datetime | None = None
         self._status_label = ""
         self._status_colour: str | None = None
+        #: Gaps the user reclassified as work. Marked on the axis so a stretch that reads as
+        #: continuous does not silently look like an unbroken measured run.
+        self._adjusted_gaps: tuple[tuple[time, str], ...] = ()
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_day(
@@ -419,6 +422,7 @@ class DayTimeline(QWidget):
         status_label: str = "",
         status_colour: str | None = None,
         domain: tuple[int, int] | None = None,
+        adjusted_gaps: Sequence[tuple[time, str]] = (),
     ) -> None:
         """Render a day.
 
@@ -433,6 +437,7 @@ class DayTimeline(QWidget):
         difference the stack exists to show.
         """
         self._segments = segments
+        self._adjusted_gaps = tuple(adjusted_gaps)
         self._leave_at = leave_at
         self._now = now
         self._status_label = status_label
@@ -538,6 +543,7 @@ class DayTimeline(QWidget):
         self._paint_breaks(painter, bar)
         self._paint_work(painter, bar)
         self._paint_markers(painter, bar)
+        self._paint_adjustments(painter, bar)
         self._paint_punches(painter, bar)
         if not self._compact:
             self._paint_hours(painter, bar)
@@ -704,6 +710,27 @@ class DayTimeline(QWidget):
             painter.drawText(QRectF(left, top, width + 2, 13), Qt.AlignmentFlag.AlignLeft, text)
             occupied = left + width
 
+    def _paint_adjustments(self, painter: QPainter, bar: QRectF) -> None:
+        """Mark each gap the user reclassified as work.
+
+        Merging the segments is what makes the figures right; drawing nothing there is what
+        would make them look measured. The violet is the palette's "an adjustment" accent,
+        used here for the same meaning it carries everywhere else, and the tooltip carries
+        whatever the user said the work was.
+        """
+        if not self._adjusted_gaps or self._start is None:
+            return
+
+        pen = QPen(QColor(self._palette.adjust), 2)
+        pen.setStyle(Qt.PenStyle.DotLine)
+        painter.setPen(pen)
+        for moment, _note in self._adjusted_gaps:
+            at = datetime.combine(self._start.date(), moment)
+            if not (self._start <= at <= (self._end or at)):
+                continue
+            x = self._x_for(at)
+            painter.drawLine(int(x), int(bar.top()), int(x), int(bar.bottom()))
+
     def _paint_hours(self, painter: QPainter, bar: QRectF) -> None:
         """The hour axis — what makes it a clock rather than a bar."""
         assert self._start is not None and self._end is not None
@@ -831,7 +858,7 @@ class DayJourney(QWidget):
 
     #: (gap start, whether it is now work). The window owns the storage; this only reports
     #: the click.
-    gap_flagged = Signal(object, bool)
+    gap_flagged = Signal(object, bool, str)
 
     #: A gap at or under this is an ordinary break. Past it, the day has a hole in it and
     #: the row says so rather than calling four hours "Break".
@@ -841,7 +868,7 @@ class DayJourney(QWidget):
         self,
         segments: Sequence[WorkSegment],
         *,
-        adjusted_gaps: Sequence[time] = (),
+        adjusted_gaps: Sequence[tuple[time, str]] = (),
         can_flag: bool = False,
     ) -> None:
         """Render the day. ``can_flag`` offers each break a "this was work" action.
@@ -874,16 +901,24 @@ class DayJourney(QWidget):
                     if can_flag:
                         row.offer_worked_flag(previous.end.time(), self.gap_flagged)
                     rows.append(row)
-            rows.append(
-                _JourneyRow(
-                    self._palette,
-                    when=f"{_clock_short(segment.start)} – {_clock_short(segment.end)}",
-                    title=f"Worked · {segment.duration}",
-                    detail=_segment_detail(segment, adjusted_gaps),
-                    colour=self._palette.work,
-                    muted=segment.end_inferred,
-                )
+            inside = [
+                (moment, note)
+                for moment, note in adjusted_gaps
+                if segment.start.time() < moment < segment.end.time()
+            ]
+            work_row = _JourneyRow(
+                self._palette,
+                when=f"{_clock_short(segment.start)} – {_clock_short(segment.end)}",
+                title=f"Worked · {segment.duration}",
+                detail=_segment_detail(segment, adjusted_gaps),
+                # Violet is the palette's "adjustment" accent, and this stretch is one.
+                colour=self._palette.adjust if inside else self._palette.work,
+                muted=segment.end_inferred,
             )
+            # Merging removed the gap's own row, so the way back has to live here.
+            if can_flag and inside:
+                work_row.offer_undo_flag(inside[0][0], self.gap_flagged)
+            rows.append(work_row)
             previous = segment
 
         # The spine has to know where it ends, which is only knowable once every row exists.
@@ -892,17 +927,24 @@ class DayJourney(QWidget):
             self._layout.addWidget(row)
 
 
-def _segment_detail(segment: WorkSegment, adjusted_gaps: Sequence[time]) -> str:
+def _segment_detail(segment: WorkSegment, adjusted_gaps: Sequence[tuple[time, str]]) -> str:
     """Why this row is not simply a measurement, when it is not.
 
     Both cases are stated rather than hidden: an end the app inferred, and a stretch that
-    only reads as continuous because the user said a gap inside it was work.
+    only reads as continuous because the user said a gap inside it was work — named with
+    whatever they said it was, because "a break you marked as work" three weeks later is a
+    fact without a reason attached.
     """
     notes = []
     if segment.end_inferred:
         notes.append("the out punch is missing, so this end was inferred")
-    if any(segment.start.time() < moment < segment.end.time() for moment in adjusted_gaps):
-        notes.append("includes a break you marked as work")
+    inside = [
+        note or "no note"
+        for moment, note in adjusted_gaps
+        if segment.start.time() < moment < segment.end.time()
+    ]
+    if inside:
+        notes.append("includes work you marked: " + "; ".join(inside))
     return "; ".join(notes)
 
 
@@ -972,20 +1014,45 @@ class _JourneyRow(QWidget):
             stamp.setStyleSheet(f"color: {palette.text_muted}; font-variant-numeric: tabular-nums;")
 
     def offer_worked_flag(self, gap_start: time, signal: object) -> None:
-        """Add "This was work" to a break row.
+        """Add "This was work" to a break row, and ask what the work was.
 
         The punches call every Out-then-In a break, and so does the portal. Somebody who
         went downstairs to the other office was working, and nothing in the data can know
         that — so the row asks, once, rather than the app guessing from the duration.
+
+        The note is asked for at the same moment, because "a break I marked as work" read
+        back three weeks later is a fact with its reason missing, and the reason is the part
+        that survives.
         """
-        from PySide6.QtWidgets import QPushButton
+        from PySide6.QtWidgets import QInputDialog, QPushButton
+
+        def flag() -> None:
+            note, accepted = QInputDialog.getText(
+                self,
+                "Mark as work",
+                "What was this? (optional)",
+                text="",
+            )
+            if accepted:
+                signal.emit(gap_start, True, note.strip())  # type: ignore[attr-defined]
 
         button = QPushButton("This was work")
         button.setToolTip(
             "Count this gap as work instead of a break. Stored on this device only; it "
             "does not change anything in SpineHR."
         )
-        button.clicked.connect(lambda: signal.emit(gap_start, True))  # type: ignore[attr-defined]
+        button.clicked.connect(flag)
+        self._layout.addWidget(button)
+
+    def offer_undo_flag(self, gap_start: time, signal: object) -> None:
+        """Take a flag back. Anything the user can set, they must be able to unset."""
+        from PySide6.QtWidgets import QPushButton
+
+        button = QPushButton("Not work")
+        button.setToolTip("Count this as a break again.")
+        button.clicked.connect(
+            lambda: signal.emit(gap_start, False, "")  # type: ignore[attr-defined]
+        )
         self._layout.addWidget(button)
 
     def set_position(self, *, first: bool, last: bool) -> None:

@@ -53,14 +53,16 @@ from cerepulse.ui.widgets import (
     step_button,
 )
 
-#: Least width the date popup's calendar may have. Seven "Mon"-sized columns plus the
-#: navigation bar; below this Qt elides the day names to "T…" and the header stops meaning
-#: anything.
-CALENDAR_WIDTH = 320
+#: Least width the date popup's calendar may have. Seven columns of "Mon" at the app's font
+#: plus the navigation bar — below this Qt elides the day names to "T…" and the header stops
+#: meaning anything, above it the popup is simply wider than a month of dates needs.
+CALENDAR_WIDTH = 268
 
-#: The date field is sized to its content — "5 Aug 2026" plus the popup arrow — rather than
-#: stretching to whatever the header row has spare.
-PICKER_WIDTH = 132
+#: The date field, sized to its widest content rather than left to stretch across the
+#: header. "25 Aug 2026" measures ~143px at the app's font; the stylesheet then adds 10px of
+#: left padding and reserves 28px on the right for the popup arrow, plus the border. Set
+#: below that sum and the year is what falls off the end — which is exactly what 132 did.
+PICKER_WIDTH = 190
 
 #: Insight kinds each next action has already said, so repeating them as a chip directly
 #: below the instruction is padding. Kept as data rather than branching in the render path,
@@ -87,7 +89,7 @@ class TodayView(QWidget):
     commute_setup_requested = Signal()
     #: (date, gap start, whether it is work). The view knows which day is on screen; the
     #: window owns the storage.
-    gap_flagged = Signal(object, object, bool)
+    gap_flagged = Signal(object, object, bool, str)
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -337,10 +339,10 @@ class TodayView(QWidget):
         if action is not None:
             self.action_triggered.emit(action)
 
-    def _on_gap_flagged(self, gap_start: object, worked: bool) -> None:
+    def _on_gap_flagged(self, gap_start: object, worked: bool, note: str) -> None:
         """Attach the day to the click before passing it on."""
         if self._analysis is not None:
-            self.gap_flagged.emit(self._analysis.day, gap_start, worked)
+            self.gap_flagged.emit(self._analysis.day, gap_start, worked, note)
 
     def set_latest_date(self, today: date) -> None:
         """Raise the ceiling when the day rolls over.
@@ -426,6 +428,7 @@ class TodayView(QWidget):
             now=datetime.now() if is_today and analysis.is_ongoing else None,
             status_label=self._status_label,
             status_colour=self._status_colour,
+            adjusted_gaps=analysis.adjusted_gaps,
         )
         self._legend.setText(self._legend_text(analysis))
         self._render_punches(analysis)

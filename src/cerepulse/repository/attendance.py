@@ -219,29 +219,30 @@ class AttendanceRepository:
                 (employee_code, day.isoformat(), gap_start.isoformat(timespec="minutes")),
             )
 
-    def find_worked_gaps(self, employee_code: str, day: date) -> set[time]:
+    def find_worked_gaps(self, employee_code: str, day: date) -> dict[time, str]:
+        """Flagged gaps for one day, each with whatever the user wrote about it."""
         rows = self.database.execute(
-            "SELECT gap_start FROM worked_gap WHERE employee_code = ? AND day = ?",
+            "SELECT gap_start, note FROM worked_gap WHERE employee_code = ? AND day = ?",
             (employee_code, day.isoformat()),
         ).fetchall()
-        return {time.fromisoformat(row["gap_start"]) for row in rows}
+        return {time.fromisoformat(row["gap_start"]): row["note"] or "" for row in rows}
 
     def find_worked_gaps_between(
         self, employee_code: str, start: date, end: date
-    ) -> dict[date, set[time]]:
+    ) -> dict[date, dict[time, str]]:
         """Every flag in a range, so a month can be analysed without a query per day."""
         rows = self.database.execute(
             """
-            SELECT day, gap_start FROM worked_gap
+            SELECT day, gap_start, note FROM worked_gap
              WHERE employee_code = ? AND day BETWEEN ? AND ?
             """,
             (employee_code, start.isoformat(), end.isoformat()),
         ).fetchall()
-        flagged: dict[date, set[time]] = {}
+        flagged: dict[date, dict[time, str]] = {}
         for row in rows:
-            flagged.setdefault(date.fromisoformat(row["day"]), set()).add(
+            flagged.setdefault(date.fromisoformat(row["day"]), {})[
                 time.fromisoformat(row["gap_start"])
-            )
+            ] = row["note"] or ""
         return flagged
 
     def find_days_between(self, employee_code: str, start: date, end: date) -> list[AttendanceDay]:

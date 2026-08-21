@@ -16,6 +16,7 @@ Two deliberate upgrades over ninetofive's flat ``first_in + 9h``:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from enum import Enum
@@ -89,10 +90,11 @@ class DayAnalysis:
     policy: ShiftPolicy = ShiftPolicy()
     #: The single thing worth doing about this day.
     next_action: NextAction | None = None
-    #: Gaps the user reclassified as work, by the clock time of the Out that began each.
+    #: Gaps the user reclassified as work: (start of the gap, what they said it was).
     #: Carried rather than merely applied so every screen can say the figures were adjusted
-    #: — a corrected day must never be presented with the confidence of a measured one.
-    adjusted_gaps: tuple[time, ...] = ()
+    #: — a corrected day must never be presented with the confidence of a measured one — and
+    #: so the note is shown wherever the adjustment is.
+    adjusted_gaps: tuple[tuple[time, str], ...] = ()
 
     @property
     def is_adjusted(self) -> bool:
@@ -147,7 +149,7 @@ def analyze_day(
     swipe_requests: list[SwipeRequest] | None = None,
     grid_only: bool = False,
     close_at: time | None = None,
-    worked_gaps: set[time] | None = None,
+    worked_gaps: Mapping[time, str] | None = None,
 ) -> DayAnalysis:
     """Analyze one day. ``swipe_requests`` lets an existing request suppress the suggestion.
 
@@ -226,7 +228,7 @@ def analyze_day(
     swipe_request_needed = early_exit and filed is None
 
     analysis = DayAnalysis(
-        adjusted_gaps=tuple(sorted(worked_gaps or ())),
+        adjusted_gaps=tuple(sorted((worked_gaps or {}).items())),
         day=day,
         state=state,
         first_in=first_in,

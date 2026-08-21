@@ -460,12 +460,25 @@ def stylesheet(palette: Palette) -> str:
     /* The date picker's popup. Unstyled it falls back to the native palette and lands as a
        light calendar in the middle of a dark app. */
     QCalendarWidget QWidget {{ alternate-background-color: {palette.elevated}; }}
+    /* The month and year buttons in the popup's navigation bar. Their drop-down indicator
+       is drawn by Qt at a fixed offset that assumes the default padding, so it landed over
+       the label text; giving the button room on the right and pinning the indicator into it
+       is what lines the two up. */
     QCalendarWidget QToolButton {{
         background: transparent;
         color: {palette.text};
         border: none;
-        padding: 4px 8px;
+        padding: 4px 22px 4px 10px;
+        font-weight: 600;
     }}
+    QCalendarWidget QToolButton::menu-indicator {{
+        subcontrol-origin: padding;
+        subcontrol-position: center right;
+        width: 14px;
+        right: 4px;
+    }}
+    QCalendarWidget QToolButton::menu-indicator:pressed,
+    QCalendarWidget QToolButton::menu-indicator:open {{ top: 1px; }}
     QCalendarWidget QToolButton:hover {{ background: {palette.overlay}; border-radius: 6px; }}
     QCalendarWidget QMenu {{
         background-color: {palette.elevated};

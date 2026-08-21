@@ -444,11 +444,19 @@ def test_a_last_out_before_the_open_punch_is_refused() -> None:
     assert analysis.clocked_in
 
 
-def test_a_day_that_pairs_cleanly_ignores_the_grid_entirely() -> None:
+def test_a_clean_pair_is_still_extended_to_the_portals_last_out() -> None:
+    """This test used to assert the opposite, and the opposite was the bug.
+
+    A day that pairs cleanly looks finished, so nothing flagged it — but the portal counts
+    to its own last-out, and where that is later the punch log is simply missing its tail.
+    Believing the log over the portal is what reported a 15:21 departure for a day that
+    ended at 18:10.
+    """
     analysis = analyze_day(
-        punches(("09:00", "in"), ("18:00", "out")), day=DAY, close_at=time(23, 0)
+        punches(("09:00", "in"), ("18:00", "out")), day=DAY, close_at=time(19, 0)
     )
-    assert analysis.last_out == datetime.combine(DAY, time(18, 0))
+    assert analysis.last_out == datetime.combine(DAY, time(19, 0))
+    assert analysis.segments[-1].end_inferred
 
 
 # --- a break that was actually work --------------------------------------------------------
@@ -460,7 +468,7 @@ def test_a_flagged_gap_moves_minutes_from_break_to_worked() -> None:
     log = punches(("09:00", "in"), ("13:00", "out"), ("13:45", "in"), ("18:00", "out"))
 
     plain = analyze_day(log, day=DAY)
-    adjusted = analyze_day(log, day=DAY, worked_gaps={time(13, 0)})
+    adjusted = analyze_day(log, day=DAY, worked_gaps={time(13, 0): "helping downstairs"})
 
     assert plain.break_taken == Duration(45)
     assert adjusted.break_taken == Duration(0)
@@ -471,10 +479,10 @@ def test_a_flagged_gap_moves_minutes_from_break_to_worked() -> None:
 def test_an_adjusted_day_says_it_was_adjusted() -> None:
     """No screen may present a corrected day with the confidence of a measured one."""
     log = punches(("09:00", "in"), ("13:00", "out"), ("13:45", "in"), ("18:00", "out"))
-    adjusted = analyze_day(log, day=DAY, worked_gaps={time(13, 0)})
+    adjusted = analyze_day(log, day=DAY, worked_gaps={time(13, 0): "helping downstairs"})
 
     assert adjusted.is_adjusted
-    assert adjusted.adjusted_gaps == (time(13, 0),)
+    assert adjusted.adjusted_gaps == ((time(13, 0), "helping downstairs"),)
     assert not analyze_day(log, day=DAY).is_adjusted
 
 
@@ -488,7 +496,7 @@ def test_only_the_flagged_gap_is_reclassified() -> None:
         ("13:45", "in"),  # a real lunch
         ("18:00", "out"),
     )
-    adjusted = analyze_day(log, day=DAY, worked_gaps={time(11, 0)})
+    adjusted = analyze_day(log, day=DAY, worked_gaps={time(11, 0): "other office"})
 
     assert adjusted.break_taken == Duration(45)
     assert len(adjusted.segments) == 2
@@ -499,4 +507,68 @@ def test_flagging_a_gap_that_is_not_there_changes_nothing() -> None:
     a gap must be inert rather than wrong."""
     log = punches(("09:00", "in"), ("13:00", "out"), ("13:45", "in"), ("18:00", "out"))
 
-    assert analyze_day(log, day=DAY, worked_gaps={time(15, 30)}).break_taken == Duration(45)
+    assert analyze_day(
+        log, day=DAY, worked_gaps={time(15, 30): "stale flag"}
+    ).break_taken == Duration(45)
+
+
+def test_a_log_that_stops_short_of_the_portals_last_out_is_extended() -> None:
+    """The silent one. The day pairs cleanly so nothing looks wrong, and the app reported a
+    departure at 15:21 for a day the portal ended at 18:10 — nearly three hours missing from
+    a figure that looked exact."""
+    analysis = analyze_day(
+        punches(("09:20", "in"), ("15:21", "out")), day=DAY, close_at=time(18, 10)
+    )
+
+    assert analysis.last_out == datetime.combine(DAY, time(18, 10))
+    assert analysis.worked == Duration(8 * 60 + 50)
+    assert analysis.segments[-1].end_inferred
+
+
+def test_the_extension_is_marked_so_no_screen_calls_it_measured() -> None:
+    analysis = analyze_day(
+        punches(("09:20", "in"), ("15:21", "out")), day=DAY, close_at=time(18, 10)
+    )
+    issue = next(i for i in analysis.issues if i.kind is IssueKind.INFERRED_OUT)
+    assert "attendance summary" in issue.message
+
+
+def test_a_log_that_already_reaches_the_portals_last_out_is_untouched() -> None:
+    analysis = analyze_day(
+        punches(("09:20", "in"), ("18:10", "out")), day=DAY, close_at=time(18, 10)
+    )
+    assert not analysis.segments[-1].end_inferred
+
+
+def test_a_grid_last_out_earlier_than_the_log_never_shortens_the_day() -> None:
+    """Trusting a stale grid over a real punch would delete work that was measured."""
+    analysis = analyze_day(
+        punches(("09:20", "in"), ("18:10", "out")), day=DAY, close_at=time(15, 0)
+    )
+    assert analysis.last_out == datetime.combine(DAY, time(18, 10))
+
+
+def test_today_is_never_extended_from_the_grid() -> None:
+    """The grid's last-out for today is the latest swipe so far, not a clock-off."""
+    now = datetime.combine(DAY, time(16, 0))
+    analysis = analyze_day(
+        punches(("09:20", "in"), ("15:21", "out")), day=DAY, now=now, close_at=time(18, 10)
+    )
+    assert analysis.last_out == datetime.combine(DAY, time(15, 21))
+
+
+def test_the_note_travels_with_the_flag() -> None:
+    """ "A break I marked as work" read back three weeks later is a fact with its reason
+    missing, and the reason is the part that survives."""
+    log = punches(("09:00", "in"), ("13:00", "out"), ("13:45", "in"), ("18:00", "out"))
+    adjusted = analyze_day(log, day=DAY, worked_gaps={time(13, 0): "second-floor handover"})
+
+    assert adjusted.adjusted_gaps == ((time(13, 0), "second-floor handover"),)
+
+
+def test_a_flag_with_no_note_is_still_a_flag() -> None:
+    log = punches(("09:00", "in"), ("13:00", "out"), ("13:45", "in"), ("18:00", "out"))
+    adjusted = analyze_day(log, day=DAY, worked_gaps={time(13, 0): ""})
+
+    assert adjusted.is_adjusted
+    assert adjusted.break_taken == Duration(0)
