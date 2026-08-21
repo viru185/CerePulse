@@ -14,7 +14,7 @@ repeating them: two copies of a rule is one copy that goes stale.
 
 ```bash
 uv sync --all-extras          # install, including dev tools
-uv run pytest -q              # 1,082 tests, ~25s
+uv run pytest -q              # 1,093 tests, ~25s
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                   # strict, must stay clean
 ```
