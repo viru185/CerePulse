@@ -31,9 +31,12 @@ from cerepulse.intelligence.insights import (
 from cerepulse.intelligence.next_action import NextAction, next_action
 from cerepulse.intelligence.policy import ShiftPolicy
 from cerepulse.intelligence.segments import (
+    REPAIRED,
+    DayEnvelope,
     IssueKind,
     Pairing,
     PunchIssue,
+    WorkedGap,
     WorkSegment,
     pair_punches,
 )
@@ -95,10 +98,23 @@ class DayAnalysis:
     #: — a corrected day must never be presented with the confidence of a measured one — and
     #: so the note is shown wherever the adjustment is.
     adjusted_gaps: tuple[tuple[time, str], ...] = ()
+    #: The same adjustments with the extent each one covers, for anything that draws them.
+    #: Merging the segments is what destroys that extent, so it is captured before the merge.
+    worked_spans: tuple[WorkedGap, ...] = ()
 
     @property
     def is_adjusted(self) -> bool:
         return bool(self.adjusted_gaps)
+
+    @property
+    def is_repaired(self) -> bool:
+        """Whether any figure here came from the grid rather than from a punch.
+
+        Distinct from :attr:`is_adjusted`, which is the user's own correction. Both mean the
+        day must not be presented with the confidence of a measurement, and the voice engine
+        already refuses to be playful about either.
+        """
+        return any(issue.kind in REPAIRED for issue in self.issues)
 
     @property
     def is_ongoing(self) -> bool:
@@ -148,7 +164,7 @@ def analyze_day(
     now: datetime | None = None,
     swipe_requests: list[SwipeRequest] | None = None,
     grid_only: bool = False,
-    close_at: time | None = None,
+    envelope: DayEnvelope | None = None,
     worked_gaps: Mapping[time, str] | None = None,
 ) -> DayAnalysis:
     """Analyze one day. ``swipe_requests`` lets an existing request suppress the suggestion.
@@ -157,10 +173,10 @@ def analyze_day(
     no punch log was available. The in and out are real; everything between them is not, so
     the break figure is a floor rather than a measurement and the day says so.
 
-    ``close_at`` is the grid's last-out, used to close a **past** day whose punch log ends on
-    an In. The portal counts such a day; without this the app left it open and reported no
-    hours at all. Ignored when ``now`` is given, because that is today and today's dangling
-    In is a shift still being worked.
+    ``envelope`` is the portal's own grid row for this day. The punch log routinely stops
+    short of it at either end, so a day measured from the log alone under-reports — see
+    :func:`~cerepulse.intelligence.segments.pair_punches` for the shapes and what each one
+    cost. Passing it is what makes the app agree with the portal.
 
     ``worked_gaps`` are gaps the user has told us were work — a trip to another floor reads
     as a break to the punches and to the portal alike, and only the person who was there can
@@ -168,13 +184,11 @@ def analyze_day(
     confidence of a clean measurement.
     """
     policy = policy or ShiftPolicy.default()
-    # `close_at` is the portal's own last-out, and only ever applies to a finished day —
-    # the caller passes `now` for today, and a live shift must stay open.
     pairing = pair_punches(
         punches,
         day=day,
         now=now,
-        close_at=None if now else close_at,
+        envelope=envelope,
         worked_gaps=worked_gaps,
     )
     if grid_only and pairing.segments:
@@ -209,8 +223,9 @@ def analyze_day(
     effective_break = max(policy.break_target, break_taken)
     expected_out_break_adjusted = first_in + _to_delta(policy.work_target + effective_break)
 
+    is_today = now is not None and now.date() == day
     state = DayState.INCOMPLETE if pairing.ongoing else DayState.COMPLETE
-    if state is DayState.COMPLETE and now is not None and now.date() == day:
+    if state is DayState.COMPLETE and is_today:
         # Today, clocked out. Two reasons that is not a finished day.
         #
         # With work still owed it is far more likely a lunch break than a departure, and
@@ -222,13 +237,24 @@ def analyze_day(
         # a clock-off, so it is never evidence the day has ended.
         if grid_only or work_remaining:
             state = DayState.INCOMPLETE
-    early_exit = state is DayState.COMPLETE and worked < policy.work_target
+
+    # An early exit is: clocked out, short of the target, and the day has run out of time to
+    # make it up. A finished day satisfies the last clause by being finished; today has to be
+    # asked. Deriving this from `state` instead — as it was until now — made it unreachable
+    # for today by construction, because the branch above forces INCOMPLETE in exactly the
+    # case where work is owed. Two notification kinds and their two Settings toggles were
+    # wired to a condition that could not occur, which is why only two kinds ever fired.
+    # Lunchtime is still not an early exit. Five o'clock with an hour owed is.
+    left_for_the_day = not pairing.ongoing and not (is_today and grid_only)
+    day_is_spent = not is_today or (now is not None and now >= expected_out_break_adjusted)
+    early_exit = left_for_the_day and day_is_spent and worked < policy.work_target
 
     filed = _matching_request(swipe_requests, day)
     swipe_request_needed = early_exit and filed is None
 
     analysis = DayAnalysis(
         adjusted_gaps=tuple(sorted((worked_gaps or {}).items())),
+        worked_spans=pairing.worked_spans,
         day=day,
         state=state,
         first_in=first_in,
@@ -281,6 +307,24 @@ def _with_insights(
                     issue.message,
                 )
             )
+        elif issue.kind is IssueKind.INFERRED_IN:
+            insights.append(
+                Insight(
+                    InsightKind.MISSING_PUNCH,
+                    Severity.WARNING,
+                    "Arrival taken from the summary",
+                    issue.message,
+                )
+            )
+        elif issue.kind is IssueKind.SPAN_MISMATCH:
+            insights.append(
+                Insight(
+                    InsightKind.MISSING_PUNCH,
+                    Severity.WARNING,
+                    "This day does not add up",
+                    issue.message,
+                )
+            )
         elif issue.kind is IssueKind.GRID_ONLY:
             insights.append(
                 Insight(
@@ -291,7 +335,10 @@ def _with_insights(
                 )
             )
 
-    if analysis.state is DayState.INCOMPLETE:
+    # An early exit is reported instead of, not alongside, "still working". The day is held
+    # incomplete so the screen keeps offering the shortfall, but telling someone who has gone
+    # home how long they have left to work is answering a question they stopped asking.
+    if analysis.state is DayState.INCOMPLETE and not analysis.early_exit:
         if analysis.work_remaining:
             insights.append(
                 Insight(
@@ -327,7 +374,7 @@ def _with_insights(
                 InsightKind.SWIPE_FILED,
                 Severity.INFO if filed.is_open else Severity.SUCCESS,
                 f"Swipe request {_status_text(filed.status)}",
-                f"Filed for {filed.for_date:%d %b} ({filed.direction})"
+                f"Filed for {filed.for_date:%d %b} ({filed.asked})"
                 + (f": {filed.remark}" if filed.remark else ""),
             )
         )
@@ -492,7 +539,6 @@ _SEVERITY_ORDER = {
 #: the answer. The sequence below is the order someone would actually want to read them in.
 _KIND_ORDER = (
     InsightKind.EARLY_EXIT,
-    InsightKind.SHORT_HOURS,
     InsightKind.SWIPE_NEEDED,
     InsightKind.MISSING_PUNCH,
     InsightKind.ON_TRACK,

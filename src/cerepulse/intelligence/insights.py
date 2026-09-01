@@ -31,7 +31,6 @@ class InsightKind(Enum):
     """What an insight is about. Used for per-alert notification toggles."""
 
     ON_TRACK = "on_track"
-    SHORT_HOURS = "short_hours"
     OVERTIME = "overtime"
     EARLY_EXIT = "early_exit"
     SWIPE_NEEDED = "swipe_needed"
@@ -54,6 +53,10 @@ class InsightKind(Enum):
     #: the sort of thing a person stops noticing for themselves.
     NO_BREAK_YET = "no_break_yet"
     LEAVE_UNUSED = "leave_unused"
+    #: Not about the working day at all — the updater borrows the insight shape to reach the
+    #: tray. It had been borrowing ``ON_TRACK``, which made "a new version is available" and
+    #: "you can go home" the same kind of thing to every toggle and filter that reads this.
+    UPDATE_AVAILABLE = "update_available"
 
 
 class ActionKind(Enum):

@@ -27,6 +27,7 @@ from cerepulse.intelligence.insights import Insight
 from cerepulse.intelligence.month import MonthAnalysis, analyze_month, week_start_for
 from cerepulse.intelligence.nudges import LEAVE_LOOKBACK_DAYS, day_nudges, leave_nudges
 from cerepulse.intelligence.policy import ShiftPolicy
+from cerepulse.intelligence.segments import DayEnvelope
 from cerepulse.intelligence.trends import (
     MIN_SAMPLE,
     TrendReport,
@@ -245,23 +246,38 @@ class AttendanceService:
             now=now,
             swipe_requests=self._swipes.find_all(employee_code),
             grid_only=grid_only,
-            # For a past day whose punch log ends on an In, the portal's own last-out closes
-            # it. Dropped for today by `analyze_day`, which is where the distinction lives.
-            close_at=cached.last_out if cached else None,
+            # The portal's own row for this day. It bounds what the punch log can claim; the
+            # log stops short of it at both ends more often than not.
+            envelope=_envelope(cached),
             worked_gaps=self._attendance.find_worked_gaps(employee_code, day),
         )
-        # Nudges are appended rather than produced by `analyze_day`, because they are about
-        # a habit rather than about the day's arithmetic and that separation is worth
-        # keeping visible. They are ordinary insights from here on, so the notification
-        # policy's quiet hours and once-a-day both apply to them unchanged.
-        nudges = [
-            *day_nudges(analysis, now=now),
-            *self._leave_nudges(employee_code, today=day),
-        ]
-        nudged = replace(analysis, insights=(*analysis.insights, *nudges))
+        nudged = self._with_nudges(analysis, employee_code, now=now)
         # Voiced here rather than in the views, so the window, the tray tooltip and the
         # notifications all say the same thing about the same day.
         return voice_day(nudged, tone=Tone.parse(self._config.ui.tone))
+
+    def _with_nudges(
+        self, analysis: DayAnalysis, employee_code: str, *, now: datetime | None
+    ) -> DayAnalysis:
+        """Append the habit nudges to a day's own arithmetic.
+
+        Nudges are added here rather than produced by ``analyze_day`` because they are about
+        a habit rather than about the day, and that separation is worth keeping visible. They
+        are ordinary insights from here on, so the notification policy's quiet hours and
+        once-a-day both apply to them unchanged.
+
+        Shared with the month view so today carries the same insights either way. It did not:
+        the month built its analyses with a bare ``analyze_day``, and the tray falls back to
+        the month's copy whenever the screen is parked on another date — so leaving the app on
+        last Tuesday silenced the break and leave nudges for the rest of the session.
+        """
+        nudges = [
+            *day_nudges(analysis, now=now),
+            *self._leave_nudges(employee_code, today=analysis.day),
+        ]
+        if not nudges:
+            return analysis
+        return replace(analysis, insights=(*analysis.insights, *nudges))
 
     def _leave_nudges(self, employee_code: str, *, today: date) -> list[Insight]:
         """How long since a day off, read from the muster.
@@ -661,15 +677,20 @@ class AttendanceService:
                 policy=self.policy,
                 swipe_requests=requests,
                 now=datetime.now() if day.day == current else None,
-                # The portal's own last-out, for a finished day whose punch log ends on an
-                # In. Only ever reaches a past day: `analyze_day` drops it when `now` is
-                # given, because today's dangling In is a shift still being worked.
-                close_at=day.last_out,
+                # The portal's own row for the day, which is the authority on how far the day
+                # reached. `pair_punches` declines to *close* today with it — today's last-out
+                # is the latest swipe so far — but still repairs today's arrival from it.
+                envelope=_envelope(day),
                 worked_gaps=flagged.get(day.day),
             )
             for day in month.days
             if day.detail_loaded and day.punches
         }
+        # Today alone gets the nudges, because that is the only day they are about — and
+        # because the tray reads today out of this dict whenever the screen is showing some
+        # other date. Without it, the same day carried different insights on the two paths.
+        if current in analyses:
+            analyses[current] = self._with_nudges(analyses[current], code, now=datetime.now())
 
         holidays = self._holidays.find_all()
         analysis = analyze_month(
@@ -699,6 +720,18 @@ class AttendanceService:
             holidays=holidays,
             analyses=analyses,
         )
+
+
+def _envelope(day: AttendanceDay | None) -> DayEnvelope | None:
+    """The portal's own account of how far a day reached.
+
+    Kept as one helper rather than three keyword arguments at each call site, because the
+    three values only mean anything together: the pair bounds the day and the total is what
+    the repaired span is checked against.
+    """
+    if day is None:
+        return None
+    return DayEnvelope(first_in=day.first_in, last_out=day.last_out, total=day.total_hours)
 
 
 def _punches_from_grid(day: AttendanceDay) -> list[Punch]:

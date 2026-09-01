@@ -11,7 +11,7 @@ Python **3.13** — not 3.14, because PySide6 has no 3.14 wheels yet.
 ## The commands
 
 ```bash
-uv run pytest -q                                   # 1,093 tests, ~25s
+uv run pytest -q                                   # 1,121 tests, ~25s
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                                        # strict, must stay clean
 ```

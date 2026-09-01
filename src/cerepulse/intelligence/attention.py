@@ -21,7 +21,7 @@ from enum import Enum
 from cerepulse.intelligence.day import DayAnalysis, DayState
 from cerepulse.intelligence.insights import Insight, InsightKind, Severity
 from cerepulse.intelligence.policy import ShiftPolicy
-from cerepulse.intelligence.segments import IssueKind
+from cerepulse.intelligence.segments import LOG_REPAIRS
 from cerepulse.models.attendance import AttendanceDay
 from cerepulse.models.swipe import SwipeRequest, SwipeStatus
 from cerepulse.models.values import Duration
@@ -102,9 +102,7 @@ def _classify(
             "Marked as worked, but the portal holds no punches or hours for it.",
         )
 
-    if analysis is not None and any(
-        issue.kind in {IssueKind.INFERRED_OUT, IssueKind.ORPHAN_OUT} for issue in analysis.issues
-    ):
+    if analysis is not None and any(issue.kind in LOG_REPAIRS for issue in analysis.issues):
         return Attention(
             day.day,
             AttentionKind.MISSING_PUNCH,
@@ -269,7 +267,7 @@ def decision_insight(changes: list[StatusChange]) -> Insight | None:
             InsightKind.SWIPE_DECIDED,
             Severity.WARNING if rejected else Severity.SUCCESS,
             f"Swipe request {change.verb}",
-            f"{change.request.for_date:%d %b} ({change.request.direction}) was "
+            f"{change.request.for_date:%d %b} ({change.request.asked}) was "
             f"{change.verb}." + (f" {change.request.remark}" if change.request.remark else ""),
         )
 

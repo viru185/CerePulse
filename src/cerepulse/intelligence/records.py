@@ -16,7 +16,7 @@ Pure: it takes what the caches already hold and returns a list. Nothing here fet
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, time, timedelta
+from datetime import date, timedelta
 from enum import Enum
 
 from cerepulse.models.application import Application, ApplicationKind
@@ -317,22 +317,12 @@ def _request_detail(request: SwipeRequest) -> str:
     portal leaves it empty, and printing "decided —" beside a request nobody has looked at
     would be worse than leaving it out.
     """
-    asked = request.in_time or request.out_time
-    parts = [request.direction + (f" {_clock(asked)}" if asked else "")]
+    parts = [request.asked]
     if request.remark:
         parts.append(request.remark)
     if request.approve_date and request.status is not SwipeStatus.IN_PROCESS:
         parts.append(f"decided {request.approve_date.strftime('%d %b').lstrip('0')}")
     return " — ".join(part for part in parts if part.strip())
-
-
-def _clock(when: time) -> str:
-    """``6:24 PM``. Windows has no ``%-I``, so the leading zero comes off by hand.
-
-    Duplicated from the UI's formatter rather than imported: the intelligence layer does not
-    depend on ``ui``, and one lstrip is cheaper than inverting that.
-    """
-    return when.strftime("%I:%M %p").lstrip("0")
 
 
 def _from_transactions(

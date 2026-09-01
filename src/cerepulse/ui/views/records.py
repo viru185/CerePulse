@@ -298,7 +298,9 @@ class RecordsView(QWidget):
         """
         live = [outlook for outlook in outlooks if not outlook.is_expired]
         total = sum(outlook.balance.available_balance for outlook in live)
-        at_risk = sum(outlook.balance.available_balance for outlook in live if outlook.is_at_risk)
+        # The days inside the window, not the whole balance of every type that has one credit
+        # close to lapsing. Comp-off expires a credit at a time and the difference is large.
+        at_risk = sum(outlook.at_risk_days for outlook in live)
 
         self.total.set_value(
             _days(total), accent=self._palette.good if total > 0 else self._palette.text_muted
@@ -309,6 +311,13 @@ class RecordsView(QWidget):
         expired = [outlook for outlook in outlooks if outlook.is_expired]
         if expired:
             parts.append(f"{len(expired)} type(s) already lapsed and not counted")
+        # Days that passed their own window while the portal still counts them. Separate from
+        # the lapsed types above, and only ever what this app has watched: no snapshot of a
+        # balance exists before the first sync, so anything lost earlier is unknowable here
+        # and is not going to be guessed at.
+        lapsed = sum(outlook.expired_days for outlook in outlooks)
+        if lapsed:
+            parts.append(f"{_days(lapsed)} past their window since CerePulse started watching")
         self.total.set_caption("  ·  ".join(parts))
 
     def _render_cards(self, outlooks: list[LeaveOutlook]) -> None:
@@ -534,19 +543,31 @@ def _kind_colour(record: Record, palette: Palette) -> str:
 
 
 def _expiry_caption(outlook: LeaveOutlook) -> str:
+    """When this balance goes, and — for comp-off — how much of it goes first.
+
+    Comp-off expires a credit at a time, so a single date describes only the soonest one. The
+    card names that date and then says how many more are queued behind it, because "expires
+    12 Sep" against a two-day balance reads as though all two days go on the 12th.
+    """
     from cerepulse.intelligence.leave import ExpiryBasis
 
     if outlook.basis is ExpiryBasis.UNKNOWN:
-        # The portal's comp-off summary row is undated, so there is no earned date to count
-        # from. Saying so beats inventing a deadline.
+        # Nothing dated to count from. Saying so beats inventing a deadline.
         return "expiry unknown — the portal does not date these"
     if outlook.expires_on is None:
         return "no expiry"
     if outlook.is_expired:
         return f"lapsed {fmt.day_label(outlook.expires_on)}"
+
+    when = fmt.day_label(outlook.expires_on)
+    parts = [f"expires {when}"]
     if outlook.days_remaining is not None:
-        return f"expires {fmt.day_label(outlook.expires_on)} · {outlook.days_remaining} day(s)"
-    return f"expires {fmt.day_label(outlook.expires_on)}"
+        parts.append(f"{outlook.days_remaining} day(s)")
+    if len(outlook.lots) > 1:
+        soonest = outlook.lots[0]
+        parts.insert(0, f"{_days(soonest.days)} of {_days(outlook.balance.available_balance)}")
+        parts.append(f"{len(outlook.lots) - 1} more later")
+    return "  ·  ".join(parts)
 
 
 def _booking_text(plan: BreakPlan) -> str:

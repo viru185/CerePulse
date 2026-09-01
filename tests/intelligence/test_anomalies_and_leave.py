@@ -14,7 +14,7 @@ from cerepulse.intelligence.leave import (
     leave_insights,
 )
 from cerepulse.models.attendance import AttendanceDay, DayStatus
-from cerepulse.models.leave import LeaveBalance
+from cerepulse.models.leave import LeaveBalance, LeaveTransaction
 from cerepulse.models.values import Duration
 from tests.intelligence.conftest import punches
 
@@ -201,9 +201,29 @@ def test_comp_off_without_an_earned_date_reports_unknown_rather_than_guessing() 
     assert not outlook.is_at_risk
 
 
-def test_planned_leave_has_no_modelled_expiry() -> None:
+def test_planned_leave_lapses_at_the_end_of_the_financial_year() -> None:
+    """PL had no expiry rule at all and fell through to UNKNOWN, so the largest balance most
+    people hold was the one type the app could never warn about. It runs on the financial
+    year, not the calendar one — the portal's own register corroborates that by starting in
+    April and holding nothing from the previous February."""
     balance = LeaveBalance(leave_type="PL", available_balance=6.0)
-    assert analyze_leave([balance], today=TODAY)[0].basis is ExpiryBasis.UNKNOWN
+    outlook = analyze_leave([balance], today=TODAY)[0]
+
+    assert outlook.basis is ExpiryBasis.FINANCIAL_YEAR_END
+    assert outlook.expires_on == date(2027, 3, 31)
+
+
+def test_the_two_year_ends_are_different_dates() -> None:
+    """Carry-forward goes at the end of December and planned leave at the end of March. One
+    `leave_year_end` applied to both would have to be wrong about one of them."""
+    balances = [
+        LeaveBalance(leave_type="PL", available_balance=6.0),
+        LeaveBalance(leave_type="CF", available_balance=3.0),
+    ]
+    planned, carried = analyze_leave(balances, today=date(2026, 1, 15))
+
+    assert planned.expires_on == date(2026, 3, 31)
+    assert carried.expires_on == date(2026, 12, 31)
 
 
 def test_a_custom_leave_policy_is_honoured() -> None:
@@ -239,3 +259,98 @@ def test_an_urgent_expiry_escalates_severity() -> None:
 def test_nothing_at_risk_produces_no_insights() -> None:
     balance = LeaveBalance(leave_type="CF", available_balance=3.0)
     assert leave_insights(analyze_leave([balance], today=TODAY)) == []
+
+
+# --- comp-off, one credit at a time ------------------------------------------------------
+#
+# The credits below are the user's own ledger rows, verbatim. Comp-off is earned half a day
+# at a time across a year and each one carries its own 90-day clock, so a single expiry date
+# on the aggregate balance answers the wrong question: it says when *some* of it goes,
+# without saying how much or which.
+
+
+def credit(when: date, days: float, remark: str = "", kind: str = "CO- / CO+") -> LeaveTransaction:
+    return LeaveTransaction(
+        leave_type=kind,
+        opening_balance=0.0,
+        consumed_days=0.0,
+        credit_days=days,
+        available_balance=days,
+        transaction_date=when,
+        remark=remark,
+    )
+
+
+LEDGER = [
+    credit(date(2026, 4, 9), 0.5, "RDBMSPI interface setup"),
+    credit(date(2026, 5, 31), 0.5, "Completed Ignition Core Certification"),
+    credit(date(2026, 7, 18), 1.0, "Newmont Extra work on Saturday"),
+]
+AUGUST = date(2026, 8, 1)
+
+
+def test_comp_off_is_dated_per_credit_not_per_balance() -> None:
+    balance = LeaveBalance(leave_type="CO- / CO+", available_balance=1.5)
+    outlook = analyze_leave([balance], today=AUGUST, credits=LEDGER)[0]
+
+    assert [(lot.days, lot.expires_on) for lot in outlook.lots] == [
+        (0.5, date(2026, 8, 29)),
+        (1.0, date(2026, 10, 16)),
+    ]
+    # The soonest, because that is the next thing the user can actually lose.
+    assert outlook.expires_on == date(2026, 8, 29)
+    assert outlook.basis is ExpiryBasis.EARNED_PLUS_WINDOW
+
+
+def test_spending_comes_off_the_oldest_credit_first() -> None:
+    """Which comp-off was taken is recorded nowhere — the ledger leaves ``consumed_days`` at
+    zero on every row — so oldest-first is less a guess about this portal than the only
+    defensible reading. A ledger reaching further back than the balance would otherwise
+    report long-spent comp-offs as still expiring."""
+    balance = LeaveBalance(leave_type="CO- / CO+", available_balance=1.0)
+    outlook = analyze_leave([balance], today=AUGUST, credits=LEDGER)[0]
+
+    assert [lot.days for lot in outlook.lots] == [1.0]
+    assert outlook.lots[0].earned_on == date(2026, 7, 18)
+
+
+def test_only_the_credits_inside_the_window_are_called_at_risk() -> None:
+    """Saying "1.5 days expire in 28 days" when half a day is close overstates it, and an
+    alert that overstates is one people stop reading."""
+    balance = LeaveBalance(leave_type="CO- / CO+", available_balance=1.5)
+    outlook = analyze_leave([balance], today=AUGUST, credits=LEDGER)[0]
+
+    assert outlook.at_risk_days == 0.5
+    (insight,) = leave_insights([outlook])
+    assert insight.title.startswith("0.5 days")
+
+
+def test_a_comp_off_deadline_says_what_it_was_counted_from() -> None:
+    """The rule is 90 days from approval, and the portal publishes no approval date for
+    comp-off anywhere — ``Approve Date`` is on the swipe grid alone. Counting from the earned
+    date is the honest substitute, and a date someone might book leave around has to carry
+    how it was arrived at."""
+    balance = LeaveBalance(leave_type="CO- / CO+", available_balance=1.5)
+    (insight,) = leave_insights(analyze_leave([balance], today=AUGUST, credits=LEDGER))
+
+    assert "does not publish an approval date" in insight.detail
+
+
+def test_credits_past_their_window_are_counted_not_deducted() -> None:
+    """The portal's balance is the authority on what exists; the 90-day rule is company policy
+    we were told about. Reporting the discrepancy is right, silently subtracting it is not."""
+    balance = LeaveBalance(leave_type="CO- / CO+", available_balance=2.0)
+    outlook = analyze_leave([balance], today=date(2026, 9, 1), credits=LEDGER)[0]
+
+    assert outlook.expired_days == 1.0  # the April and May half-days
+    assert outlook.balance.available_balance == 2.0
+
+
+def test_another_leave_types_credits_are_not_comp_off_lots() -> None:
+    """The ledger carries every type in one table, and PL's monthly accrual is by far the
+    most numerous thing in it."""
+    ledger = [*LEDGER, credit(date(2026, 7, 31), 1.5, "Auto Increment.PL", kind="PL")]
+    balance = LeaveBalance(leave_type="CO- / CO+", available_balance=1.5)
+    outlook = analyze_leave([balance], today=AUGUST, credits=ledger)[0]
+
+    assert sum(lot.days for lot in outlook.lots) == 1.5

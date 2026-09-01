@@ -51,7 +51,7 @@ src/cerepulse/
   app.py                     composition root: builds the whole graph
 ```
 
-1,093 tests, ~25 seconds. The intelligence layer has the deepest coverage because it is pure
+1,121 tests, ~25 seconds. The intelligence layer has the deepest coverage because it is pure
 and it is where correctness actually lives.
 
 ## The four things that will bite you

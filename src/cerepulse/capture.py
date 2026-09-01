@@ -51,13 +51,18 @@ from cerepulse.transport.webforms import (
 
 #: Pages to capture, as (output name, menu label, menu section).
 #:
-#: "Entitlement" is deliberately absent: BalanceLeave.aspx redirects to the same
-#: LeaveBalanceDetail.aspx page as "My Leave Register", so capturing both is duplication.
+#: "Entitlement" was skipped for two years on the grounds that BalanceLeave.aspx redirects to
+#: the same page as "My Leave Register" — which was never verified, and matters now: the leave
+#: expiry rules had to be reconstructed from what the register happens to date, because
+#: nothing the app fetches states a rule. Both it and "Leave Rules" are captured so the
+#: question can be settled by looking rather than by inference. Capture, then decide.
 TARGETS: tuple[tuple[str, str, str], ...] = (
     ("attendance_report", "My Attendance", "Time > Attendance"),
     ("attendance_calendar", "Opt your Holiday", "Time > Attendance"),
     ("swipe_requests", "Apply", "Time > Swipe"),
     ("leave_register", "My Leave Register", "Leave > My Info"),
+    ("leave_entitlement", "Entitlement", "Leave > My Info"),
+    ("leave_rules", "Leave Rules", "Leave > My Info"),
     ("leave_list", "Apply", "Leave > Leave"),
     # Outdoor duty and comp-off are the same page under different `odtype` tokens, which is
     # why they are reached by menu label rather than URL — the token is not ours to invent.

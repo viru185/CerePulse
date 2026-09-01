@@ -614,7 +614,13 @@ class _DayDrawer(QWidget):
             )
 
         segments = analysis.segments if analysis is not None else ()
-        self._timeline.set_day(segments, leave_at=analysis.leave_at if analysis else None)
+        self._timeline.set_day(
+            segments,
+            leave_at=analysis.leave_at if analysis else None,
+            # Without this an adjusted day drew here as an ordinary unbroken block, with no
+            # mark at all — the flag was visible on Today and invisible everywhere else.
+            worked_spans=analysis.worked_spans if analysis is not None else (),
+        )
         self._timeline.setVisible(bool(segments))
 
         self._facts.setText(self._fact_lines(entry))
@@ -647,7 +653,7 @@ class _DayDrawer(QWidget):
             notes.append(entry.day.remarks)
         for request in entry.requests:
             notes.append(
-                f"Swipe request ({request.direction}): "
+                f"Swipe request ({request.asked}): "
                 f"{request.status.value.replace('_', ' ')}"
                 + (f" — {request.remark}" if request.remark else "")
             )
@@ -736,5 +742,5 @@ def _swipe_tooltip(requests: list[SwipeRequest]) -> str:
     lines = []
     for request in requests:
         remark = f" — {request.remark}" if request.remark else ""
-        lines.append(f"{request.direction}: {request.status.value.replace('_', ' ')}{remark}")
+        lines.append(f"{request.asked}: {request.status.value.replace('_', ' ')}{remark}")
     return "\n".join(lines)

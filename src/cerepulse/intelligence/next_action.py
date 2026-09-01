@@ -18,7 +18,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from cerepulse.intelligence.insights import Action, ActionKind, Severity
-from cerepulse.intelligence.segments import IssueKind
+from cerepulse.intelligence.segments import LOG_REPAIRS
 
 if TYPE_CHECKING:  # pragma: no cover — import cycle; day.py imports this module
     from cerepulse.intelligence.day import DayAnalysis
@@ -173,9 +173,7 @@ def _on_break(analysis: DayAnalysis) -> NextAction:
 def _finished(analysis: DayAnalysis) -> NextAction:
     # A repaired punch log comes first: the worked figure it produced is a reconstruction,
     # so acting on a shortfall derived from it means acting on a guess.
-    if any(
-        issue.kind in (IssueKind.INFERRED_OUT, IssueKind.ORPHAN_OUT) for issue in analysis.issues
-    ):
+    if any(issue.kind in LOG_REPAIRS for issue in analysis.issues):
         return NextAction(
             NextActionKind.CHECK_PUNCHES,
             "Check this day's punches",

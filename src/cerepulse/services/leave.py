@@ -126,7 +126,15 @@ class LeaveService:
                 logger.warning("Leave refresh failed, serving cached balances: {}", exc)
 
         now = today or date.today()
-        outlooks = analyze_leave(balances, today=now, policy=self._policy)
+        # The ledger's dated rows, so comp-off can be dated per credit rather than as one
+        # block. Without them the aggregate balance carries no date the portal ever fills in,
+        # and the expiry warning for the only leave type on a rolling window never fires.
+        outlooks = analyze_leave(
+            balances,
+            today=now,
+            policy=self._policy,
+            credits=self._leave.find_transactions(employee_code),
+        )
         breaks = self.suggest_breaks(outlooks, today=now)
         return LeaveView(
             balances=balances,

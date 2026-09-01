@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 from cerepulse.intelligence.attention import Attention
 from cerepulse.intelligence.day import DayAnalysis
 from cerepulse.intelligence.month import DayRollup, WeekAnalysis
-from cerepulse.intelligence.segments import WorkSegment
+from cerepulse.intelligence.segments import WorkedGap, WorkSegment
 from cerepulse.models.attendance import DayStatus
 from cerepulse.models.values import Duration
 from cerepulse.ui import formatting as fmt
@@ -292,6 +292,7 @@ class WeekView(QWidget):
                 target_per_day,
                 self._palette,
                 segments=detail.segments if detail else (),
+                worked_spans=detail.worked_spans if detail else (),
                 domain=domain,
             )
             row.clicked.connect(lambda day=rollup.day: self.day_selected.emit(day))
@@ -332,6 +333,7 @@ class _DayRow(QWidget):
         palette: Palette,
         *,
         segments: tuple[WorkSegment, ...] = (),
+        worked_spans: tuple[WorkedGap, ...] = (),
         domain: tuple[int, int] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -360,7 +362,7 @@ class _DayRow(QWidget):
             # how much of it there was. A proportion bar cannot tell a 7 AM start from a
             # 1 PM one, and on a week screen that is most of what there is to notice.
             timeline = DayTimeline(palette)
-            timeline.set_day(segments, domain=domain)
+            timeline.set_day(segments, domain=domain, worked_spans=worked_spans)
             middle.addWidget(timeline)
         else:
             bar = QWidget()

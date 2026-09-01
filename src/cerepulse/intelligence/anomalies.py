@@ -94,7 +94,10 @@ def _day_anomalies(
         )
 
     if analysis is not None:
-        if any(issue.kind is IssueKind.INFERRED_OUT for issue in analysis.issues):
+        if any(
+            issue.kind in {IssueKind.INFERRED_OUT, IssueKind.INFERRED_IN}
+            for issue in analysis.issues
+        ):
             found.append(
                 Anomaly(
                     day.day,

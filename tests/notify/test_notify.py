@@ -335,3 +335,24 @@ def test_source_runs_are_not_registered() -> None:
 
     if not is_frozen():
         assert set_registered(True) is False
+
+
+def test_one_kind_can_say_more_than_one_thing_in_a_day(policy: NotificationPolicy) -> None:
+    """Deduplication was keyed on the insight kind alone, which is right for the kinds that
+    describe the day as a whole and wrong for the ones that describe a thing.
+
+    Leave expiry is per leave type: PL, CF and comp-off can all be inside the window at once,
+    and keying on the kind meant exactly one of them was ever mentioned while the other two
+    were swallowed as repeats — precisely the leave the user then lost.
+    """
+    expiring = [
+        Insight(InsightKind.LEAVE_EXPIRING, Severity.WARNING, f"{name} expires soon", "detail")
+        for name in ("PL", "CF", "CO- / CO+")
+    ]
+
+    for alert in expiring:
+        assert policy.should_notify(alert, now=MIDDAY), alert.title
+        policy.record_sent(alert, now=MIDDAY)
+
+    # Still once each, which is what the rule was actually for.
+    assert not any(policy.should_notify(alert, now=MIDDAY) for alert in expiring)

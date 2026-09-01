@@ -29,7 +29,7 @@ from zlib import crc32
 
 from cerepulse.intelligence.day import DayAnalysis, DayState
 from cerepulse.intelligence.insights import Insight, InsightKind
-from cerepulse.intelligence.segments import IssueKind
+from cerepulse.intelligence.segments import REPAIRED
 from cerepulse.models.values import Duration
 
 
@@ -54,7 +54,6 @@ class Tone(Enum):
 NEVER_PLAYFUL = frozenset(
     {
         InsightKind.EARLY_EXIT,
-        InsightKind.SHORT_HOURS,
         InsightKind.SWIPE_NEEDED,
         InsightKind.MISSING_PUNCH,
         InsightKind.LEAVE_EXPIRING,
@@ -67,7 +66,8 @@ NEVER_PLAYFUL = frozenset(
 #: plain when one of these is present: congratulating someone on an hour of overtime the app
 #: invented from a missing punch is worse than saying nothing. A grid-only day counts —
 #: its break is unknown, so a remark about lunch would be about a number nobody has.
-_REPAIRED = frozenset({IssueKind.INFERRED_OUT, IssueKind.ORPHAN_OUT, IssueKind.GRID_ONLY})
+#: Shared with the rest of the intelligence layer so the answer cannot drift between them.
+_REPAIRED = REPAIRED
 
 
 def voice_day(analysis: DayAnalysis, *, tone: Tone = Tone.PLAYFUL) -> DayAnalysis:

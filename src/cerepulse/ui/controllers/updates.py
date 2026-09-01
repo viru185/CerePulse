@@ -155,7 +155,7 @@ class UpdateController(QObject):
             # Minimised to the tray: a toast is less intrusive than stealing focus.
             delivered = self._notifier(
                 Insight(
-                    InsightKind.ON_TRACK,
+                    InsightKind.UPDATE_AVAILABLE,
                     Severity.INFO,
                     f"{about.NAME} {release.version} is available",
                     "Open CerePulse to install it.",

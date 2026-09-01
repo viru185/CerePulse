@@ -900,7 +900,7 @@ def test_the_journey_says_what_the_marked_work_was(qapp: QApplication) -> None:
 
     analysis = _flagged_day()
     journey = DayJourney(DARK)
-    journey.set_segments(analysis.segments, adjusted_gaps=analysis.adjusted_gaps, can_flag=True)
+    journey.set_segments(analysis.segments, worked_spans=analysis.worked_spans, can_flag=True)
 
     text = " ".join(label.text() for label in journey.findChildren(QLabel))
     assert "second-floor handover" in text
@@ -913,7 +913,7 @@ def test_a_flag_with_no_note_still_reads_as_marked(qapp: QApplication) -> None:
 
     analysis = _flagged_day(note="")
     journey = DayJourney(DARK)
-    journey.set_segments(analysis.segments, adjusted_gaps=analysis.adjusted_gaps, can_flag=True)
+    journey.set_segments(analysis.segments, worked_spans=analysis.worked_spans, can_flag=True)
 
     text = " ".join(label.text() for label in journey.findChildren(QLabel))
     assert "includes work you marked" in text
@@ -928,19 +928,32 @@ def test_a_marked_stretch_offers_the_way_back(qapp: QApplication) -> None:
 
     analysis = _flagged_day()
     journey = DayJourney(DARK)
-    journey.set_segments(analysis.segments, adjusted_gaps=analysis.adjusted_gaps, can_flag=True)
+    journey.set_segments(analysis.segments, worked_spans=analysis.worked_spans, can_flag=True)
 
     assert [b.text() for b in journey.findChildren(QPushButton)] == ["Not work"]
 
 
-def test_the_timeline_is_told_about_the_adjustment(qapp: QApplication) -> None:
+def test_the_timeline_is_given_the_whole_marked_stretch(qapp: QApplication) -> None:
     """Merging the segments makes the figures right; drawing nothing there would make them
-    look measured."""
+    look measured — and drawing only a line at the start, which is all the widget used to be
+    given, cannot show how much of the block was reclaimed. That is the entire question."""
     analysis = _flagged_day()
     timeline = DayTimeline(DARK)
-    timeline.set_day(analysis.segments, adjusted_gaps=analysis.adjusted_gaps)
+    timeline.set_day(analysis.segments, worked_spans=analysis.worked_spans)
 
-    assert timeline._adjusted_gaps == ((time(13, 0), "second-floor handover"),)
+    (span,) = timeline._worked_spans
+    assert (span.start.time(), span.end.time()) == (time(13, 0), time(13, 45))
+    assert span.note == "second-floor handover"
+
+
+def test_the_timelines_tooltip_carries_the_note(qapp: QApplication) -> None:
+    """Its docstring had claimed this for two releases while the tooltip never once consulted
+    the gaps, so the reason lived only in the journey rows."""
+    timeline = DayTimeline(DARK)
+    analysis = _flagged_day()
+    timeline.set_day(analysis.segments, worked_spans=analysis.worked_spans)
+
+    assert "marked as work: second-floor handover" in timeline.toolTip()
 
 
 def test_the_date_field_is_wide_enough_for_the_year(qapp: QApplication) -> None:
@@ -953,3 +966,16 @@ def test_the_date_field_is_wide_enough_for_the_year(qapp: QApplication) -> None:
     metrics = QFontMetrics(view._picker.font())
     # Text, plus the stylesheet's left padding, the arrow's reserve, and the border.
     assert PICKER_WIDTH >= metrics.horizontalAdvance("25 Aug 2026") + 10 + 28 + 2
+
+
+def test_every_timeline_gets_told_about_an_adjustment(qapp: QApplication) -> None:
+    """Today passed the flag through and Attendance and Week did not, so a day the user had
+    corrected drew as an ordinary unbroken block on two screens out of three. A mark that
+    appears on one screen is worse than none: it makes the other two look measured."""
+    import inspect
+
+    from cerepulse.ui.views import attendance, week
+
+    for module in (attendance, week):
+        source = inspect.getsource(module)
+        assert "worked_spans=" in source, f"{module.__name__} drops the adjustment"

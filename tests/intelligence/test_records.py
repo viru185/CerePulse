@@ -383,3 +383,48 @@ def test_every_source_merges_into_one_stream() -> None:
     assert RecordKind.COMP_OFF_EARNED in kinds
     # And the ordinary working day is still not among them.
     assert date(2026, 6, 22) not in {entry.day for entry in records}
+
+
+def test_a_both_request_shows_both_times() -> None:
+    """Verbatim from the user's cache: 12-Aug, Both, 09:00 to 18:00, approved.
+
+    The detail line read ``in_time or out_time``, which short-circuits, so the card said
+    "Both 9:00 AM" and the evening half of a request the portal had carried in its own column
+    all along was simply not on screen.
+    """
+    (entry,) = build_records(
+        requests=[
+            SwipeRequest(
+                for_date=date(2026, 8, 12),
+                direction="Both",
+                in_time=time(9, 0),
+                out_time=time(18, 0),
+                remark="Work from home.",
+                status=SwipeStatus.APPROVED,
+                approve_date=date(2026, 8, 31),
+            )
+        ]
+    )
+
+    assert "9:00 AM to 6:00 PM" in entry.detail
+
+
+def test_a_one_sided_request_still_reads_naturally() -> None:
+    """The fix must not turn "In 9:00 AM" into "In 9:00 AM to"."""
+    (entry,) = build_records(requests=[request(date(2026, 7, 3), SwipeStatus.APPROVED)])
+    assert entry.detail.startswith("In 9:00 AM —")
+
+
+def test_a_request_with_no_times_names_only_the_punch() -> None:
+    """Pending rows arrive with both columns empty; a dangling separator would be worse
+    than saying less."""
+    bare = SwipeRequest(
+        for_date=date(2026, 7, 3),
+        direction="Out",
+        in_time=None,
+        out_time=None,
+        remark="",
+        status=SwipeStatus.IN_PROCESS,
+    )
+    (entry,) = build_records(requests=[bare])
+    assert entry.detail == "Out"

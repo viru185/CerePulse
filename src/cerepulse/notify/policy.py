@@ -25,10 +25,12 @@ from cerepulse.intelligence.insights import Insight, InsightKind, Severity
 
 #: Insight kinds that are worth interrupting someone for, mapped to their config toggle.
 #:
-#: ``SHORT_HOURS`` used to be here and is not, because nothing has ever constructed one:
-#: ``early_exit`` is ``COMPLETE and worked < target``, which is every finished short day, so
-#: ``EARLY_EXIT`` already covers the case. A toggle wired to an insight that cannot exist is
-#: a setting that does nothing.
+#: Two of these were dead letters until 0.15.0-beta.3. ``EARLY_EXIT`` and ``SWIPE_NEEDED``
+#: both derive from ``early_exit``, which required ``DayState.COMPLETE`` — and today is held
+#: INCOMPLETE precisely when work is owed, so the condition could not occur for today, and
+#: today is the only day this policy is ever asked about. Both toggles sat in Settings,
+#: enabled, doing nothing. Worth remembering when adding a kind here: the toggle existing is
+#: not evidence the insight can.
 TOGGLES: dict[InsightKind, str] = {
     InsightKind.ON_TRACK: "work_target_reached",
     InsightKind.EARLY_EXIT: "short_hours_warning",
@@ -53,6 +55,9 @@ SILENT = {
     InsightKind.BREAK_HEADROOM,
     # A caveat about where the numbers came from, not news.
     InsightKind.GRID_ONLY,
+    # The updater delivers this one itself, deliberately outside quiet hours and the
+    # once-a-day rule. Listed so routing it through here is a no-op rather than a surprise.
+    InsightKind.UPDATE_AVAILABLE,
 }
 
 
@@ -81,8 +86,13 @@ class NotificationPolicy:
     """Decides whether an insight should be shown, and remembers what already was."""
 
     config: NotificationConfig
-    #: (kind, day) pairs already notified. Cleared when the day rolls over.
-    _sent: set[tuple[InsightKind, date]] = field(default_factory=set)
+    #: (kind, title, day) triples already notified. Cleared when the day rolls over.
+    #:
+    #: The title is in the key because several kinds legitimately produce more than one
+    #: insight a day about different things. Keyed on the kind alone, three leave types all
+    #: expiring meant exactly one of them was ever mentioned and the other two were silently
+    #: swallowed as duplicates — the opposite of what a once-a-day rule is for.
+    _sent: set[tuple[InsightKind, str, date]] = field(default_factory=set)
 
     def should_notify(self, insight: Insight, *, now: datetime | None = None) -> bool:
         """True when this insight warrants a toast right now.
@@ -111,14 +121,14 @@ class NotificationPolicy:
         if self.in_quiet_hours(moment):
             return Verdict.QUIET_HOURS
 
-        if (insight.kind, moment.date()) in self._sent:
+        if _key(insight, moment.date()) in self._sent:
             return Verdict.ALREADY_SENT
         return Verdict.SEND
 
     def record_sent(self, insight: Insight, *, now: datetime | None = None) -> None:
         """Remember a toast that was genuinely delivered, so it is not repeated today."""
         moment = now or datetime.now()
-        self._sent.add((insight.kind, moment.date()))
+        self._sent.add(_key(insight, moment.date()))
         self._forget_older_than(moment.date())
 
     def in_quiet_hours(self, moment: datetime) -> bool:
@@ -142,8 +152,13 @@ class NotificationPolicy:
         self._sent.clear()
 
     def _forget_older_than(self, today: date) -> None:
-        stale = {key for key in self._sent if key[1] != today}
+        stale = {key for key in self._sent if key[2] != today}
         self._sent -= stale
+
+
+def _key(insight: Insight, today: date) -> tuple[InsightKind, str, date]:
+    """What makes two toasts the same toast, for the once-a-day rule."""
+    return (insight.kind, insight.title, today)
 
 
 def notification_title(insight: Insight) -> str:

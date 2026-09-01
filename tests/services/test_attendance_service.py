@@ -23,13 +23,25 @@ from tests.services.conftest import EMPLOYEE, FakeGateway, offline
 JULY = (2026, 7)
 
 
-def day(when: date, *, status: DayStatus = DayStatus.PRESENT, total: str = "9.00") -> AttendanceDay:
+def day(
+    when: date,
+    *,
+    status: DayStatus = DayStatus.PRESENT,
+    total: str = "9.00",
+    last_out: time = time(18, 0),
+) -> AttendanceDay:
+    """A grid row. Keep ``total`` equal to the first-in/last-out span it describes.
+
+    The portal's ``Tot. Hrs.`` is that span, and the analysis now checks the two against each
+    other — so a row claiming ten hours between 9 and 6 is not a simpler fixture, it is a day
+    the app is right to flag as not adding up.
+    """
     return AttendanceDay(
         day=when,
         weekday=when.strftime("%a"),
         status=status,
         first_in=time(9, 0),
-        last_out=time(18, 0),
+        last_out=last_out,
         total_hours=Duration.from_hhmm(total),
     )
 
@@ -442,7 +454,7 @@ def test_load_day_speaks_in_the_configured_tone(
     from dataclasses import replace
 
     target = date(2026, 7, 1)
-    seed_month(gateway, day(target, total="10.00"))
+    seed_month(gateway, day(target, total="10.30", last_out=time(19, 30)))
     gateway.punches[target] = [
         Punch(at=time(9, 0), direction=PunchDirection.IN),
         Punch(at=time(19, 30), direction=PunchDirection.OUT),

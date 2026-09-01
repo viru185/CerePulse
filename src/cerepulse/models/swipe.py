@@ -49,7 +49,9 @@ class SwipeRequest:
     """One filed swipe/regularization request and its current status."""
 
     for_date: date
-    direction: str  # "In" or "Out" — the punch being corrected
+    #: Which punch is being corrected: "In", "Out" — or "Both", where the portal fills both
+    #: time columns and the request stands for the whole day.
+    direction: str
     in_time: time | None
     out_time: time | None
     remark: str
@@ -68,6 +70,28 @@ class SwipeRequest:
     @property
     def is_open(self) -> bool:
         return self.status is SwipeStatus.IN_PROCESS
+
+    @property
+    def times(self) -> tuple[time, ...]:
+        """The times this request asks for, in order — one for In or Out, two for Both.
+
+        Every screen used to reach for ``in_time or out_time``, which short-circuits: a Both
+        request for 9:00 AM to 6:00 PM rendered as "Both 9:00 AM" and the evening half was
+        simply absent. The portal has carried two time columns all along.
+        """
+        return tuple(when for when in (self.in_time, self.out_time) if when is not None)
+
+    @property
+    def asked(self) -> str:
+        """What was asked for: ``Both 9:00 AM to 6:00 PM``, ``In 9:00 AM``, or bare ``Out``.
+
+        Here rather than in each view because there were five render sites and they disagreed:
+        one printed a single time, four printed the direction alone — and "(Both)" with no
+        times says less than "(In)" with none. Formatted on the model the way
+        :meth:`Duration.as_clock` is, so the intelligence layer need not reach into ``ui``.
+        """
+        spoken = " to ".join(when.strftime("%I:%M %p").lstrip("0") for when in self.times)
+        return f"{self.direction} {spoken}".strip()
 
     @property
     def identity(self) -> tuple[date, str, str]:

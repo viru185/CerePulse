@@ -14,7 +14,7 @@ repeating them: two copies of a rule is one copy that goes stale.
 
 ```bash
 uv sync --all-extras          # install, including dev tools
-uv run pytest -q              # 1,093 tests, ~25s
+uv run pytest -q              # 1,121 tests, ~25s
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                   # strict, must stay clean
 ```
@@ -114,6 +114,24 @@ second request filed because the first looked like it had not gone through. That
 one was silently dropped on save, and the warning could never fire because the schema made
 its condition impossible. `SwipeRequest.identity` is now the single definition, used by both
 the fetch and the repository.
+
+**13. A swipe request has three directions, not two.** The grid's `Mode` column carries `In`,
+`Out` and **`Both`**, and it has two time columns — a `Both` row fills them both
+(`11-May-26 | Both | 9:00 AM | 6:00 PM`). Every render site reached for `in_time or out_time`,
+which short-circuits, so half of every such request was invisible. `Both` rows appear only in
+the Approved and History views, which is why nobody noticed. `SwipeRequest.asked` is now the
+one place a request is turned into words.
+
+**14. The portal publishes no approval date for comp-off.** `Approve Date` exists on the
+swipe grid alone; the comp-off, leave and outdoor-duty grids have nine columns and none of
+them is one. So the company's "90 days from approval" rule for CO+ cannot be computed as
+stated. What the portal *does* give is the date each comp-off was **earned** — one dated
+credit row per comp-off in the leave register, joinable to its application by remark — and
+that is what `EARNED_PLUS_WINDOW` counts from, said out loud wherever the date is shown.
+The leave register is also scoped to the **financial** year: it opens in April and the
+previous February's credits are simply absent, which independently corroborates PL lapsing on
+31 March. `Leave > My Info | Entitlement` and `| Leave Rules` are now in the capture set so
+this can eventually be settled by reading rather than by inference.
 
 ## Architecture
 
@@ -274,13 +292,45 @@ it **one gap at a time** — no duration threshold, no rule, because a rule appl
 nobody looked at quietly inflates the hours. A flagged day carries `adjusted_gaps` so no
 screen presents it with the confidence of a measurement.
 
-**The punch log can stop short of where the portal ended the day, and it does so in two
-shapes.** The obvious one is a log ending on an In — the day sits open with no hours. The
-silent one is a log ending on an **Out earlier than the grid's `last_out`**: the day pairs
-cleanly, nothing looks wrong, and the app confidently reported a 15:21 departure for a day
-the portal ended at 18:10, with nearly three hours missing from a figure that looked exact.
-`close_at` repairs both, marked inferred. Never for today, where the grid's last-out is
-merely the latest swipe so far rather than a clock-off.
+**For a finished day the grid row is the authority on the day's extent; the punch log only
+details what happened inside it.** This was learned three times, because each time it was
+fixed as one shape of one bug rather than as the rule. `DayEnvelope` carries the whole row —
+`first_in`, `last_out`, `Tot. Hrs.` — and `pair_punches` repairs four things with it, every
+one confirmed against live cached data:
+
+- **The log starts late.** An approved swipe request corrects the *grid* and never the log,
+  so a 09:00 arrival the user had signed off still read as the 09:40 they swiped. The
+  expensive one: `expected_out` is measured from the arrival, so it moves *when can I leave*.
+- **The log ends on an In.** The portal closes the day anyway; without this a day three weeks
+  past reported "still clocked in".
+- **The log ends on an Out earlier than `last_out`.** Silent, because the day pairs cleanly —
+  15:21 reported for a day the portal ended at 18:10.
+- **Two consecutive Outs.** The In between never landed. Discarding the second punch as an
+  orphan, which is all the pairing used to do, is what lost the work.
+
+Two traps inside the repair itself. The envelope's `last_out` must be anchored with the same
+roll-forward `_anchor_to_day` gives the punches, or a shift ending 02:44 lands *before* its
+own 23:50 start and the repair silently declines — that is how a night shift lost 2h54m. And
+the guard must be `>=`, not `>`: a dangling In at exactly the grid's last-out is a swipe on
+the way out, and `>` left the day open forever.
+
+Never close *today* from the grid — its last-out is the latest swipe so far, not a clock-off.
+Today's *arrival* is repaired, because an arrival is settled the moment the day starts.
+
+**`Tot. Hrs.` is a cross-check, not decoration.** Every one of the defects above showed up as
+a repaired span that did not reconcile with the portal's own total, and nothing was looking,
+so each one took a user report to find. `SPAN_MISMATCH` reports the remainder. Fixture rows
+must therefore be self-consistent: a grid claiming ten hours between 9 and 6 is not a simpler
+fixture, it is a day the app is right to flag.
+
+**A notification toggle existing is not evidence the insight can.** `EARLY_EXIT` and
+`SWIPE_NEEDED` both derive from `early_exit`, which required `DayState.COMPLETE` — and today
+is forced INCOMPLETE precisely when work is owed, so the condition was unsatisfiable for
+today, and today is the only day the notification policy is ever asked about. Two Settings
+switches sat there enabled, doing nothing, for months. `early_exit` now has its own
+condition — clocked out, short, and past the break-adjusted finish — so lunchtime is still not
+an early exit and five o'clock with an hour owed is. No test caught it because none *could*:
+none asserted `early_exit` with `now` on the same day.
 
 **Cleanup must not delete what a feature depends on.** `clear_spent_installers` shipped in
 0.14 deleting every staged installer at or below the running version — which is exactly the

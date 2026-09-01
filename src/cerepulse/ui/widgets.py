@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 from cerepulse.intelligence.insights import Action, Insight, Severity
 from cerepulse.intelligence.month import DayRollup
 from cerepulse.intelligence.next_action import NextAction
-from cerepulse.intelligence.segments import WorkSegment
+from cerepulse.intelligence.segments import WorkedGap, WorkSegment
 from cerepulse.models.values import Duration
 from cerepulse.ui.theme import Palette, Space
 
@@ -408,9 +408,10 @@ class DayTimeline(QWidget):
         self._end: datetime | None = None
         self._status_label = ""
         self._status_colour: str | None = None
-        #: Gaps the user reclassified as work. Marked on the axis so a stretch that reads as
-        #: continuous does not silently look like an unbroken measured run.
-        self._adjusted_gaps: tuple[tuple[time, str], ...] = ()
+        #: Gaps the user reclassified as work, with the extent each one covers. Drawn as a
+        #: band so a stretch that reads as continuous does not look like an unbroken measured
+        #: run — a dotted line at the start could only say "something happened here".
+        self._worked_spans: tuple[WorkedGap, ...] = ()
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_day(
@@ -422,7 +423,7 @@ class DayTimeline(QWidget):
         status_label: str = "",
         status_colour: str | None = None,
         domain: tuple[int, int] | None = None,
-        adjusted_gaps: Sequence[tuple[time, str]] = (),
+        worked_spans: Sequence[WorkedGap] = (),
     ) -> None:
         """Render a day.
 
@@ -437,7 +438,7 @@ class DayTimeline(QWidget):
         difference the stack exists to show.
         """
         self._segments = segments
-        self._adjusted_gaps = tuple(adjusted_gaps)
+        self._worked_spans = tuple(worked_spans)
         self._leave_at = leave_at
         self._now = now
         self._status_label = status_label
@@ -475,11 +476,26 @@ class DayTimeline(QWidget):
                 gap = _gap_between(previous, segment)
                 if gap.minutes > 0:
                     lines.append(f"    break {gap}")
+            marks = [
+                name
+                for name, flagged in (
+                    ("start inferred", segment.start_inferred),
+                    ("end inferred", segment.end_inferred),
+                )
+                if flagged
+            ]
             lines.append(
                 f"{_clock_short(segment.start)} – {_clock_short(segment.end)}"
-                f"  worked {segment.duration}"
-                + ("  · end inferred" if segment.end_inferred else "")
+                f"  worked {segment.duration}" + ("  · " + ", ".join(marks) if marks else "")
             )
+            # The notes belong here, not only in the journey rows. The band says a stretch was
+            # reclaimed; only the user's own words say what it was.
+            for span in self._worked_spans:
+                if segment.start <= span.start and span.end <= segment.end:
+                    lines.append(
+                        f"    {_clock_short(span.start)} – {_clock_short(span.end)}"
+                        f"  marked as work: {span.note or 'no note'}"
+                    )
             previous = segment
         return lines
 
@@ -613,7 +629,9 @@ class DayTimeline(QWidget):
             width = max(2.0, self._x_for(segment.end) - left)
             block = QRectF(left, bar.top(), width, bar.height())
             painter.fillPath(_rounded(block, 4), QColor(self._palette.work))
-            if segment.end_inferred:
+            # Either end can be reconstructed now that an approved swipe request can move the
+            # arrival, and a repaired block has to look repaired whichever end it was.
+            if segment.end_inferred or segment.start_inferred:
                 _hatch(painter, block, self._palette.surface)
 
             if width >= self.LABEL_FITS:
@@ -711,25 +729,28 @@ class DayTimeline(QWidget):
             occupied = left + width
 
     def _paint_adjustments(self, painter: QPainter, bar: QRectF) -> None:
-        """Mark each gap the user reclassified as work.
+        """Draw each stretch the user reclaimed from a break, over the work block it joined.
 
         Merging the segments is what makes the figures right; drawing nothing there is what
-        would make them look measured. The violet is the palette's "an adjustment" accent,
-        used here for the same meaning it carries everywhere else, and the tooltip carries
-        whatever the user said the work was.
+        would make them look measured. This used to be a dotted line at the gap's start,
+        because the merge threw the gap's extent away before the widget ever saw it — so the
+        one thing the mark could not show was how much of the block had been reclaimed, which
+        is the whole question. The violet is the palette's "an adjustment" accent, carrying
+        the meaning it carries everywhere else.
         """
-        if not self._adjusted_gaps or self._start is None:
+        if not self._worked_spans or self._start is None or self._end is None:
             return
 
-        pen = QPen(QColor(self._palette.adjust), 2)
-        pen.setStyle(Qt.PenStyle.DotLine)
-        painter.setPen(pen)
-        for moment, _note in self._adjusted_gaps:
-            at = datetime.combine(self._start.date(), moment)
-            if not (self._start <= at <= (self._end or at)):
+        for span in self._worked_spans:
+            if span.end <= self._start or span.start >= self._end:
                 continue
-            x = self._x_for(at)
-            painter.drawLine(int(x), int(bar.top()), int(x), int(bar.bottom()))
+            left = self._x_for(span.start)
+            width = max(2.0, self._x_for(span.end) - left)
+            band = QRectF(left, bar.top(), width, bar.height())
+            painter.fillPath(_rounded(band, 2), QColor(self._palette.adjust))
+            # Hatched as well as coloured: this is work nobody measured, and it should read
+            # like the other reconstructions on the bar rather than like a solid block.
+            _hatch(painter, band, self._palette.surface)
 
     def _paint_hours(self, painter: QPainter, bar: QRectF) -> None:
         """The hour axis — what makes it a clock rather than a bar."""
@@ -868,7 +889,7 @@ class DayJourney(QWidget):
         self,
         segments: Sequence[WorkSegment],
         *,
-        adjusted_gaps: Sequence[tuple[time, str]] = (),
+        worked_spans: Sequence[WorkedGap] = (),
         can_flag: bool = False,
     ) -> None:
         """Render the day. ``can_flag`` offers each break a "this was work" action.
@@ -901,23 +922,19 @@ class DayJourney(QWidget):
                     if can_flag:
                         row.offer_worked_flag(previous.end.time(), self.gap_flagged)
                     rows.append(row)
-            inside = [
-                (moment, note)
-                for moment, note in adjusted_gaps
-                if segment.start.time() < moment < segment.end.time()
-            ]
+            inside = [span for span in worked_spans if _within(span, segment)]
             work_row = _JourneyRow(
                 self._palette,
                 when=f"{_clock_short(segment.start)} – {_clock_short(segment.end)}",
                 title=f"Worked · {segment.duration}",
-                detail=_segment_detail(segment, adjusted_gaps),
+                detail=_segment_detail(segment, worked_spans),
                 # Violet is the palette's "adjustment" accent, and this stretch is one.
                 colour=self._palette.adjust if inside else self._palette.work,
-                muted=segment.end_inferred,
+                muted=segment.end_inferred or segment.start_inferred,
             )
             # Merging removed the gap's own row, so the way back has to live here.
             if can_flag and inside:
-                work_row.offer_undo_flag(inside[0][0], self.gap_flagged)
+                work_row.offer_undo_flag(inside[0].start.time(), self.gap_flagged)
             rows.append(work_row)
             previous = segment
 
@@ -927,22 +944,30 @@ class DayJourney(QWidget):
             self._layout.addWidget(row)
 
 
-def _segment_detail(segment: WorkSegment, adjusted_gaps: Sequence[tuple[time, str]]) -> str:
+def _within(span: WorkedGap, segment: WorkSegment) -> bool:
+    """Whether a reclaimed gap lies inside this block.
+
+    Compared as full datetimes rather than clock times, which is what the previous version
+    did — on a shift running past midnight a 23:50 gap has a smaller clock time than a 07:45
+    start, so the comparison quietly excluded exactly the days most likely to need it.
+    """
+    return segment.start <= span.start and span.end <= segment.end
+
+
+def _segment_detail(segment: WorkSegment, worked_spans: Sequence[WorkedGap]) -> str:
     """Why this row is not simply a measurement, when it is not.
 
-    Both cases are stated rather than hidden: an end the app inferred, and a stretch that
-    only reads as continuous because the user said a gap inside it was work — named with
-    whatever they said it was, because "a break you marked as work" three weeks later is a
-    fact without a reason attached.
+    Every case is stated rather than hidden: an end the app inferred, an arrival taken from
+    the portal's summary, and a stretch that only reads as continuous because the user said a
+    gap inside it was work — named with whatever they said it was, because "a break you
+    marked as work" three weeks later is a fact without a reason attached.
     """
     notes = []
+    if segment.start_inferred:
+        notes.append("the in punch is missing, so this start came from the summary")
     if segment.end_inferred:
         notes.append("the out punch is missing, so this end was inferred")
-    inside = [
-        note or "no note"
-        for moment, note in adjusted_gaps
-        if segment.start.time() < moment < segment.end.time()
-    ]
+    inside = [span.note or "no note" for span in worked_spans if _within(span, segment)]
     if inside:
         notes.append("includes work you marked: " + "; ".join(inside))
     return "; ".join(notes)

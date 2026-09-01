@@ -428,7 +428,7 @@ class TodayView(QWidget):
             now=datetime.now() if is_today and analysis.is_ongoing else None,
             status_label=self._status_label,
             status_colour=self._status_colour,
-            adjusted_gaps=analysis.adjusted_gaps,
+            worked_spans=analysis.worked_spans,
         )
         self._legend.setText(self._legend_text(analysis))
         self._render_punches(analysis)
@@ -567,15 +567,17 @@ class TodayView(QWidget):
         ]
         if analysis.leave_at is not None and analysis.segments:
             parts.append(f"dashed = free at {fmt.clock(analysis.leave_at)}")
-        if any(segment.end_inferred for segment in analysis.segments):
+        if any(segment.end_inferred or segment.start_inferred for segment in analysis.segments):
             parts.append("hatched = inferred from a missing punch")
+        if analysis.worked_spans:
+            parts.append("violet = a break you marked as work")
         return "  ·  ".join(parts)
 
     def _render_punches(self, analysis: DayAnalysis | None) -> None:
         segments = analysis.segments if analysis is not None else ()
         self._journey.set_segments(
             segments,
-            adjusted_gaps=analysis.adjusted_gaps if analysis is not None else (),
+            worked_spans=analysis.worked_spans if analysis is not None else (),
             # Only where there is a day to attach a flag to.
             can_flag=analysis is not None,
         )
