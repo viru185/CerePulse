@@ -2,6 +2,14 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.15.0-beta.3] - 2026-09-01
+
+### Bug Fixes
+- Let the portal's own row bound the day, and revive two dead alerts
+
+### Chores
+- Bump to 0.15.0-beta.3
+
 ## [0.15.0-beta.2] - 2026-08-21
 
 ### Bug Fixes
@@ -12,6 +20,7 @@ All notable changes to CerePulse are documented here.
 
 ### Chores
 - Bump to 0.15.0-beta.2
+- Regenerate the changelog for 0.15.0-beta.2
 
 ### Documentation
 - Keep the test count honest
