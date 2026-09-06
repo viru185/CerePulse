@@ -2,6 +2,25 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.15.0-beta.4] - 2026-09-06
+
+### Bug Fixes
+- Never close a past day at the clock
+- Refetch a punch log that was read before its day ended
+- Make Roll back work, and stop it depending on cleanup
+- The six high audit findings
+
+### Chores
+- Bump to 0.15.0-beta.4
+
+### Documentation
+- Record the rules this round taught
+
+### Features
+- Show the finish time the extra break moved
+- Each comp-off credit says when it expires and when it was used
+- An eye on every masked field
+
 ## [0.15.0-beta.3] - 2026-09-01
 
 ### Bug Fixes
@@ -9,6 +28,7 @@ All notable changes to CerePulse are documented here.
 
 ### Chores
 - Bump to 0.15.0-beta.3
+- Regenerate the changelog for 0.15.0-beta.3
 
 ## [0.15.0-beta.2] - 2026-08-21
 
