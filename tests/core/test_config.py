@@ -71,7 +71,7 @@ def test_unknown_keys_are_ignored(tmp_path: Path) -> None:
         {"shift": {"work_target_hours": 9.0, "shift_span_hours": 8.0}},
         {"sync": {"refresh_interval_minutes": 0}},
         {"ui": {"background_mode": "always-on"}},
-        {"ui": {"theme": "neon"}},
+        {"ui": {"theme": "sepia"}},
     ],
 )
 def test_validation_rejects_unusable_settings(tmp_path: Path, data: dict) -> None:
@@ -94,3 +94,15 @@ def test_saved_config_never_contains_a_password(tmp_path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     assert "CIPL00364" in text
     assert "password" not in text.lower()
+
+
+def test_the_new_themes_load_and_an_unknown_one_is_refused(tmp_path: Path) -> None:
+    from cerepulse.core.errors import ConfigError
+
+    path = tmp_path / "cerepulse.toml"
+    save_config(AppConfig.from_dict({"ui": {"theme": "neon"}}), config_path=path)
+    assert load_config(config_path=path).ui.theme == "neon"
+
+    save_config(AppConfig.from_dict({"ui": {"theme": "sepia"}}), config_path=path)
+    with pytest.raises(ConfigError):
+        load_config(config_path=path)

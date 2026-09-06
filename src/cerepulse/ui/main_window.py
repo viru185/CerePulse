@@ -16,7 +16,7 @@ from datetime import date, datetime
 
 from loguru import logger
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QKeyEvent, QKeySequence, QShortcut
+from PySide6.QtGui import QCloseEvent, QColor, QKeyEvent, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -165,7 +165,8 @@ class MainWindow(QMainWindow):
     # --- construction ---------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        central = QWidget()
+        central = _Backdrop(self._palette)
+        self._backdrop = central
         self.setCentralWidget(central)
         layout = QHBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1052,7 +1053,7 @@ class MainWindow(QMainWindow):
 
         self.about.refresh(channel=config.updates.channel)  # type: ignore[attr-defined]
         self.settings.show_save_result(
-            f"Saved. Switching tray mode or theme fully applies on the next start.{note}"
+            f"Saved. Switching tray mode applies on the next start.{note}"
         )
 
     def _flag_gap(self, day: object, gap_start: object, worked: bool, note: str = "") -> None:
@@ -1364,13 +1365,37 @@ class MainWindow(QMainWindow):
             Severity.SUCCESS if outcome.startswith("Sent") else Severity.WARNING,
         )
 
-    def _apply_theme(self, theme: str) -> None:
+    def _apply_theme(self, theme: str, *, rerender: bool = True) -> None:
+        """Switch palettes without a restart.
+
+        The sheet is one call. The painted widgets — timelines, rings, charts — each hold
+        the palette they were built with, so re-styling the sheet alone left the window
+        half-repainted next to a note saying the theme applies on the next start. Every
+        widget that keeps a palette is handed the new one here, in one place, and the
+        current screens are rendered again against it.
+        """
         from PySide6.QtWidgets import QApplication
 
         self._palette = palette_for(theme)
+        for widget in [self, *self.findChildren(QWidget)]:
+            if hasattr(widget, "_palette") and widget is not self:
+                widget._palette = self._palette  # noqa: SLF001 — the one place this is set
+                widget.update()
+        self._apply_backdrop()
         application = QApplication.instance()
         if application is not None:
-            application.setStyleSheet(stylesheet(self._palette))  # type: ignore[attr-defined]
+            application.setStyleSheet(  # type: ignore[attr-defined]
+                stylesheet(self._palette, wallpaper=self._backdrop.active)
+            )
+        if rerender and self._month_view is not None:
+            self._apply_month(self._month_view)
+
+    def _apply_backdrop(self) -> None:
+        ui = self._context.config.ui
+        self._backdrop.set_palette(self._palette)
+        self._backdrop.set_wallpaper(
+            ui.background_image, enabled=ui.background_enabled, strength=ui.background_strength
+        )
 
     def _sign_out(self, forget: bool) -> None:
         self._sync.sign_out(forget=forget, on_success=lambda _: self.prompt_sign_in())
@@ -1470,3 +1495,63 @@ def _message_for(exc: BaseException) -> str:
     if isinstance(exc, CerePulseError):
         return exc.user_message if type(exc).user_message else str(exc)
     return "Something went wrong. Check the logs for details."
+
+
+class _Backdrop(QWidget):
+    """The window's floor: the theme's surface, or the user's picture dimmed into it.
+
+    Everything else in the window is transparent when a wallpaper is set (see
+    :func:`stylesheet`), so this one widget is what the eye reads as the background. The
+    picture is scaled to cover and cropped centred, cached per size because scaling a
+    photograph on every paint is what makes a window feel heavy; the tint on top is the
+    palette's own surface colour at the configured strength, so text keeps the contrast the
+    palette was designed for.
+    """
+
+    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self._source: QPixmap | None = None
+        self._scaled: QPixmap | None = None
+        self._strength = 65
+        self.setAutoFillBackground(False)
+
+    @property
+    def active(self) -> bool:
+        return self._source is not None
+
+    def set_palette(self, palette: Palette) -> None:
+        self._palette = palette
+        self.update()
+
+    def set_wallpaper(self, path: str, *, enabled: bool, strength: int) -> None:
+        self._strength = max(0, min(100, strength))
+        self._source = None
+        self._scaled = None
+        if enabled and path:
+            pixmap = QPixmap(path)
+            if not pixmap.isNull():
+                self._source = pixmap
+        self.update()
+
+    def resizeEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        self._scaled = None
+        super().resizeEvent(event)  # type: ignore[arg-type]
+
+    def paintEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        painter = QPainter(self)
+        if self._source is None:
+            painter.fillRect(self.rect(), QColor(self._palette.surface))
+            return
+        if self._scaled is None or self._scaled.size() != self.size():
+            self._scaled = self._source.scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        x = (self._scaled.width() - self.width()) // 2
+        y = (self._scaled.height() - self.height()) // 2
+        painter.drawPixmap(0, 0, self._scaled, x, y, self.width(), self.height())
+        tint = QColor(self._palette.surface)
+        tint.setAlphaF(self._strength / 100)
+        painter.fillRect(self.rect(), tint)

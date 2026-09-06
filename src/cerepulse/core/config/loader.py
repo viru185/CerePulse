@@ -20,7 +20,7 @@ import tomli_w
 from loguru import logger
 
 from cerepulse.core import paths
-from cerepulse.core.config.models import AppConfig
+from cerepulse.core.config.models import THEMES, AppConfig
 from cerepulse.core.errors import ConfigError
 
 ENV_PREFIX = "CEREPULSE__"
@@ -106,5 +106,7 @@ def _validate(config: AppConfig) -> None:
         raise ConfigError("sync.refresh_interval_minutes must be at least 1")
     if config.ui.background_mode not in {"tray", "foreground"}:
         raise ConfigError("ui.background_mode must be 'tray' or 'foreground'")
-    if config.ui.theme not in {"dark", "light", "system"}:
-        raise ConfigError("ui.theme must be 'dark', 'light' or 'system'")
+    if config.ui.theme not in THEMES:
+        raise ConfigError(f"ui.theme must be one of {', '.join(THEMES)}")
+    if not 0 <= config.ui.background_strength <= 100:
+        raise ConfigError("ui.background_strength must be between 0 and 100")

@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtCore import Qt, QTime, Signal
+from PySide6.QtCore import QRectF, Qt, QTime, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSpinBox,
     QTimeEdit,
     QVBoxLayout,
@@ -33,7 +35,9 @@ from PySide6.QtWidgets import (
 )
 
 from cerepulse.core.config import AppConfig, CommuteConfig
+from cerepulse.core.config.models import THEMES
 from cerepulse.intelligence.sandwich import SandwichRule
+from cerepulse.ui.theme import THEME_LABELS, Palette, palette_for
 from cerepulse.ui.widgets import Banner, add_reveal_toggle
 
 #: Control widths, so nothing stretches to fill the card. Spin boxes need room for their
@@ -317,9 +321,59 @@ class SettingsView(QWidget):
         card.add("Keep history for", self._history)
         return card.finish()
 
+    def _choose_wallpaper(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _filter = QFileDialog.getOpenFileName(
+            self, "Choose a background picture", "", "Pictures (*.png *.jpg *.jpeg *.webp *.bmp)"
+        )
+        if path:
+            self._wallpaper_path.setText(path)
+
     def _build_appearance(self) -> Card:
         card = Card("Appearance")
-        self._theme = _choice([("Dark", "dark"), ("Light", "light"), ("Follow Windows", "system")])
+        self._theme = _choice([(THEME_LABELS[name], name) for name in THEMES])
+        # A row of the theme's own colours beside the picker, so choosing one is not a
+        # guess from its name.
+        self._swatch = ThemeSwatch()
+        self._theme.currentIndexChanged.connect(
+            lambda _index: self._swatch.set_theme(str(self._theme.currentData()))
+        )
+        theme_row = QHBoxLayout()
+        theme_row.setSpacing(8)
+        theme_row.addWidget(self._theme)
+        theme_row.addWidget(self._swatch)
+        theme_row.addStretch(1)
+        theme_host = QWidget()
+        theme_host.setLayout(theme_row)
+
+        # The wallpaper. The app ships no imagery: this is the user's own picture, which is
+        # what makes the anime theme *their* character rather than one nobody can bundle.
+        self._wallpaper_path = QLineEdit()
+        self._wallpaper_path.setPlaceholderText("No picture — the theme's plain surface")
+        self._wallpaper_path.setReadOnly(True)
+        self._wallpaper_path.setMinimumWidth(260)
+        choose = QPushButton("Choose…")
+        choose.clicked.connect(self._choose_wallpaper)
+        clear = QPushButton("Clear")
+        clear.clicked.connect(lambda: self._wallpaper_path.setText(""))
+        wallpaper_row = QHBoxLayout()
+        wallpaper_row.setSpacing(8)
+        wallpaper_row.addWidget(self._wallpaper_path)
+        wallpaper_row.addWidget(choose)
+        wallpaper_row.addWidget(clear)
+        wallpaper_host = QWidget()
+        wallpaper_host.setLayout(wallpaper_row)
+
+        self._wallpaper_on = QCheckBox("Show the picture")
+        self._wallpaper_on.setToolTip("Off keeps the picture on file; on brings it back.")
+        self._wallpaper_strength = QSlider(Qt.Orientation.Horizontal)
+        self._wallpaper_strength.setRange(0, 100)
+        self._wallpaper_strength.setFixedWidth(CHOICE_WIDTH)
+        self._wallpaper_strength.setToolTip(
+            "How much of the theme's own colour is laid over the picture. Higher keeps the "
+            "text easier to read on a busy image."
+        )
         self._background = _choice(
             [
                 ("Keep running in the tray", "tray"),
@@ -332,7 +386,10 @@ class SettingsView(QWidget):
             "Playful adds a light remark to good news. Warnings stay plain either way."
         )
 
-        card.add("Theme", self._theme)
+        card.add("Theme", theme_host)
+        card.add("Background picture", wallpaper_host)
+        card.add_full(self._wallpaper_on)
+        card.add("Picture dimming", self._wallpaper_strength)
         card.add("On window close", self._background)
         card.add("Wording", self._tone)
         card.add_full(self._startup)
@@ -607,6 +664,10 @@ class SettingsView(QWidget):
         self._history.setValue(config.sync.history_months)
 
         self._theme.setCurrentIndex(max(0, self._theme.findData(config.ui.theme)))
+        self._swatch.set_theme(config.ui.theme)
+        self._wallpaper_path.setText(config.ui.background_image)
+        self._wallpaper_on.setChecked(config.ui.background_enabled)
+        self._wallpaper_strength.setValue(config.ui.background_strength)
         self._background.setCurrentIndex(
             max(0, self._background.findData(config.ui.background_mode))
         )
@@ -662,6 +723,9 @@ class SettingsView(QWidget):
             ui=replace(
                 config.ui,
                 theme=self._theme.currentData(),
+                background_image=self._wallpaper_path.text().strip(),
+                background_enabled=self._wallpaper_on.isChecked(),
+                background_strength=self._wallpaper_strength.value(),
                 background_mode=self._background.currentData(),
                 start_with_windows=self._startup.isChecked(),
                 tone=self._tone.currentData(),
@@ -747,6 +811,39 @@ def _minutes() -> QSpinBox:
     spin.setSuffix(" min")
     spin.setFixedWidth(NUMBER_WIDTH)
     return spin
+
+
+class ThemeSwatch(QWidget):
+    """Five chips of a theme's colours: surface, card, work, break, good."""
+
+    CHIP = 18
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._palette: Palette = palette_for("dark")
+        self.setFixedSize(self.CHIP * 5 + 8, self.CHIP + 4)
+        self.setToolTip("How this theme looks")
+
+    def set_theme(self, name: str) -> None:
+        self._palette = palette_for(name)
+        self.update()
+
+    def paintEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        colours = (
+            self._palette.surface,
+            self._palette.elevated,
+            self._palette.work,
+            self._palette.rest,
+            self._palette.good,
+        )
+        for index, colour in enumerate(colours):
+            painter.setPen(QPen(QColor(self._palette.border), 1))
+            painter.setBrush(QColor(colour))
+            painter.drawRoundedRect(
+                QRectF(index * (self.CHIP + 2) + 1, 2, self.CHIP, self.CHIP), 4, 4
+            )
 
 
 def _choice(options: list[tuple[str, str]]) -> QComboBox:

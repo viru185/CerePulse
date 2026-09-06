@@ -18,7 +18,15 @@ from cerepulse.intelligence.insights import Insight, InsightKind, Severity
 from cerepulse.models.attendance import Punch, PunchDirection
 from cerepulse.models.values import Duration
 from cerepulse.ui import formatting as fmt
-from cerepulse.ui.theme import DARK, LIGHT, MIN_CONTRAST, contrast_ratio, palette_for, stylesheet
+from cerepulse.ui.theme import (
+    DARK,
+    LIGHT,
+    MIN_CONTRAST,
+    PALETTES,
+    contrast_ratio,
+    palette_for,
+    stylesheet,
+)
 from cerepulse.ui.views.today import TodayView, summary_text
 from cerepulse.ui.widgets import Banner, Card, DayTimeline, InsightStrip, SegmentBar
 from cerepulse.ui.workers import TaskRunner
@@ -100,7 +108,7 @@ def test_labels_are_transparent_so_they_do_not_box_over_cards() -> None:
     assert "background: transparent" in sheet
 
 
-@pytest.mark.parametrize("palette", [DARK, LIGHT], ids=["dark", "light"])
+@pytest.mark.parametrize("palette", list(PALETTES.values()), ids=list(PALETTES))
 def test_every_text_colour_clears_the_contrast_floor(palette) -> None:  # type: ignore[no-untyped-def]
     """text_faint sat at 2.49:1 — barely half of AA — and it is every caption in the app.
 
@@ -114,7 +122,7 @@ def test_every_text_colour_clears_the_contrast_floor(palette) -> None:  # type: 
         assert worst >= MIN_CONTRAST, f"{palette.name} {name} is only {worst:.2f}:1"
 
 
-@pytest.mark.parametrize("palette", [DARK, LIGHT], ids=["dark", "light"])
+@pytest.mark.parametrize("palette", list(PALETTES.values()), ids=list(PALETTES))
 def test_accents_stay_legible_too(palette) -> None:  # type: ignore[no-untyped-def]
     """They carry meaning, not just decoration, so they have to be readable as text.
 
@@ -1091,3 +1099,18 @@ def test_both_masked_fields_carry_the_eye(qapp: QApplication) -> None:
         if edit.echoMode() is QLineEdit.EchoMode.Password
     ]
     assert masked and all(a.text() == "Show" for edit in masked for a in edit.actions())
+
+
+def test_the_theme_names_the_loader_accepts_are_the_palettes_that_exist() -> None:
+    """The names live in core (the loader validates them) and the palettes in ui (core cannot
+    import it). Two lists is one list that drifts, unless a test holds them together."""
+    from cerepulse.core.config.models import THEMES
+
+    assert set(THEMES) == set(PALETTES) | {"system"}
+
+
+def test_a_wallpaper_makes_the_plain_background_transparent_but_not_the_dialogs() -> None:
+    sheet = stylesheet(DARK, wallpaper=True)
+    assert "background-color: transparent;\n        color:" in sheet
+    assert "QDialog, QMessageBox" in sheet
+    assert "background-color: transparent" not in stylesheet(DARK)

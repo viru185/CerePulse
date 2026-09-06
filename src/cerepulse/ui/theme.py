@@ -156,13 +156,100 @@ def _ratio(first: float, second: float) -> float:
     return (lighter + 0.05) / (darker + 0.05)
 
 
+SAKURA = Palette(
+    name="sakura",
+    surface="#FFF7F8",
+    elevated="#FFFFFF",
+    border="#F1D6DC",
+    text="#2B1F24",
+    text_muted="#6B4E58",
+    text_faint="#7A616A",
+    work="#B0306A",
+    rest="#9A5414",
+    good="#276F50",
+    bad="#C0392B",
+    adjust="#7B3FA0",
+    overlay="#FBEFF2",
+)
+
+#: True AMOLED black with the accents of a neon-lit street. The base the user's own
+#: character wallpaper sits on; the app ships no imagery of its own.
+NEON = Palette(
+    name="neon",
+    surface="#000000",
+    elevated="#0B0A12",
+    border="#221E33",
+    text="#F5F3FF",
+    text_muted="#B8B0D9",
+    text_faint="#9A93BF",
+    work="#22E3FF",
+    rest="#FFB020",
+    good="#5CFF8F",
+    bad="#FF4D8D",
+    adjust="#C084FC",
+    overlay="#14111F",
+)
+
+OCEAN = Palette(
+    name="ocean",
+    surface="#071120",
+    elevated="#0E1B31",
+    border="#1C2B47",
+    text="#E6EEF8",
+    text_muted="#A9B8CF",
+    text_faint="#93A3BC",
+    work="#38C6D9",
+    rest="#F0B24A",
+    good="#4FD1A0",
+    bad="#FF7A7A",
+    adjust="#B39DFF",
+    overlay="#142540",
+)
+
+SOLAR = Palette(
+    name="solar",
+    surface="#FBF6EA",
+    elevated="#FFFDF7",
+    border="#E8DCC4",
+    text="#2A2419",
+    text_muted="#5E5340",
+    text_faint="#6E6350",
+    work="#A8501F",
+    rest="#74590C",
+    good="#4E6B1F",
+    bad="#B3261E",
+    adjust="#6A4C93",
+    overlay="#F3ECDC",
+)
+
+#: Every theme by name. Adding one is a palette above and a line here; the config loader
+#: checks names against ``core.config.models.THEMES``, and a test keeps the two in step.
+PALETTES: dict[str, Palette] = {
+    palette.name: palette for palette in (DARK, LIGHT, SAKURA, NEON, OCEAN, SOLAR)
+}
+
+#: What the picker calls each one.
+THEME_LABELS: dict[str, str] = {
+    "dark": "Dark (AMOLED)",
+    "light": "Light",
+    "sakura": "Sakura",
+    "neon": "Neon (AMOLED)",
+    "ocean": "Ocean",
+    "solar": "Solar",
+    "system": "Follow Windows",
+}
+
+
 def palette_for(theme: str) -> Palette:
     """Resolve a configured theme name. ``system`` follows the OS setting."""
-    if theme == "light":
-        return LIGHT
-    if theme == "dark":
-        return DARK
+    if theme in PALETTES:
+        return PALETTES[theme]
     return DARK if _system_prefers_dark() else LIGHT
+
+
+def is_dark(palette: Palette) -> bool:
+    """Whether the surface is dark, for anything that must pick a side."""
+    return _luminance(palette.surface) < 0.5
 
 
 def _system_prefers_dark() -> bool:
@@ -231,8 +318,21 @@ def _arrow_rules(palette: Palette) -> str:
     """
 
 
-def stylesheet(palette: Palette) -> str:
-    """Build the application stylesheet for a palette."""
+def stylesheet(palette: Palette, *, wallpaper: bool = False) -> str:
+    """Build the application stylesheet for a palette.
+
+    With ``wallpaper`` the plain-widget background goes transparent so the picture the
+    window paints underneath shows through; cards, the sidebar, tables and inputs keep
+    their own opaque backgrounds, and dialogs are given one explicitly — they are widgets
+    too, and a transparent dialog over the desktop is unreadable.
+    """
+    surface = "transparent" if wallpaper else palette.surface
+    dialogs = (
+        "QDialog, QMessageBox, QMenu, QToolTip, QCalendarWidget "
+        f"{{ background-color: {palette.surface}; }}"
+        if wallpaper
+        else ""
+    )
     return f"""
     {_arrow_rules(palette)}
     /* No font-family here on purpose. A style-sheet font *overrides* the one set through
@@ -241,10 +341,11 @@ def stylesheet(palette: Palette) -> str:
        list `apply_font` builds, including the family that actually holds the ◀ ▶ glyphs.
        `QFont.setFamilies` owns the font; this sheet only sizes it. */
     QWidget {{
-        background-color: {palette.surface};
+        background-color: {surface};
         color: {palette.text};
         font-size: 13px;
     }}
+    {dialogs}
 
     /* Labels inherit the QWidget background rule, which paints an opaque box over
        whatever card they sit on. They must be transparent to read as text. */

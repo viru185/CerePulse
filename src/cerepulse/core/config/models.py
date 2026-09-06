@@ -56,12 +56,27 @@ class SyncConfig:
     history_months: int = 12
 
 
+#: Every theme the app ships, plus "system" for following Windows. The palettes themselves
+#: live in ``ui.theme``; the names are here because the loader validates them and ``core``
+#: cannot import ``ui``. A test keeps the two lists identical.
+THEMES: tuple[str, ...] = ("dark", "light", "sakura", "neon", "ocean", "solar", "system")
+
+
 @dataclass(frozen=True, slots=True)
 class UiConfig:
-    theme: str = "dark"  # dark | light | system
+    theme: str = "dark"  # one of THEMES
     background_mode: str = "tray"  # tray | foreground
     start_with_windows: bool = False
     tone: str = "playful"  # playful | plain
+    #: A picture drawn behind every screen, dimmed by the theme's own surface colour. The
+    #: app ships no imagery: this is the user's file, so the anime theme is whichever
+    #: character they choose rather than one nobody has the rights to bundle.
+    background_image: str = ""
+    #: Off keeps the file; the point of a switch is coming back to it.
+    background_enabled: bool = True
+    #: How strongly the surface colour is laid over the picture, 0–100. High enough by
+    #: default that captions stay readable on a busy image.
+    background_strength: int = 65
 
 
 @dataclass(frozen=True, slots=True)
