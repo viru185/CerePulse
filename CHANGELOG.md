@@ -6,9 +6,10 @@ All notable changes to CerePulse are documented here.
 
 ### Chores
 - Bump to 0.16.0-beta.2
+- Regenerate the changelog for 0.16.0-beta.2
 
 ### Documentation
-- The application is the event; the salary of a comp-off row
+- The timeline's rule, the comp-off list's shape, and where the credits live
 
 ### Features
 - One event, one row
