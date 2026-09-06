@@ -83,9 +83,14 @@ def presence_of(analysis: DayAnalysis, *, is_today: bool) -> Presence:
 
     if analysis.state is DayState.EMPTY:
         return Presence.NOT_STARTED
+    # A day that is over is finished whatever its last punch was. This check came *after*
+    # `clocked_in`, so a past day whose log ended on an In read "Working" beside a hero that
+    # said "Left at" — the two disagreed by construction.
+    if not is_today:
+        return Presence.FINISHED
     if analysis.clocked_in:
         return Presence.WORKING
-    if is_today and analysis.state is DayState.INCOMPLETE:
+    if analysis.state is DayState.INCOMPLETE:
         return Presence.ON_BREAK
     return Presence.FINISHED
 

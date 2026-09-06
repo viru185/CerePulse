@@ -184,10 +184,16 @@ def analyze_day(
     confidence of a clean measurement.
     """
     policy = policy or ShiftPolicy.default()
+    # The clock means "this day is still being worked" and nothing else, so it reaches the
+    # pairing only when it falls on this day. Every screen passes `now` for whichever date is
+    # on view, and the pairing read "a clock was given" as "this is today" — so a past day
+    # whose log ends on an In was closed at *now*, two days later, and reported fifty-one
+    # hours worked while the grid's own last-out sat unused beside it.
+    is_today = now is not None and now.date() == day
     pairing = pair_punches(
         punches,
         day=day,
-        now=now,
+        now=now if is_today else None,
         envelope=envelope,
         worked_gaps=worked_gaps,
     )
@@ -205,7 +211,7 @@ def analyze_day(
         )
 
     if not pairing.segments:
-        return _empty_day(day, pairing, policy, is_today=now is not None and now.date() == day)
+        return _empty_day(day, pairing, policy, is_today=is_today)
 
     worked = pairing.worked
     break_taken = pairing.break_taken
@@ -223,7 +229,6 @@ def analyze_day(
     effective_break = max(policy.break_target, break_taken)
     expected_out_break_adjusted = first_in + _to_delta(policy.work_target + effective_break)
 
-    is_today = now is not None and now.date() == day
     state = DayState.INCOMPLETE if pairing.ongoing else DayState.COMPLETE
     if state is DayState.COMPLETE and is_today:
         # Today, clocked out. Two reasons that is not a finished day.
@@ -276,7 +281,6 @@ def analyze_day(
         policy=policy,
     )
     analysis = _with_insights(analysis, policy, filed)
-    is_today = now is not None and now.date() == day
     return replace(analysis, next_action=next_action(analysis, is_today=is_today))
 
 

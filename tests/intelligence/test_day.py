@@ -802,3 +802,35 @@ def test_a_grid_only_today_is_never_an_early_exit() -> None:
         punches(("09:00", "in"), ("16:00", "out")), day=DAY, now=at("18:30"), grid_only=True
     )
     assert not analysis.early_exit
+
+
+# --- a past day viewed with the clock still running ----------------------------------
+
+
+def test_a_past_day_is_never_closed_at_now() -> None:
+    """From a screenshot: 4 September, viewed on the 6th at 13:33, read "51h 53m worked" with a
+    49h 59m segment ending at 1:33 PM *today* — a dangling In closed at the clock two days
+    later. Every screen passes `now` for whichever date is on view; the pairing must only
+    treat it as live when it falls on this day, and otherwise let the grid close the day."""
+    two_days_on = datetime.combine(DAY + timedelta(days=2), time(13, 33))
+    analysis = analyze_day(
+        punches(("08:56", "in"), ("08:57", "out"), ("09:17", "in"), ("11:34", "in")),
+        day=DAY,
+        now=two_days_on,
+        envelope=DayEnvelope(time(8, 56), time(18, 10), Duration(554)),
+    )
+
+    assert analysis.state is DayState.COMPLETE
+    assert not analysis.clocked_in
+    assert analysis.last_out == datetime.combine(DAY, time(18, 10))
+    assert analysis.gross_span.minutes == 554
+    assert analysis.worked.minutes < 12 * 60
+
+
+def test_a_past_day_with_an_open_in_reads_finished_not_working() -> None:
+    from cerepulse.intelligence.next_action import Presence, presence_of
+
+    two_days_on = datetime.combine(DAY + timedelta(days=2), time(13, 33))
+    analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=two_days_on)
+
+    assert presence_of(analysis, is_today=False) is Presence.FINISHED
