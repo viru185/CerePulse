@@ -2,6 +2,22 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.15.0-beta.5] - 2026-09-06
+
+### Bug Fixes
+- The mechanical half of the audit
+- The structural half of the audit
+
+### Chores
+- Bump to 0.15.0-beta.5
+
+### Documentation
+- The rules the themes, the tile and the connections taught
+
+### Features
+- Four more themes, a wallpaper, and a theme change that applies now
+- A quote and a picture of the day in the sidebar
+
 ## [0.15.0-beta.4] - 2026-09-06
 
 ### Bug Fixes
@@ -12,6 +28,7 @@ All notable changes to CerePulse are documented here.
 
 ### Chores
 - Bump to 0.15.0-beta.4
+- Regenerate the changelog for 0.15.0-beta.4
 
 ### Documentation
 - Record the rules this round taught
