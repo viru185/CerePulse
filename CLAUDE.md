@@ -14,7 +14,7 @@ repeating them: two copies of a rule is one copy that goes stale.
 
 ```bash
 uv sync --all-extras          # install, including dev tools
-uv run pytest -q              # 1,121 tests, ~25s
+uv run pytest -q              # 1,152 tests, ~25s
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                   # strict, must stay clean
 ```
@@ -323,6 +323,31 @@ so each one took a user report to find. `SPAN_MISMATCH` reports the remainder. F
 must therefore be self-consistent: a grid claiming ten hours between 9 and 6 is not a simpler
 fixture, it is a day the app is right to flag.
 
+**`now` means "this day is still being worked" and nothing else.** Every screen passes the
+clock for whichever date is on view, and the pairing read "a clock was given" as "this is
+today" — so a past day whose log ended on an In was closed at *now*, two days later, and
+reported fifty-one hours worked while the grid's own last-out sat unused beside it.
+`analyze_day` hands the clock to the pairing only when it falls on the day. Anything that
+branches on "is this today" must derive it from `now.date() == day`, never from `now`
+being present.
+
+**A punch log fetched during its own day is provisional.** It holds the morning. The backlog
+rescued only a log that came back *empty* — one punch row satisfied "has detail" forever —
+so a day fetched at 11:34 rendered half a morning for weeks against a grid that said 18:10.
+`detail_synced_at` on or before the day itself means one more fetch once the day is over;
+`detail_is_settled` is the same rule asked about one day.
+
+**The running version's installer is the next version's rollback target.** Three cleanup
+rules in a row deleted it — the last as "spent, already installed" — so each build erased
+its own file at first launch and the following build found nothing below it. Roll back no
+longer depends on the folder at all: with nothing staged it downloads the previous published
+release, verified, and hands over. Never disable the button.
+
+**`portion` is read.** A half day owes half a target (`ShiftPolicy.owed_for`), a day on
+outdoor duty is never short, and a weekly off with hours on it is fetched and reported
+beside the bank — never inside it, because a day off owes nothing. All three were parsed and
+stored from the first release and read by nothing.
+
 **A notification toggle existing is not evidence the insight can.** `EARLY_EXIT` and
 `SWIPE_NEEDED` both derive from `early_exit`, which required `DayState.COMPLETE` — and today
 is forced INCOMPLETE precisely when work is owed, so the condition was unsatisfiable for
@@ -394,10 +419,18 @@ links to the portal; it never files one.
 
 ## Known gaps
 
-- **Comp-off expiry cannot be computed.** The portal's summary row is undated, so there is no
-  earned date to count from. It reports `UNKNOWN` rather than inventing a deadline.
-- **Leave-year end (31 Dec) and the 90-day comp-off window are defaults, not confirmed
-  company policy.** Both are configurable in `LeavePolicy`.
+- **Comp-off expiry counts from the earned date, not the approval date the rule names.**
+  The portal publishes no approval date for comp-off (fact 14). Each credit is dated by its
+  ledger row and spent oldest-first against the muster's `CO-` days; the caveat is on the
+  Records card. `Leave > My Info | Entitlement` and `| Leave Rules` are in the capture set
+  and have not yet been captured — they may state the real rule.
+- **31 Dec for carry-forward, 31 March for PL and the 90-day comp-off window are what the
+  user was told, not what the portal confirms.** All three are `LeavePolicy` fields.
+- **The user's cache has had a damaged page twice** (`cerepulse.db.corrupt-20260802`, and a
+  scan of `attendance_day` fails today while point reads work). Quarantine only runs at
+  open. The single shared connection used from two threads (audit M11) is the prime
+  suspect; until it is fixed, any new query that scans a table must degrade rather than
+  raise — see `LeaveService._comp_off_days_taken`.
 - **No traffic baseline.** The commute card reports what the journey costs now, not whether
   that is worse than usual. A baseline needs estimates stored over time, and TomTom's terms
   restrict caching results beyond their own headers — so it says what it knows and no more.
