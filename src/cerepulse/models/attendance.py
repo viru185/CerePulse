@@ -78,6 +78,9 @@ class DayStatus(Enum):
 
 #: The portal's own codes for outdoor duty, in either user-type column.
 OUTDOOR_DUTY_CODES = frozenset({"OD", "ODT"})
+#: The muster's codes for a comp-off *taken*. The only record of consumption anywhere:
+#: the leave ledger writes ``consumed_days = 0.0`` on every row it has.
+COMP_OFF_TAKEN_CODES = frozenset({"CO-", "CO"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +141,26 @@ class AttendanceDay:
         """
         codes = {self.user_type_1.strip().upper(), self.user_type_2.strip().upper()}
         return self.status is DayStatus.ON_DUTY or bool(codes & OUTDOOR_DUTY_CODES)
+
+    @property
+    def took_comp_off(self) -> bool:
+        """Whether a comp-off was spent on this day, in whole or in half.
+
+        Same reasoning as :attr:`has_outdoor_duty`: a day that is half comp-off and half
+        present resolves to ``HALF_DAY``, and the comp-off half would otherwise vanish. This
+        is what the "Comp-off taken" record and the per-credit "used on" date are built from —
+        the ledger's own consumption column is zero on every row, so a feature built on it
+        (as the record was until now) is silent forever.
+        """
+        codes = {self.user_type_1.strip().upper(), self.user_type_2.strip().upper()}
+        return bool(codes & COMP_OFF_TAKEN_CODES)
+
+    @property
+    def comp_off_days_taken(self) -> float:
+        """How much comp-off this day spent: the portion for a half day, else one."""
+        if not self.took_comp_off:
+            return 0.0
+        return self.portion if 0 < self.portion < 1 else 1.0
 
 
 @dataclass(frozen=True, slots=True)

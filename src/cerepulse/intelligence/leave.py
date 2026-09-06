@@ -25,7 +25,7 @@ imply a precision the data does not have.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from enum import Enum
 
@@ -71,6 +71,26 @@ class LeaveLot:
     days: float
     expires_on: date
     note: str = ""
+    #: The days this credit was spent on, from the muster, oldest first. Matched to the
+    #: credit oldest-against-oldest — the only defensible reading, since nothing in the
+    #: portal says which credit a given day off drew from.
+    used_on: tuple[tuple[date, float], ...] = ()
+    #: Spent according to the portal's balance, on a day the cached muster does not show —
+    #: a comp-off taken before the history window, most likely. The portal's balance is the
+    #: authority on how much is left; this is the part of the difference we cannot date.
+    unattributed: float = 0.0
+
+    @property
+    def used_days(self) -> float:
+        return sum(amount for _when, amount in self.used_on) + self.unattributed
+
+    @property
+    def remaining(self) -> float:
+        return max(0.0, self.days - self.used_days)
+
+    @property
+    def is_spent(self) -> bool:
+        return self.remaining <= 0
 
     def days_remaining(self, today: date) -> int:
         return (self.expires_on - today).days
@@ -87,8 +107,9 @@ class LeaveOutlook:
     expires_on: date | None
     basis: ExpiryBasis
     days_remaining: int | None
-    #: The individual credits still unspent, soonest to lapse first. Empty for leave types
-    #: that expire as a block rather than a credit at a time.
+    #: Every dated credit, oldest first, spent ones included — the user wants to see each
+    #: comp-off with when it expires and when it was used. Empty for leave types that expire
+    #: as a block rather than a credit at a time. :attr:`open_lots` is the unspent subset.
     lots: tuple[LeaveLot, ...] = ()
     #: Days already past their window while still counted in the balance. Reported rather
     #: than deducted: the portal's balance is the authority on what exists, and this rule is
@@ -102,6 +123,13 @@ class LeaveOutlook:
     @property
     def has_balance(self) -> bool:
         return self.balance.available_balance > 0
+
+    @property
+    def open_lots(self) -> tuple[LeaveLot, ...]:
+        """The credits with anything left on them, soonest to lapse first."""
+        return tuple(
+            sorted((lot for lot in self.lots if not lot.is_spent), key=lambda lot: lot.expires_on)
+        )
 
     @property
     def is_expired(self) -> bool:
@@ -128,8 +156,8 @@ class LeaveOutlook:
         if not self.lots or self.assessed_on is None:
             return self.balance.available_balance if self.is_at_risk else 0.0
         return sum(
-            lot.days
-            for lot in self.lots
+            lot.remaining
+            for lot in self.open_lots
             if 0 <= lot.days_remaining(self.assessed_on) <= WARNING_WINDOW_DAYS
         )
 
@@ -140,6 +168,7 @@ def analyze_leave(
     today: date,
     policy: LeavePolicy | None = None,
     credits: list[LeaveTransaction] | None = None,
+    taken: list[tuple[date, float]] | None = None,
 ) -> list[LeaveOutlook]:
     """Assess each balance for expiry risk.
 
@@ -147,10 +176,14 @@ def analyze_leave(
     one date on the balance — which the portal leaves empty in practice, so the expiry read
     "unknown" and the warning could never fire for the one leave type that actually expires
     on a rolling window.
+
+    ``taken`` is the muster's record of comp-off days spent, ``(day, amount)``. It is what
+    lets each credit say when it was used, which the ledger never records.
     """
     policy = policy or LeavePolicy()
     return [
-        _outlook(balance, today=today, policy=policy, credits=credits or []) for balance in balances
+        _outlook(balance, today=today, policy=policy, credits=credits or [], taken=taken or [])
+        for balance in balances
     ]
 
 
@@ -177,11 +210,15 @@ def leave_insights(outlooks: list[LeaveOutlook]) -> list[Insight]:
                 f"{_days(outlook.expired_days or outlook.balance.available_balance)} of "
                 f"{outlook.balance.leave_type} have expired"
             ),
-            detail=f"The deadline was {outlook.expires_on:%d %b %Y}." + _caveat(outlook),
+            detail=f"The deadline was {outlook.expires_on:%d %b %Y}.",
         )
         for outlook in expired
     ]
 
+    # Kept short on purpose: this is a toast. The amount is the part inside the window, not
+    # the whole balance — comp-off expires a credit at a time, so "2 days expire in 12 days"
+    # when half a day is close overstates it, and an alert that overstates gets ignored. How
+    # the date was arrived at is said on the Records card, where there is room to read it.
     insights += [
         Insight(
             kind=InsightKind.LEAVE_EXPIRING,
@@ -190,32 +227,34 @@ def leave_insights(outlooks: list[LeaveOutlook]) -> list[Insight]:
                 if (outlook.days_remaining or 0) <= URGENT_WINDOW_DAYS
                 else Severity.INFO
             ),
-            # The amount inside the window, not the whole balance. Comp-off expires a credit
-            # at a time, so "2 days expire in 12 days" when only half a day is close is an
-            # overstatement — and an alert that overstates is one people learn to ignore.
             title=(
-                f"{_days(outlook.at_risk_days)} of {outlook.balance.leave_type} "
-                f"expire in {outlook.days_remaining} days"
-            ),
-            detail=(
-                f"Expires on {outlook.expires_on:%d %b %Y}. Use it or lose it."
+                f"{_days(outlook.at_risk_days)} of {_label(outlook)} "
+                f"expire{'s' if outlook.at_risk_days == 1 else ''} on "
+                f"{outlook.expires_on:%d %b}"
                 if outlook.expires_on
-                else "Expiry date unknown."
-            )
-            + _caveat(outlook),
+                else f"{_days(outlook.at_risk_days)} of {_label(outlook)} expiring"
+            ),
+            detail=f"{outlook.days_remaining} days left.",
         )
         for outlook in at_risk
     ]
     return insights
 
 
+def _label(outlook: LeaveOutlook) -> str:
+    """``comp-off`` rather than the portal's ``CO- / CO+`` in a sentence."""
+    if outlook.balance.category is LeaveCategory.COMP_OFF:
+        return "comp-off"
+    return outlook.balance.leave_type
+
+
 def _caveat(outlook: LeaveOutlook) -> str:
-    """Say where a comp-off deadline was counted from, every time one is shown.
+    """Say where a comp-off deadline was counted from, wherever there is room to.
 
     The rule is 90 days from approval and the portal publishes no approval date for comp-off,
     so this counts from the earned date instead. Stating that beside the figure is the whole
     reason :class:`ExpiryBasis` exists: a date the user might book leave around has to carry
-    how it was arrived at.
+    how it was arrived at. On the Records card, not in the toast.
     """
     if outlook.basis is not ExpiryBasis.EARNED_PLUS_WINDOW:
         return ""
@@ -232,9 +271,10 @@ def _outlook(
     today: date,
     policy: LeavePolicy,
     credits: list[LeaveTransaction],
+    taken: list[tuple[date, float]],
 ) -> LeaveOutlook:
     if balance.category is LeaveCategory.COMP_OFF:
-        return _comp_off_outlook(balance, today=today, policy=policy, credits=credits)
+        return _comp_off_outlook(balance, today=today, policy=policy, credits=credits, taken=taken)
 
     expires_on, basis = _block_expiry(balance, today=today, policy=policy)
     remaining = (expires_on - today).days if expires_on else None
@@ -273,6 +313,7 @@ def _comp_off_outlook(
     today: date,
     policy: LeavePolicy,
     credits: list[LeaveTransaction],
+    taken: list[tuple[date, float]],
 ) -> LeaveOutlook:
     """Comp-off, one credit at a time.
 
@@ -282,7 +323,7 @@ def _comp_off_outlook(
     anything other than oldest-first would be inventing a worse answer. The balance itself
     always comes from the portal — only its attribution to dates is ours.
     """
-    lots = _remaining_lots(balance, credits=credits, policy=policy)
+    lots = _comp_off_lots(balance, credits=credits, taken=taken, policy=policy)
     if not lots:
         # No dated credits — the ledger was not loaded, or holds none for this type. Fall back
         # to whatever date the balance itself carries. The portal leaves that empty in
@@ -299,22 +340,36 @@ def _comp_off_outlook(
             assessed_on=today,
         )
 
-    soonest = min(lots, key=lambda lot: lot.expires_on)
+    open_lots = [lot for lot in lots if not lot.is_spent]
+    soonest = min(open_lots, key=lambda lot: lot.expires_on) if open_lots else None
     return LeaveOutlook(
         balance=balance,
-        expires_on=soonest.expires_on,
+        expires_on=soonest.expires_on if soonest else None,
         basis=ExpiryBasis.EARNED_PLUS_WINDOW,
-        days_remaining=soonest.days_remaining(today),
-        lots=tuple(sorted(lots, key=lambda lot: lot.expires_on)),
-        expired_days=sum(lot.days for lot in lots if lot.has_lapsed(today)),
+        days_remaining=soonest.days_remaining(today) if soonest else None,
+        lots=tuple(lots),
+        expired_days=sum(lot.remaining for lot in open_lots if lot.has_lapsed(today)),
         assessed_on=today,
     )
 
 
-def _remaining_lots(
-    balance: LeaveBalance, *, credits: list[LeaveTransaction], policy: LeavePolicy
+def _comp_off_lots(
+    balance: LeaveBalance,
+    *,
+    credits: list[LeaveTransaction],
+    taken: list[tuple[date, float]],
+    policy: LeavePolicy,
 ) -> list[LeaveLot]:
-    """The dated credits the balance still consists of, oldest spent first."""
+    """Every dated credit, oldest first, with the days it was spent on.
+
+    Two sources of spending, applied in order. The muster's comp-off days are dated, and go
+    against the oldest credit that was earned on or before them — a day off cannot have drawn
+    on a credit that did not exist yet, and a day off older than every credit here drew on
+    one the ledger no longer shows (it is scoped to the financial year), so it is dropped
+    rather than charged to the wrong credit. Then the portal's own balance has the final
+    word: if less is left than the muster accounts for, the difference is taken off the
+    oldest credits as *unattributed* — spent, on a day the cached history does not reach.
+    """
     dated = sorted(
         (
             txn
@@ -325,27 +380,44 @@ def _remaining_lots(
         ),
         key=lambda txn: txn.transaction_date or date.min,
     )
-    # What the portal says is left, spent against the oldest credits first. A ledger that
-    # reaches further back than the balance does would otherwise report long-spent comp-offs
-    # as still expiring.
-    spent = sum(txn.credit_days for txn in dated) - balance.available_balance
+    queue = sorted(taken)
 
     lots: list[LeaveLot] = []
     for txn in dated:
         assert txn.transaction_date is not None  # filtered above
+        earned_on = txn.transaction_date
         left = txn.credit_days
-        if spent > 0:
-            taken = min(spent, left)
-            spent -= taken
-            left -= taken
-        if left <= 0:
-            continue
+        used: list[tuple[date, float]] = []
+        # Days off that predate this credit cannot have come from it — or from any later one.
+        while queue and queue[0][0] < earned_on:
+            queue.pop(0)
+        while left > 0 and queue:
+            when, amount = queue[0]
+            take = min(left, amount)
+            used.append((when, take))
+            left -= take
+            if amount - take > 0:
+                queue[0] = (when, amount - take)
+            else:
+                queue.pop(0)
         lots.append(
             LeaveLot(
-                earned_on=txn.transaction_date,
-                days=left,
-                expires_on=txn.transaction_date + timedelta(days=policy.comp_off_validity_days),
+                earned_on=earned_on,
+                days=txn.credit_days,
+                expires_on=earned_on + timedelta(days=policy.comp_off_validity_days),
                 note=txn.remark,
+                used_on=tuple(used),
             )
         )
+
+    # The portal's balance is the authority on how much is left.
+    excess = sum(lot.remaining for lot in lots) - balance.available_balance
+    for index, lot in enumerate(lots):
+        if excess <= 0:
+            break
+        if lot.is_spent:
+            continue
+        take = min(excess, lot.remaining)
+        lots[index] = replace(lot, unattributed=lot.unattributed + take)
+        excess -= take
     return lots

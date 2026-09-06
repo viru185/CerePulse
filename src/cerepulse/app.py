@@ -189,6 +189,7 @@ def build_app(
         leave=leave_repo,
         swipes=swipe_repo,
         applications=ApplicationRepository(database),
+        attendance=attendance_repo,
         holidays=holiday_repo,
         sync_meta=sync_repo,
         config=resolved,

@@ -297,11 +297,12 @@ def test_records_without_applications_still_carry_no_status() -> None:
 
 
 def test_comp_off_movements_become_entries() -> None:
+    """Earned from the ledger, taken from the muster. The ledger's own consumption column is
+    zero on every row this portal writes, so a row claiming ``consumed=1.0`` is a fixture for
+    a portal that does not exist — and the record built on it never appeared once."""
     records = build_records(
-        transactions=[
-            ledger(date(2026, 6, 20), credit=1.0),
-            ledger(date(2026, 7, 10), consumed=1.0),
-        ]
+        transactions=[ledger(date(2026, 6, 20), credit=1.0)],
+        days=[day(date(2026, 7, 10), status=DayStatus.LEAVE, ut1="CO-")],
     )
     assert {entry.kind for entry in records} == {
         RecordKind.COMP_OFF_EARNED,
@@ -428,3 +429,13 @@ def test_a_request_with_no_times_names_only_the_punch() -> None:
     )
     (entry,) = build_records(requests=[bare])
     assert entry.detail == "Out"
+
+
+def test_a_comp_off_taken_is_read_from_the_muster() -> None:
+    """The "Comp-off taken" record was built on the ledger's consumption column, which this
+    portal leaves at zero on every row — so it had never appeared once, and a comp-off day
+    showed as plain leave."""
+    (entry,) = build_records(days=[day(date(2026, 6, 20), status=DayStatus.LEAVE, ut1="CO-")])
+
+    assert entry.kind is RecordKind.COMP_OFF_SPENT
+    assert entry.title == "Comp-off taken — 1 day(s)"

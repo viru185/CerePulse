@@ -20,6 +20,7 @@ from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -30,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from cerepulse.intelligence.attention import duplicate_requests
 from cerepulse.intelligence.insights import Severity
-from cerepulse.intelligence.leave import LeaveOutlook
+from cerepulse.intelligence.leave import WARNING_WINDOW_DAYS, LeaveLot, LeaveOutlook
 from cerepulse.intelligence.optimizer import BreakPlan
 from cerepulse.intelligence.records import Record, RecordKind, holiday_calendar
 from cerepulse.intelligence.sandwich import SandwichAssessment
@@ -49,6 +50,10 @@ from cerepulse.ui.widgets import (
 )
 
 BREAK_COLUMNS = ("When", "Days off", "Leave used", "Value", "Book these days")
+
+#: Balance cards per row. Six in one row overflowed a narrow window before the comp-off
+#: card grew a line per credit.
+CARDS_PER_ROW = 3
 
 #: Order the balance cards so the ones with a deadline lead.
 CARD_ORDER = (
@@ -158,7 +163,9 @@ class RecordsView(QWidget):
         self.total = Card("Total available")
         layout.addWidget(self.total)
 
-        self._cards = QHBoxLayout()
+        # A grid, three across. Six categories in one row at 170 px each already overflowed
+        # a narrow window, and the comp-off card now carries a line per credit.
+        self._cards = QGridLayout()
         self._cards.setSpacing(Space.ROW)
         cards_host = QWidget()
         cards_host.setLayout(self._cards)
@@ -329,8 +336,10 @@ class RecordsView(QWidget):
                 widget.deleteLater()
 
         ordered = sorted(outlooks, key=lambda outlook: CARD_ORDER.index(outlook.balance.category))
-        for outlook in ordered:
-            self._cards.addWidget(self._card_for(outlook))
+        for index, outlook in enumerate(ordered):
+            self._cards.addWidget(
+                self._card_for(outlook), index // CARDS_PER_ROW, index % CARDS_PER_ROW
+            )
 
     def _card_for(self, outlook: LeaveOutlook) -> Card:
         balance = outlook.balance
@@ -345,7 +354,44 @@ class RecordsView(QWidget):
         card = Card(balance.leave_type, value=f"{balance.available_balance:g}", accent=accent)
         card.set_caption(_expiry_caption(outlook))
         card.setMinimumWidth(170)
+        if outlook.lots:
+            self._add_lot_rows(card, outlook)
         return card
+
+    def _add_lot_rows(self, card: Card, outlook: LeaveOutlook) -> None:
+        """One line per credit: earned, how much, when it lapses, and when it was used.
+
+        The headline says how much is left; this says which credits that is made of, which
+        is the only form in which "when does my comp-off expire" has an answer. Lapsed
+        credits are dimmed, ones inside the warning window take the amber accent, and the
+        earned-date caveat is said once under the list rather than on every line.
+        """
+        from cerepulse.intelligence.leave import ExpiryBasis
+
+        today = outlook.assessed_on or date.today()
+        for lot in outlook.lots:
+            row = QLabel(_lot_text(lot, today))
+            row.setObjectName("CardCaption")
+            row.setWordWrap(True)
+            if lot.is_spent:
+                colour = self._palette.text_faint
+            elif lot.has_lapsed(today):
+                colour = self._palette.bad
+            elif lot.days_remaining(today) <= WARNING_WINDOW_DAYS:
+                colour = self._palette.rest
+            else:
+                colour = self._palette.text_muted
+            row.setStyleSheet(f"color: {colour};")
+            card.add_detail(row)
+        if outlook.basis is ExpiryBasis.EARNED_PLUS_WINDOW:
+            caveat = QLabel(
+                "Counted from the date each was earned; the portal does not publish an "
+                "approval date for comp-off."
+            )
+            caveat.setObjectName("CardCaption")
+            caveat.setWordWrap(True)
+            caveat.setStyleSheet(f"color: {self._palette.text_faint};")
+            card.add_detail(caveat)
 
     def show_holidays(self, holidays: list[Holiday], *, today: date | None = None) -> None:
         """The published calendar, past dimmed and the next one named."""
@@ -563,11 +609,35 @@ def _expiry_caption(outlook: LeaveOutlook) -> str:
     parts = [f"expires {when}"]
     if outlook.days_remaining is not None:
         parts.append(f"{outlook.days_remaining} day(s)")
-    if len(outlook.lots) > 1:
-        soonest = outlook.lots[0]
-        parts.insert(0, f"{_days(soonest.days)} of {_days(outlook.balance.available_balance)}")
-        parts.append(f"{len(outlook.lots) - 1} more later")
+    open_lots = outlook.open_lots
+    if len(open_lots) > 1:
+        parts.insert(
+            0, f"{_days(open_lots[0].remaining)} of {_days(outlook.balance.available_balance)}"
+        )
+        parts.append(f"{len(open_lots) - 1} more later")
     return "  ·  ".join(parts)
+
+
+def _lot_text(lot: LeaveLot, today: date) -> str:
+    """``earned 18 Jul · 1 day · expires 16 Oct (40 days) · unused``."""
+    parts = [f"earned {fmt.day_label(lot.earned_on)}", _days(lot.days)]
+    if lot.is_spent:
+        pass
+    elif lot.has_lapsed(today):
+        parts.append(f"lapsed {fmt.day_label(lot.expires_on)}")
+    else:
+        parts.append(f"expires {fmt.day_label(lot.expires_on)} ({lot.days_remaining(today)} days)")
+    if lot.used_on:
+        spent = ", ".join(
+            f"{fmt.day_label(when)}" + (f" ({amount:g})" if amount != lot.days else "")
+            for when, amount in lot.used_on
+        )
+        parts.append(f"used {spent}")
+    if lot.unattributed:
+        parts.append(f"{_days(lot.unattributed)} used before the cached history")
+    if not lot.used_on and not lot.unattributed:
+        parts.append("unused")
+    return " · ".join(parts)
 
 
 def _booking_text(plan: BreakPlan) -> str:

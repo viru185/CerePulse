@@ -245,6 +245,33 @@ class AttendanceRepository:
             ] = row["note"] or ""
         return flagged
 
+    def find_comp_off_days(
+        self, employee_code: str, start: date, end: date
+    ) -> list[tuple[date, float]]:
+        """Days on which a comp-off was spent, oldest first, with how much each one spent.
+
+        Read from the muster's own codes: ``CO-`` on either user-type column, with the day's
+        portion for a half. The leave register never records consumption, so this is the
+        only place the question "when did I use it" can be answered from.
+        """
+        rows = self.database.execute(
+            """
+            SELECT day, portion FROM attendance_day
+             WHERE employee_code = ? AND day BETWEEN ? AND ?
+               AND (upper(trim(user_type_1)) IN ('CO-', 'CO')
+                    OR upper(trim(user_type_2)) IN ('CO-', 'CO'))
+             ORDER BY day
+            """,
+            (employee_code, start.isoformat(), end.isoformat()),
+        ).fetchall()
+        return [
+            (
+                date.fromisoformat(row["day"]),
+                float(row["portion"]) if 0 < float(row["portion"] or 0) < 1 else 1.0,
+            )
+            for row in rows
+        ]
+
     def find_days_between(self, employee_code: str, start: date, end: date) -> list[AttendanceDay]:
         """Every cached day in a date range, punches included, oldest first.
 

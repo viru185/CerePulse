@@ -17,6 +17,7 @@ from cerepulse.intelligence.sandwich import SandwichAssessment, SandwichRule, as
 from cerepulse.models.application import Application
 from cerepulse.models.leave import Holiday, LeaveBalance, LeaveCategory, LeaveTransaction
 from cerepulse.models.swipe import SwipeRequest
+from cerepulse.repository.attendance import AttendanceRepository
 from cerepulse.repository.leave import (
     ApplicationRepository,
     HolidayRepository,
@@ -37,6 +38,10 @@ def _parse_rule(value: str) -> SandwichRule:
 
 
 LEAVE_SCOPE = "leave"
+#: How far back to read the muster for comp-off days taken. A credit lives 90 days, and
+#: the register is scoped to the financial year, so a year and a bit covers every credit
+#: that can still be on the balance.
+COMP_OFF_LOOKBACK_DAYS = 400
 SWIPE_SCOPE = "swipe_requests"
 APPLICATION_SCOPE = "applications"
 HOLIDAY_SCOPE = "holidays"
@@ -84,9 +89,12 @@ class LeaveService:
         config: AppConfig,
         policy: LeavePolicy | None = None,
         applications: ApplicationRepository | None = None,
+        attendance: AttendanceRepository | None = None,
     ) -> None:
         self._gateway = gateway
         self._leave = leave
+        #: The muster is where comp-off consumption lives; the ledger never records it.
+        self._attendance = attendance
         self._swipes = swipes
         self._applications = applications
         self._holidays = holidays
@@ -134,6 +142,13 @@ class LeaveService:
             today=now,
             policy=self._policy,
             credits=self._leave.find_transactions(employee_code),
+            taken=(
+                self._attendance.find_comp_off_days(
+                    employee_code, now - timedelta(days=COMP_OFF_LOOKBACK_DAYS), now
+                )
+                if self._attendance is not None
+                else []
+            ),
         )
         breaks = self.suggest_breaks(outlooks, today=now)
         return LeaveView(

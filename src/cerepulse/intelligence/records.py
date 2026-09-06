@@ -167,6 +167,22 @@ def _from_days(days: list[AttendanceDay], applications: list[Application]) -> li
                 )
             )
             continue
+        if day.took_comp_off:
+            # The only record of a comp-off being spent. It used to be read off the ledger's
+            # consumption column, which this portal leaves at zero on every row, so "Comp-off
+            # taken" had never appeared once and the day showed as plain leave.
+            status, pending = _leave_state(applications, day.day)
+            records.append(
+                Record(
+                    day.day,
+                    RecordKind.COMP_OFF_SPENT,
+                    f"Comp-off taken — {day.comp_off_days_taken:g} day(s)",
+                    note,
+                    status=status,
+                    pending=pending,
+                )
+            )
+            continue
         if day.status in (DayStatus.LEAVE, DayStatus.HALF_DAY):
             status, pending = _leave_state(applications, day.day)
             records.append(
@@ -328,11 +344,14 @@ def _request_detail(request: SwipeRequest) -> str:
 def _from_transactions(
     transactions: list[LeaveTransaction], applications: list[Application]
 ) -> list[Record]:
-    """Comp-off movements from the leave ledger.
+    """Comp-off *credits* from the leave ledger.
 
     Only comp-off, and only rows carrying a date. The ledger's other rows are running
     balances rather than events, and an entry with no date cannot be placed on a timeline —
     the same reason comp-off expiry is reported as UNKNOWN rather than invented.
+
+    Credits only: the ledger's consumption column is zero on every row this portal writes,
+    so the days a comp-off was *spent* come from the muster in :func:`_from_days`.
 
     A credit's status comes from the application that earned it, when one is on file.
     """
@@ -350,15 +369,6 @@ def _from_transactions(
                     entry.remark,
                     status=_status_word(filed.status).capitalize() if filed else "",
                     pending=bool(filed and filed.is_open),
-                )
-            )
-        if entry.consumed_days > 0:
-            records.append(
-                Record(
-                    entry.transaction_date,
-                    RecordKind.COMP_OFF_SPENT,
-                    f"Comp-off taken — {entry.consumed_days:g} day(s)",
-                    entry.remark,
                 )
             )
     return records

@@ -100,6 +100,12 @@ class Card(QFrame):
         self._caption.setText(caption)
         self._caption.setVisible(bool(caption))
 
+    def add_detail(self, widget: QWidget) -> None:
+        """Append a widget below the caption — a per-item list under a headline figure."""
+        layout = self.layout()
+        if layout is not None:
+            layout.addWidget(widget)
+
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 — Qt override
         if self._clickable and event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()

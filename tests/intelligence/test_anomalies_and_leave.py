@@ -246,7 +246,7 @@ def test_at_risk_balances_become_insights_most_urgent_first() -> None:
     insights = leave_insights(analyze_leave(balances, today=date(2026, 11, 5)))
 
     assert [i.kind for i in insights] == [InsightKind.LEAVE_EXPIRING] * 2
-    assert "CO- / CO+" in insights[0].title  # 15 days out, ahead of CF at 56
+    assert "comp-off" in insights[0].title  # 15 days out, ahead of CF at 56
     assert "CF" in insights[1].title
 
 
@@ -293,7 +293,7 @@ def test_comp_off_is_dated_per_credit_not_per_balance() -> None:
     balance = LeaveBalance(leave_type="CO- / CO+", available_balance=1.5)
     outlook = analyze_leave([balance], today=AUGUST, credits=LEDGER)[0]
 
-    assert [(lot.days, lot.expires_on) for lot in outlook.lots] == [
+    assert [(lot.remaining, lot.expires_on) for lot in outlook.open_lots] == [
         (0.5, date(2026, 8, 29)),
         (1.0, date(2026, 10, 16)),
     ]
@@ -310,8 +310,10 @@ def test_spending_comes_off_the_oldest_credit_first() -> None:
     balance = LeaveBalance(leave_type="CO- / CO+", available_balance=1.0)
     outlook = analyze_leave([balance], today=AUGUST, credits=LEDGER)[0]
 
-    assert [lot.days for lot in outlook.lots] == [1.0]
-    assert outlook.lots[0].earned_on == date(2026, 7, 18)
+    assert [lot.remaining for lot in outlook.open_lots] == [1.0]
+    assert outlook.open_lots[0].earned_on == date(2026, 7, 18)
+    # The spent ones are still listed — the user wants to see every credit — marked spent.
+    assert [lot.is_spent for lot in outlook.lots] == [True, True, False]
 
 
 def test_only_the_credits_inside_the_window_are_called_at_risk() -> None:
@@ -325,15 +327,20 @@ def test_only_the_credits_inside_the_window_are_called_at_risk() -> None:
     assert insight.title.startswith("0.5 days")
 
 
-def test_a_comp_off_deadline_says_what_it_was_counted_from() -> None:
+def test_the_toast_stays_short_and_the_card_carries_the_caveat() -> None:
     """The rule is 90 days from approval, and the portal publishes no approval date for
     comp-off anywhere — ``Approve Date`` is on the swipe grid alone. Counting from the earned
     date is the honest substitute, and a date someone might book leave around has to carry
-    how it was arrived at."""
-    balance = LeaveBalance(leave_type="CO- / CO+", available_balance=1.5)
-    (insight,) = leave_insights(analyze_leave([balance], today=AUGUST, credits=LEDGER))
+    how it was arrived at. On the Records card, where there is room to read it; the toast
+    was asked to stay simple."""
+    from cerepulse.intelligence.leave import _caveat
 
-    assert "does not publish an approval date" in insight.detail
+    balance = LeaveBalance(leave_type="CO- / CO+", available_balance=1.5)
+    (outlook,) = analyze_leave([balance], today=AUGUST, credits=LEDGER)
+    (insight,) = leave_insights([outlook])
+
+    assert "does not publish an approval date" not in insight.detail
+    assert "does not publish an approval date" in _caveat(outlook)
 
 
 def test_credits_past_their_window_are_counted_not_deducted() -> None:
@@ -353,4 +360,54 @@ def test_another_leave_types_credits_are_not_comp_off_lots() -> None:
     balance = LeaveBalance(leave_type="CO- / CO+", available_balance=1.5)
     outlook = analyze_leave([balance], today=AUGUST, credits=ledger)[0]
 
-    assert sum(lot.days for lot in outlook.lots) == 1.5
+    assert sum(lot.remaining for lot in outlook.open_lots) == 1.5
+
+
+def test_each_credit_says_which_day_it_was_spent_on() -> None:
+    """The ledger never records consumption; the muster does, as a CO- day. Matched oldest
+    credit against oldest day off, which is the only defensible reading — nothing in the
+    portal says which credit a given day drew from."""
+    balance = LeaveBalance(leave_type="CO- / CO+", available_balance=1.0)
+    outlook = analyze_leave(
+        [balance],
+        today=date(2026, 9, 1),
+        credits=LEDGER,
+        taken=[(date(2026, 6, 20), 1.0)],
+    )[0]
+
+    april, may, july = outlook.lots
+    assert april.used_on == ((date(2026, 6, 20), 0.5),)
+    assert may.used_on == ((date(2026, 6, 20), 0.5),)
+    assert july.used_on == () and july.remaining == 1.0
+
+
+def test_a_day_off_older_than_every_credit_is_not_charged_to_one() -> None:
+    """The register is scoped to the financial year, so a comp-off taken in March drew on a
+    February credit the ledger no longer shows. Charging it to April's credit would date a
+    real credit's consumption with a day that had nothing to do with it."""
+    balance = LeaveBalance(leave_type="CO- / CO+", available_balance=2.0)
+    outlook = analyze_leave(
+        [balance], today=AUGUST, credits=LEDGER, taken=[(date(2026, 3, 16), 1.0)]
+    )[0]
+
+    assert all(lot.used_on == () for lot in outlook.lots)
+
+
+def test_the_portals_balance_still_has_the_final_word() -> None:
+    """When less is left than the muster accounts for, the difference comes off the oldest
+    credits as spent-on-an-unknown-day rather than being ignored — the balance is the
+    portal's, and only its attribution to dates is ours."""
+    balance = LeaveBalance(leave_type="CO- / CO+", available_balance=1.0)
+    outlook = analyze_leave([balance], today=AUGUST, credits=LEDGER, taken=[])[0]
+
+    april, may, july = outlook.lots
+    assert (april.unattributed, may.unattributed, july.unattributed) == (0.5, 0.5, 0.0)
+    assert sum(lot.remaining for lot in outlook.lots) == 1.0
+
+
+def test_the_toast_is_one_short_sentence() -> None:
+    balance = LeaveBalance(leave_type="CO- / CO+", available_balance=1.5)
+    (insight,) = leave_insights(analyze_leave([balance], today=AUGUST, credits=LEDGER))
+
+    assert insight.title == "0.5 days of comp-off expire on 29 Aug"
+    assert insight.detail == "28 days left."

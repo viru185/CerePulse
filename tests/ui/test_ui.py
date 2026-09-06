@@ -1011,3 +1011,38 @@ def test_the_legend_stays_quiet_when_the_break_was_within_the_allowance(
 
     assert "without the extra break" not in view._legend.text()
     assert view._timeline._flat_at is None
+
+
+def test_the_comp_off_card_lists_every_credit(qapp: QApplication) -> None:
+    """The headline says how much is left; the rows say which credits that is, when each
+    lapses, and when each was used — the only form in which "when does my comp-off expire"
+    has an answer. The caveat about the earned date is said once, under the list."""
+    from PySide6.QtWidgets import QLabel
+
+    from cerepulse.intelligence.leave import analyze_leave
+    from cerepulse.models.leave import LeaveBalance, LeaveTransaction
+    from cerepulse.ui.views.records import RecordsView
+
+    def credit(when: date, days: float, remark: str) -> LeaveTransaction:
+        return LeaveTransaction(
+            leave_type="CO- / CO+",
+            opening_balance=0.0,
+            consumed_days=0.0,
+            credit_days=days,
+            available_balance=days,
+            transaction_date=when,
+            remark=remark,
+        )
+
+    outlook = analyze_leave(
+        [LeaveBalance(leave_type="CO- / CO+", available_balance=1.0)],
+        today=date(2026, 9, 6),
+        credits=[credit(date(2026, 7, 18), 0.5, "Newmont"), credit(date(2026, 8, 4), 0.5, "LFO")],
+        taken=[],
+    )[0]
+    card = RecordsView(DARK)._card_for(outlook)
+
+    text = "\n".join(label.text() for label in card.findChildren(QLabel))
+    assert "18 Jul" in text and "16 Oct (40 days)" in text
+    assert "4 Aug" in text and "2 Nov (57 days)" in text
+    assert text.count("does not publish an approval date") == 1
