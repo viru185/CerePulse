@@ -13,6 +13,9 @@ truncated or tampered download must fail closed rather than run.
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +25,7 @@ from loguru import logger
 
 from cerepulse import __about__ as about
 from cerepulse.core import paths
+from cerepulse.update.mode import BuildMode
 from cerepulse.update.version import Version
 
 #: Generous: this runs in the background and a slow connection is not a failure.
@@ -61,18 +65,109 @@ def installer_path(version: str) -> Path:
     return downloads_dir() / installer_name(version)
 
 
-def version_in_installer_name(name: str) -> Version | None:
-    """The version an installer's filename carries, in either naming, or ``None``.
+def archive_name(version: str) -> str:
+    """``CerePulse-portable-0.15.0.zip`` — the name the build tool publishes, defined once."""
+    return f"{about.NAME}-portable-{version}.zip"
 
-    Both layouts are read on purpose. Releases up to 0.14.1 wrote
-    ``CerePulse-0.14.1-Setup.exe``; from 0.15 the version moves to the end so a folder of
-    them sorts by name. A build that could only read the new form would look straight past
-    the installer it was upgraded *from*, which is the one file rollback needs.
 
-    The single definition lives here so the three callers that parse this name —
-    the cleanup, the rollback list, and the staging check — cannot drift apart.
+def archive_path(version: str) -> Path:
+    return downloads_dir() / archive_name(version)
+
+
+def asset_name(version: str, mode: BuildMode) -> str:
+    return archive_name(version) if mode is BuildMode.PORTABLE else installer_name(version)
+
+
+def asset_path(version: str, mode: BuildMode) -> Path:
+    return downloads_dir() / asset_name(version, mode)
+
+
+STAGED_DIR = "staged"
+
+
+def staged_root() -> Path:
+    return downloads_dir() / STAGED_DIR
+
+
+def staged_app_dir(version: str) -> Path:
+    """Where a portable zip is unpacked: ``updates/staged/<version>/CerePulse``."""
+    return staged_root() / version / about.NAME
+
+
+class StageError(Exception):
+    """A portable archive could not be unpacked into something runnable."""
+
+
+def stage_archive(archive: Path, version: str) -> Path:
+    """Unpack a portable zip and return the app folder inside it.
+
+    Idempotent: an already-staged folder with the exe in it is returned as is. The unpack
+    goes into ``<version>.part`` and is renamed only once it is complete and checked, the
+    same rule the download itself follows, so a half-unpacked folder is never mistaken for a
+    ready one. Every member is confined to the target (a zip can name ``../``), and the
+    target is opened with the ``\\?\\`` prefix on Windows because
+    ``Data/updates/staged/<v>/CerePulse/_internal/PySide6/...`` under a long user path runs
+    past MAX_PATH.
     """
-    stem = name[:-4] if name.lower().endswith(".exe") else name
+    app_dir = staged_app_dir(version)
+    if (app_dir / f"{about.NAME}.exe").exists():
+        return app_dir
+
+    root = staged_root() / version
+    partial = staged_root() / f"{version}.part"
+    if partial.exists():
+        shutil.rmtree(partial, ignore_errors=True)
+    partial.mkdir(parents=True, exist_ok=True)
+
+    target_root = partial.resolve()
+    extract_to = Path(f"\\\\?\\{target_root}") if os.name == "nt" else target_root
+    try:
+        with zipfile.ZipFile(archive) as bundle:
+            for member in bundle.infolist():
+                destination = (target_root / member.filename).resolve()
+                if target_root not in destination.parents and destination != target_root:
+                    raise StageError(
+                        f"The archive tried to write outside its folder: {member.filename}"
+                    )
+            bundle.extractall(extract_to)
+    except (zipfile.BadZipFile, OSError) as exc:
+        shutil.rmtree(partial, ignore_errors=True)
+        raise StageError(f"Could not unpack {archive.name}: {exc}") from exc
+    except StageError:
+        shutil.rmtree(partial, ignore_errors=True)
+        raise
+
+    unpacked = partial / about.NAME
+    for required in (f"{about.NAME}.exe", "_internal", "portable.marker"):
+        if not (unpacked / required).exists():
+            shutil.rmtree(partial, ignore_errors=True)
+            raise StageError(f"{archive.name} is not a portable {about.NAME} build: no {required}")
+
+    if root.exists():
+        shutil.rmtree(root, ignore_errors=True)
+    partial.replace(root)
+    logger.info("Unpacked {} to {}", archive.name, root)
+    return app_dir
+
+
+def version_in_asset_name(name: str) -> Version | None:
+    """The version a staged file's name carries, in any of the three layouts, or ``None``.
+
+    Releases up to 0.14.1 wrote ``CerePulse-0.14.1-Setup.exe``; from 0.15 the version moves
+    to the end, ``CerePulse-Setup-0.15.0.exe``, so a folder of them sorts by name; the
+    portable build is ``CerePulse-portable-0.15.0.zip``. A build that could read only one
+    form would look straight past the file it was upgraded *from*, which is the one file
+    rollback needs. Only ``.exe`` and ``.zip`` are stripped, so a ``.part`` stays unparseable
+    and untouched.
+
+    The single definition lives here so the callers that parse this name — the cleanup, the
+    rollback list, and the staging check — cannot drift apart.
+    """
+    lowered = name.lower()
+    if lowered.endswith((".exe", ".zip")):
+        stem = name[:-4]
+    else:
+        return None
     prefix = f"{about.NAME}-"
     if not stem.startswith(prefix):
         return None
@@ -82,7 +177,13 @@ def version_in_installer_name(name: str) -> Version | None:
         return Version.parse(body[len("Setup-") :])
     if body.endswith("-Setup"):  # CerePulse-0.14.1-Setup.exe
         return Version.parse(body[: -len("-Setup")])
+    if body.startswith("portable-"):  # CerePulse-portable-0.15.0.zip
+        return Version.parse(body[len("portable-") :])
     return None
+
+
+#: The name the exe-only callers grew up with.
+version_in_installer_name = version_in_asset_name
 
 
 def download_installer(
@@ -91,13 +192,15 @@ def download_installer(
     *,
     expected_sha256: str | None = None,
     on_progress: Callable[[float], bool] | None = None,
+    mode: BuildMode = BuildMode.INSTALLED,
 ) -> Download:
-    """Fetch an installer, verify it, and return where it landed.
+    """Fetch an installer or a portable archive, verify it, and return where it landed.
 
     ``on_progress`` receives a fraction 0..1 and returns False to abandon the download, so a
-    user who changes their mind is not made to wait for 70 MB.
+    user who changes their mind is not made to wait for 70 MB. Nothing here cares which
+    kind of file it is; only the name does.
     """
-    target = installer_path(version)
+    target = asset_path(version, mode)
     if target.exists():
         # Already fetched and verified on an earlier run; re-downloading would be waste.
         logger.info("Installer for {} is already downloaded", version)
@@ -227,14 +330,29 @@ def clear_spent_installers(current_version: str) -> int:
 
     staged: list[tuple[Version, Path]] = []
     for file in directory.iterdir():
-        version = version_in_installer_name(file.name)
+        if not file.is_file():
+            continue
+        version = version_in_asset_name(file.name)
         if version is not None:
             staged.append((version, file))
 
-    older = sorted((entry for entry in staged if entry[0] < running), key=lambda e: e[0])
+    exes = [(v, p) for v, p in staged if p.suffix.lower() == ".exe"]
+    older = sorted((entry for entry in exes if entry[0] < running), key=lambda e: e[0])
     # Everything below the running version except the newest of them. The running version's
     # own installer is not spent: it is what the next build rolls back to.
     doomed = [path for _v, path in older[:-1]]
+    # Portable archives at or below the running version go outright. Rollback for a portable
+    # copy is the previous *folder* kept beside the app, not the zip, and a zip is ~100 MB.
+    doomed += [path for v, path in staged if path.suffix.lower() == ".zip" and v <= running]
+    # Likewise the unpacked folders: after a successful swap the folder is empty, and after
+    # a failed one the zip is still there to unpack again in seconds.
+    root = directory / STAGED_DIR
+    if root.exists():
+        for folder in root.iterdir():
+            version = Version.parse(folder.name)
+            if folder.is_dir() and version is not None and version <= running:
+                shutil.rmtree(folder, ignore_errors=True)
+                logger.info("Removed the unpacked update {}", folder.name)
 
     removed = 0
     for path in doomed:

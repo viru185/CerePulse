@@ -11,6 +11,7 @@ one request answers for either channel.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -19,6 +20,7 @@ from loguru import logger
 
 from cerepulse import __about__ as about
 from cerepulse.update.channel import Channel
+from cerepulse.update.mode import BuildMode
 from cerepulse.update.version import Version, is_newer
 
 #: Derived from the configured repository so a fork needs no code change.
@@ -33,6 +35,19 @@ PAGE_SIZE = 20
 
 
 @dataclass(frozen=True, slots=True)
+class Asset:
+    """One downloadable file on a release."""
+
+    url: str
+    size: int
+
+    @property
+    def name(self) -> str:
+        """The filename, which is what ``SHA256SUMS.txt`` keys on."""
+        return self.url.rpartition("/")[2]
+
+
+@dataclass(frozen=True, slots=True)
 class Release:
     """A published release, as much of it as the app cares about."""
 
@@ -44,6 +59,10 @@ class Release:
     installer_url: str = ""
     #: Bytes, from the asset metadata, so a download can show a percentage.
     installer_size: int = 0
+    #: The portable zip — the same build as the installer, delivered as a folder. A release
+    #: has carried one since 0.5 and the updater looked straight past it.
+    archive_url: str = ""
+    archive_size: int = 0
     prerelease: bool = False
 
     @property
@@ -56,8 +75,19 @@ class Release:
 
     @property
     def is_installable(self) -> bool:
-        """Whether this release published something the app can actually install."""
-        return bool(self.installer_url)
+        """Whether this release published something *some* build can install."""
+        return bool(self.installer_url or self.archive_url)
+
+    def asset_for(self, mode: BuildMode) -> Asset | None:
+        """The file this build would install: the Setup exe or the portable zip."""
+        if mode is BuildMode.INSTALLED and self.installer_url:
+            return Asset(self.installer_url, self.installer_size)
+        if mode is BuildMode.PORTABLE and self.archive_url:
+            return Asset(self.archive_url, self.archive_size)
+        return None
+
+    def installable_for(self, mode: BuildMode) -> bool:
+        return self.asset_for(mode) is not None
 
 
 def check_for_update(
@@ -152,7 +182,10 @@ def _parse(payload: object) -> Release | None:
     if not tag or Version.parse(tag) is None:
         return None
 
-    url, size = _installer_asset(payload)
+    url, size = _find_asset(payload, lambda name: name.endswith(".exe") and "setup" in name)
+    zip_url, zip_size = _find_asset(
+        payload, lambda name: name.endswith(".zip") and "portable" in name
+    )
     return Release(
         version=tag.lstrip("vV"),
         name=str(payload.get("name") or ""),
@@ -161,20 +194,21 @@ def _parse(payload: object) -> Release | None:
         published_at=_parse_timestamp(payload.get("published_at")),
         installer_url=url,
         installer_size=size,
+        archive_url=zip_url,
+        archive_size=zip_size,
         prerelease=bool(payload.get("prerelease")),
     )
 
 
-def _installer_asset(payload: dict[str, object]) -> tuple[str, int]:
-    """The Setup .exe and its size, when the release publishes one."""
+def _find_asset(payload: dict[str, object], wanted: Callable[[str], bool]) -> tuple[str, int]:
+    """The first asset whose lower-cased name ``wanted`` accepts, and its size."""
     assets = payload.get("assets")
     if not isinstance(assets, list):
         return "", 0
     for asset in assets:
         if not isinstance(asset, dict):
             continue
-        name = str(asset.get("name", "")).lower()
-        if name.endswith(".exe") and "setup" in name:
+        if wanted(str(asset.get("name", "")).lower()):
             size = asset.get("size")
             return str(asset.get("browser_download_url", "")), int(size) if size else 0
     return "", 0

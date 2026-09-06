@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from cerepulse import __about__ as about  # noqa: E402
-from cerepulse.update.downloader import installer_name  # noqa: E402
+from cerepulse.update.downloader import archive_name, installer_name  # noqa: E402
 
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
@@ -124,7 +124,7 @@ def build_portable() -> Path:
     )
 
     # Version last, so a folder of releases sorts by name into something readable.
-    target = DIST / f"{about.NAME}-portable-{about.VERSION}.zip"
+    target = DIST / archive_name(about.VERSION)
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for path in sorted(APP_DIR.rglob("*")):
             if path.is_file():

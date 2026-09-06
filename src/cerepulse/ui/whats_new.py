@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from cerepulse import __about__ as about
 from cerepulse.update.checker import Release
+from cerepulse.update.mode import BuildMode
 
 _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET = re.compile(r"^\s*[-*]\s+(.*)$")
@@ -122,11 +123,13 @@ class UpdateAvailableDialog(QDialog):
         *,
         downloaded: bool = False,
         can_install: bool = True,
+        mode: BuildMode = BuildMode.INSTALLED,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._release = release
         self._can_install = can_install
+        self._mode = mode
         self.setWindowTitle(f"Update available — {about.NAME}")
         self.setModal(True)
         self.resize(560, 500)
@@ -187,6 +190,12 @@ class UpdateAvailableDialog(QDialog):
         self._progress.setValue(int(fraction * 100))
         self._status.setText("Downloading in the background. You can keep working.")
 
+    def set_staging(self) -> None:
+        """Unpacking a portable archive: real work with no meaningful percentage."""
+        self._progress.setVisible(True)
+        self._progress.setRange(0, 0)
+        self._status.setText("Downloaded and verified. Unpacking…")
+
     def set_ready(self, _release: object = None) -> None:
         self._ready = True
         self._progress.setVisible(False)
@@ -194,25 +203,36 @@ class UpdateAvailableDialog(QDialog):
 
     def _refresh(self) -> None:
         if not self._can_install:
-            # A source run or a portable copy has no installer to hand over to, and
-            # overwriting a portable copy where the user put it would be presumptuous.
+            self._progress.setVisible(False)
             self._action.setText("Download")
             self._status.setText(
-                "This copy is portable or run from source, so it cannot update itself. "
-                "The download opens in your browser."
+                "This copy runs from source, so it cannot update itself. The download opens "
+                "in your browser."
+            )
+            return
+
+        if self._mode is BuildMode.PORTABLE:
+            self._action.setText("Update and restart" if self._ready else "Download now")
+            self._status.setText(
+                f"Downloaded and verified. {about.NAME} will close, replace its folder with "
+                "the new version, keep your Data folder where it is, and reopen. The previous "
+                "version is kept beside it so you can roll back."
+                if self._ready
+                else "Not downloaded yet."
             )
             return
 
         self._action.setText("Install and restart" if self._ready else "Download now")
         self._status.setText(
-            "Downloaded and verified. CerePulse will close, update, and reopen."
+            f"Downloaded and verified. {about.NAME} will close, install, and reopen."
             if self._ready
             else "Not downloaded yet."
         )
 
     def _act(self) -> None:
         if not self._can_install:
-            _open(self._release.installer_url or self._release.url)
+            asset = self._release.asset_for(self._mode)
+            _open(asset.url if asset else self._release.url)
             self.accept()
             return
         if self._ready:

@@ -24,14 +24,17 @@ from cerepulse.intelligence.insights import Insight, InsightKind, Severity
 from cerepulse.ui.whats_new import UpdateAvailableDialog, WhatsNewDialog
 from cerepulse.ui.workers import TaskRunner
 from cerepulse.update import (
+    BuildMode,
     Channel,
     Download,
     Release,
     apply_update,
+    build_mode,
+    can_self_update,
     check_for_update,
+    clear_failed_portable_folder,
     download_installer,
     fetch_checksum,
-    is_installed_build,
     mark_checked,
     mark_seen,
     previous_release,
@@ -39,6 +42,7 @@ from cerepulse.update import (
     rollback_candidates,
     rollback_to,
     should_show_whats_new,
+    stage_archive,
 )
 
 #: Delay before the startup check, so it never competes with the first paint or the sign-in.
@@ -58,6 +62,8 @@ class UpdateController(QObject):
     download_progress = Signal(float)
     #: The installer is on disk and verified. Carries the Release.
     update_ready = Signal(object)
+    #: A portable archive is being unpacked — a step with no meaningful fraction.
+    update_staging = Signal()
     update_failed = Signal(str)
     #: About to quit and hand over. The window should close cleanly.
     handover = Signal()
@@ -81,6 +87,7 @@ class UpdateController(QObject):
         self._notifier = notifier
         self._pending: Release | None = None
         self._downloaded: Download | None = None
+        self._mode = build_mode()
 
         # Housekeeping, not policy: every installer this build has already superseded is
         # dead weight (~48 MB each), and nothing else ever looks at that directory again.
@@ -89,6 +96,7 @@ class UpdateController(QObject):
         from cerepulse.update.downloader import clear_spent_installers
 
         clear_spent_installers(about.VERSION)
+        clear_failed_portable_folder()
 
     def use_config(self, *, channel: Channel, download_automatically: bool) -> None:
         self._channel = channel
@@ -171,7 +179,11 @@ class UpdateController(QObject):
     def _adopt(self, release: Release) -> None:
         self._pending = release
         self.update_found.emit(release)
-        if self._auto_download and release.is_installable and is_installed_build():
+        if (
+            self._auto_download
+            and release.installable_for(self._mode)
+            and can_self_update(self._mode)
+        ):
             self.download(release)
 
     # --- downloading ------------------------------------------------------------------
@@ -179,18 +191,29 @@ class UpdateController(QObject):
     def download(self, release: Release | None = None) -> None:
         """Fetch the installer in the background, verifying it against the checksum."""
         target = release or self._pending
-        if target is None or not target.is_installable:
+        if target is None:
             return
+        asset = target.asset_for(self._mode)
+        if asset is None:
+            return
+        mode = self._mode
 
         def run() -> Download:
-            base, _, asset = target.installer_url.rpartition("/")
-            expected = fetch_checksum(f"{base}/{CHECKSUM_ASSET}", asset)
-            return download_installer(
-                target.installer_url,
+            base, _, name = asset.url.rpartition("/")
+            expected = fetch_checksum(f"{base}/{CHECKSUM_ASSET}", name)
+            result = download_installer(
+                asset.url,
                 target.version,
                 expected_sha256=expected,
                 on_progress=self._report_progress,
+                mode=mode,
             )
+            if mode is BuildMode.PORTABLE:
+                # Unpack now, while there is a progress dialog to say so, rather than at
+                # the moment the user says yes and expects the app to quit.
+                self.update_staging.emit()
+                stage_archive(result.path, target.version)
+            return result
 
         def done(result: Download) -> None:
             self._downloaded = result
@@ -220,10 +243,12 @@ class UpdateController(QObject):
         dialog = UpdateAvailableDialog(
             target,
             downloaded=self._downloaded is not None,
-            can_install=is_installed_build(),
+            can_install=can_self_update(self._mode),
+            mode=self._mode,
             parent=self._window,
         )
         self.download_progress.connect(dialog.set_progress)
+        self.update_staging.connect(dialog.set_staging)
         self.update_ready.connect(dialog.set_ready)
         dialog.install_requested.connect(self.install)
         dialog.download_requested.connect(lambda: self.download(target))
@@ -287,11 +312,17 @@ class UpdateController(QObject):
 
     def _confirm_rollback(self, version: str, *, size: int, on_yes: Callable[[], None]) -> None:
         fetch = f" download {version} ({size // 1_048_576} MB)," if size else ""
+        if self._mode is BuildMode.PORTABLE:
+            what = (
+                f"put the previous version's folder ({version}) back in place, keep your Data "
+                "folder, and reopen."
+            )
+        else:
+            what = f"reinstall {version}, and reopen. Your cached data and settings are untouched."
         confirmed = QMessageBox.question(
             self._window,
             f"Roll back to {version}?",
-            f"CerePulse will close,{fetch} reinstall {version}, and reopen. Your cached data "
-            f"and settings are untouched.",
+            f"CerePulse will close,{fetch} {what}",
         )
         if confirmed == QMessageBox.StandardButton.Yes:
             on_yes()
@@ -311,20 +342,30 @@ class UpdateController(QObject):
         # The worker reads a plain flag rather than the dialog: widgets are GUI-thread only.
         self.download_progress.connect(lambda fraction: dialog.setValue(int(fraction * 100)))
 
+        asset = release.asset_for(self._mode)
+        if asset is None:
+            self.update_failed.emit(f"{release.version} was not published for this kind of build.")
+            return
+        mode = self._mode
+
         def run() -> Download:
-            base, _, asset = release.installer_url.rpartition("/")
-            expected = fetch_checksum(f"{base}/{CHECKSUM_ASSET}", asset)
+            base, _, name = asset.url.rpartition("/")
+            expected = fetch_checksum(f"{base}/{CHECKSUM_ASSET}", name)
 
             def progress(fraction: float) -> bool:
                 self.download_progress.emit(fraction)
                 return not cancelled
 
-            return download_installer(
-                release.installer_url,
+            result = download_installer(
+                asset.url,
                 release.version,
                 expected_sha256=expected,
                 on_progress=progress,
+                mode=mode,
             )
+            if mode is BuildMode.PORTABLE:
+                stage_archive(result.path, release.version)
+            return result
 
         def done(result: Download) -> None:
             dialog.close()
