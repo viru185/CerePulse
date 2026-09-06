@@ -14,7 +14,17 @@ from html import escape
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QFont,
+    QIcon,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -23,6 +33,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSizePolicy,
     QTableWidget,
@@ -43,6 +54,54 @@ if TYPE_CHECKING:  # Imported for the annotation only; widgets must not depend o
 
 #: What a card shows when it has no number yet.
 EMPTY_VALUE = "—"
+
+
+def add_reveal_toggle(field: QLineEdit, *, colour: str = "#8A8F98") -> QAction:
+    """Put an eye at the end of a masked field that shows what was typed while it is held on.
+
+    Off by default and never remembered: the point is checking a password or a key you have
+    just typed, on a screen that may be sitting in an office. The icons are painted rather
+    than shipped — the app has no glyph set, and two sixteen-pixel drawings are cheaper than
+    adding one. ``colour`` defaults to a grey that reads on every palette, because the sign-in
+    dialog is built before a palette reaches it.
+    """
+    action = QAction(_eye_icon(colour, crossed=False), "Show", field)
+    action.setCheckable(True)
+    action.setToolTip("Show what you typed")
+    field.addAction(action, QLineEdit.ActionPosition.TrailingPosition)
+
+    def toggle(shown: bool) -> None:
+        field.setEchoMode(QLineEdit.EchoMode.Normal if shown else QLineEdit.EchoMode.Password)
+        action.setIcon(_eye_icon(colour, crossed=shown))
+        action.setText("Hide" if shown else "Show")
+        action.setToolTip("Hide it again" if shown else "Show what you typed")
+
+    action.toggled.connect(toggle)
+    return action
+
+
+def _eye_icon(colour: str, *, crossed: bool) -> QIcon:
+    """A sixteen-pixel eye, struck through when the field is being shown."""
+    pixmap = QPixmap(16, 16)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(colour), 1.4)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    outline = QPainterPath()
+    outline.moveTo(1.5, 8)
+    outline.cubicTo(4, 3.5, 12, 3.5, 14.5, 8)
+    outline.cubicTo(12, 12.5, 4, 12.5, 1.5, 8)
+    painter.drawPath(outline)
+    painter.setBrush(QColor(colour))
+    painter.drawEllipse(QRectF(5.75, 5.75, 4.5, 4.5))
+    if crossed:
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawLine(QPointF(3, 13), QPointF(13, 3))
+    painter.end()
+    return QIcon(pixmap)
 
 
 class Card(QFrame):

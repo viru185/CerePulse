@@ -1046,3 +1046,41 @@ def test_the_comp_off_card_lists_every_credit(qapp: QApplication) -> None:
     assert "18 Jul" in text and "16 Oct (40 days)" in text
     assert "4 Aug" in text and "2 Nov (57 days)" in text
     assert text.count("does not publish an approval date") == 1
+
+
+def test_a_masked_field_can_be_shown_while_typing(qapp: QApplication) -> None:
+    """An eye at the end of the field, off by default: the point is checking a password or
+    a key you have just typed, on a screen that may be sitting in an office."""
+    from PySide6.QtWidgets import QLineEdit
+
+    from cerepulse.ui.widgets import add_reveal_toggle
+
+    field = QLineEdit()
+    field.setEchoMode(QLineEdit.EchoMode.Password)
+    eye = add_reveal_toggle(field)
+
+    assert field.echoMode() is QLineEdit.EchoMode.Password
+    eye.trigger()
+    assert field.echoMode() is QLineEdit.EchoMode.Normal
+    assert eye.text() == "Hide"
+    eye.trigger()
+    assert field.echoMode() is QLineEdit.EchoMode.Password
+
+
+def test_both_masked_fields_carry_the_eye(qapp: QApplication) -> None:
+    from PySide6.QtWidgets import QLineEdit
+
+    from cerepulse.core.config import AppConfig
+    from cerepulse.ui.login_dialog import LoginDialog
+    from cerepulse.ui.views.settings import SettingsView
+
+    dialog = LoginDialog(username="x")
+    assert [a.text() for a in dialog._password.actions()] == ["Show"]
+
+    settings = SettingsView(AppConfig())
+    masked = [
+        edit
+        for edit in settings.findChildren(QLineEdit)
+        if edit.echoMode() is QLineEdit.EchoMode.Password
+    ]
+    assert masked and all(a.text() == "Show" for edit in masked for a in edit.actions())

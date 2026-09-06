@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from cerepulse import __about__ as about
+from cerepulse.ui.widgets import add_reveal_toggle
 
 
 class LoginDialog(QDialog):
@@ -61,6 +62,7 @@ class LoginDialog(QDialog):
         self._password = QLineEdit()
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
         self._password.setPlaceholderText("Password")
+        add_reveal_toggle(self._password)
         form.addRow("Username", self._username)
         form.addRow("Password", self._password)
         layout.addLayout(form)

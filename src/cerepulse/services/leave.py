@@ -142,13 +142,7 @@ class LeaveService:
             today=now,
             policy=self._policy,
             credits=self._leave.find_transactions(employee_code),
-            taken=(
-                self._attendance.find_comp_off_days(
-                    employee_code, now - timedelta(days=COMP_OFF_LOOKBACK_DAYS), now
-                )
-                if self._attendance is not None
-                else []
-            ),
+            taken=self._comp_off_days_taken(employee_code, today=now),
         )
         breaks = self.suggest_breaks(outlooks, today=now)
         return LeaveView(
@@ -160,6 +154,23 @@ class LeaveService:
             breaks=breaks,
             sandwiches=[self.assess_sandwich(plan, today=now) for plan in breaks],
         )
+
+    def _comp_off_days_taken(self, employee_code: str, *, today: date) -> list[tuple[date, float]]:
+        """The muster's comp-off days, or nothing when the cache cannot answer.
+
+        This is the one leave query that scans a year of attendance rows, and a cache with
+        one damaged page — seen in the wild — fails the scan while every point read still
+        works. Losing the used-on dates is a caption; losing the leave screen is not.
+        """
+        if self._attendance is None:
+            return []
+        try:
+            return self._attendance.find_comp_off_days(
+                employee_code, today - timedelta(days=COMP_OFF_LOOKBACK_DAYS), today
+            )
+        except CerePulseError as exc:
+            logger.warning("Comp-off days could not be read from the cache: {}", exc)
+            return []
 
     def suggest_breaks(
         self,

@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 
 from cerepulse.core.config import AppConfig, CommuteConfig
 from cerepulse.intelligence.sandwich import SandwichRule
-from cerepulse.ui.widgets import Banner
+from cerepulse.ui.widgets import Banner, add_reveal_toggle
 
 #: Control widths, so nothing stretches to fill the card. Spin boxes need room for their
 #: suffix *and* their stepper buttons, or the arrows sit on top of the number.
@@ -465,6 +465,8 @@ class SettingsView(QWidget):
         self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self._api_key.setPlaceholderText("Paste your TomTom key")
         self._api_key.setMinimumWidth(320)
+        # Reveals only what was just pasted: a saved key is never put back into the field.
+        add_reveal_toggle(self._api_key)
         card.add("TomTom API key", self._api_key)
 
         row = QHBoxLayout()
