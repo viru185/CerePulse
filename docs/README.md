@@ -18,7 +18,7 @@ what that layer is allowed to do.
 [`CLAUDE.md`](../CLAUDE.md) in the repository root holds two things this guide deliberately
 does **not** repeat:
 
-- **The protocol facts.** Twelve things about SpineHR that were reverse-engineered from HTTP
+- **The protocol facts.** Fifteen things about SpineHR that were reverse-engineered from HTTP
   captures, each of which silently breaks the app if forgotten. The password is encrypted
   client-side with a key scraped fresh per page load; `Tot. Hrs.` is `HH.MM` and not a
   decimal; a valid session is not enough to reach a page. None of it is documented by the
@@ -51,7 +51,7 @@ src/cerepulse/
   app.py                     composition root: builds the whole graph
 ```
 
-1,172 tests, ~35 seconds. The intelligence layer has the deepest coverage because it is pure
+1,216 tests, ~35 seconds. The intelligence layer has the deepest coverage because it is pure
 and it is where correctness actually lives.
 
 ## The four things that will bite you

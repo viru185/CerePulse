@@ -14,7 +14,7 @@ repeating them: two copies of a rule is one copy that goes stale.
 
 ```bash
 uv sync --all-extras          # install, including dev tools
-uv run pytest -q              # 1,172 tests, ~35s
+uv run pytest -q              # 1,216 tests, ~35s
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                   # strict, must stay clean
 ```
@@ -130,8 +130,30 @@ credit row per comp-off in the leave register, joinable to its application by re
 that is what `EARNED_PLUS_WINDOW` counts from, said out loud wherever the date is shown.
 The leave register is also scoped to the **financial** year: it opens in April and the
 previous February's credits are simply absent, which independently corroborates PL lapsing on
-31 March. `Leave > My Info | Entitlement` and `| Leave Rules` are now in the capture set so
-this can eventually be settled by reading rather than by inference.
+31 March. `Leave > My Info | Leave Rules` has since been captured: it says *"Utilize your
+CO+ within 90 days"* and names the day types it can be applied to (DP, PHP, PH, WO, WOP,
+OD), and states no anchor date at all. The earned date stays the best available reading.
+
+**15. The salary pages are three shapes, and the one that matters is not HTML.** Under
+`Self Service > Salary`: **CTC** (`CTCReport.aspx`) renders on a plain GET — an employee
+block, then `Earnings | Monthly Amount | Yearly Amount` with `(A) Total Gross`,
+`(C) Total Outside Payroll Benefits` and `(A+C) Cost To Company` subtotal rows.
+**Monthly Report** (`MonthlyCompSummRpt.aspx`) renders *nothing* until its own
+`btnRefresh` is posted as a submit (`WebFormsState.submit`); then `GridView1` is
+`Particulars` by month. **Payslip** (menu link redirects to `PrintPayslipNX.aspx`) is two
+ASP.NET **page methods** — `POST <page>/GetTemplate {"strFileName"}` returns an HTML
+template whose `data-macro` attributes name the placeholders, and
+`POST <page>/GetSalarySlipData {lstMacro, lstPaySlipFilter, objReportFilters}` fills them,
+the whole slip arriving as the `@@AllEarnings` macro: an HTML table of three column pairs
+(earnings, deductions, variables) with `Amount Total :` rows, `Net Pay :` and the amount in
+words. Both need `Content-Type: application/json` and `X-Requested-With: XMLHttpRequest`,
+and both answer 500 when called on the menu link's own path rather than the page it
+redirects to. The page's *Export to PDF* postback and the payslip page's full `btnRefresh`
+postback also answer 500 from anything that is not a browser, so the PDF the app offers is
+rendered locally from the parsed figures. Two hidden fields never leave the page: the
+Download CTC page carries the employee's **PAN** in `hdnEmpPanNo`, and the export field
+`hdnPayslipHTML` carries the whole slip — both are in the log scrubber and neither is
+parsed, stored or logged.
 
 ## Architecture
 
@@ -416,6 +438,28 @@ entirely plain — congratulating someone on inferred overtime is worse than sil
 choice is seeded from the date via `crc32`, not `hash`: string hashing is salted per process,
 so the built-in would reword the same day on every launch.
 
+**Salary is cached only under DPAPI, and shown only when asked.** The cache is a plain
+SQLite file that any process running as the user can open, and the Pay screen sits on an
+office desk. `PayRepository` stores each document as a `CryptProtectData` blob bound to
+the Windows account (`core/dpapi.py`, `ctypes` against `crypt32`, no new dependency); a
+blob another account or machine cannot open is *re-fetched*, never reported. The screen is
+off until enabled in Settings, fetches only on its own Refresh — never on the tick — masks
+every figure until the one control at the top is switched on, and masks again on leaving.
+`diagnostics` reads file sizes, not tables, so nothing there can leak a figure. Tests that
+touch DPAPI skip where it is unavailable, because one CI job runs on Ubuntu.
+
+**The portable build updates by renaming, from a script outside the folder it replaces.**
+`stage_archive` unpacks the zip under `Data/updates/staged/<ver>/` (zip-slip guard, `.part`
+rename, `\\?\` for MAX_PATH), and `swap_script_text` writes a cmd script to `%TEMP%` —
+the staging folder is *inside* the folder being swapped — that waits for the PID, renames
+`<app>` → `<app>.swap`, the staged folder → `<app>`, moves `Data` across, keeps `.old` with
+a `previous.version` marker for rollback, and reverses every step on any failure before
+relaunching the old build. Same-volume renames only, so a large `Data` costs nothing. No
+parenthesised `if` blocks in the script (a `)` in the install path kills them), and paths
+containing `& ^ ! % | < >` are refused with a message rather than escaped. `BuildMode`
+(source / installed / portable) lives in a leaf module so the dialog, the controller and
+the cleanup all ask the same question.
+
 ## Testing
 
 Tests mirror the source tree. The intelligence layer has the deepest coverage because it is
@@ -433,8 +477,11 @@ display and work unchanged in CI.
 vendor's binaries. `.secrets.toml` is gitignored and holds the dev credentials used by
 `capture` and `sync`.
 
-The logging sink scrubs cookies, passwords, `__VIEWSTATE` and `hEnSa` before anything reaches
-disk. Passwords go to the Windows Credential Manager via `keyring`, never to a file.
+The logging sink scrubs cookies, passwords, `__VIEWSTATE`, `hEnSa`, the salary pages'
+`hdnEmpPanNo` / `hdnPayslipHTML` / `MacroValue` fields and any `?key=` query parameter
+before anything reaches disk. Passwords and the TomTom key go to the Windows Credential
+Manager via `keyring`, never to a file. Salary documents are DPAPI blobs in the cache,
+readable only by the Windows account that fetched them.
 
 The app is **read-only against SpineHR**. It detects that a swipe request is needed and deep
 links to the portal; it never files one.
@@ -452,10 +499,14 @@ links to the portal; it never files one.
 - **Comp-off expiry counts from the earned date, not the approval date the rule names.**
   The portal publishes no approval date for comp-off (fact 14). Each credit is dated by its
   ledger row and spent oldest-first against the muster's `CO-` days; the caveat is on the
-  Records card. `Leave > My Info | Entitlement` and `| Leave Rules` are in the capture set
-  and have not yet been captured — they may state the real rule.
-- **31 Dec for carry-forward, 31 March for PL and the 90-day comp-off window are what the
-  user was told, not what the portal confirms.** All three are `LeavePolicy` fields.
+  Records card. The captured Leave Rules page confirms the 90 days and names no anchor.
+- **31 Dec for carry-forward and 31 March for PL are what the user was told, not what the
+  portal confirms.** The 90-day comp-off window is now confirmed by the Leave Rules page.
+  All three are `LeavePolicy` fields.
+- **The portable swap has unit tests, not a field trial.** Naming, staging and the script
+  text are pinned; a real update from a path with spaces and parentheses, with a held DLL,
+  with a WAL file present, and from a USB stick is the manual checklist before it is
+  trusted.
 - **The user's cache has had a damaged page twice** (`cerepulse.db.corrupt-20260802`, and a
   scan of `attendance_day` fails today while point reads work). Quarantine only runs at
   open. The single shared connection used from two threads (audit M11) is the prime

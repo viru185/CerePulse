@@ -86,7 +86,8 @@ in-flight lock and freshness floor for the pattern.
 | Settings | `config/cerepulse.toml` |
 | Passwords, the TomTom key | Windows Credential Manager, via `keyring` |
 | Update history, seen releases | `state.json` |
-| Staged installers | `updates/` |
+| Staged installers and portable archives | `updates/` |
+| Salary documents | The same SQLite file, as DPAPI blobs bound to the Windows account |
 | Commute estimates | Memory only — TomTom's terms restrict caching them |
 
 The database is the single source of truth: **screens render the cache; a sync writes the
