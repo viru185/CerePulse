@@ -108,6 +108,14 @@ class MigrationError(RepositoryError):
 # --- Commute -----------------------------------------------------------------------
 
 
+class DailyError(CerePulseError):
+    """The quote or picture provider could not answer.
+
+    Outside the portal hierarchy for the same reason :class:`CommuteError` is: a free quote
+    API being down must never read as the HR portal being down, and it costs one tile.
+    """
+
+
 class CommuteError(CerePulseError):
     """The travel-time provider could not answer.
 

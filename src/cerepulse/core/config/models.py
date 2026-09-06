@@ -173,6 +173,19 @@ class UpdateConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyConfig:
+    """The sidebar's quote and picture of the day.
+
+    Off means no request is made at all, not merely hidden: these are the only two calls
+    the app makes to anyone but the portal and the maps provider, and a switch that keeps
+    fetching in the background is not a switch.
+    """
+
+    quote: bool = True
+    picture: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     """Root configuration object."""
 
@@ -186,6 +199,7 @@ class AppConfig:
     updates: UpdateConfig = field(default_factory=UpdateConfig)
     leave_rules: LeaveRulesConfig = field(default_factory=LeaveRulesConfig)
     commute: CommuteConfig = field(default_factory=CommuteConfig)
+    daily: DailyConfig = field(default_factory=DailyConfig)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
@@ -264,4 +278,5 @@ _SECTION_TYPES: dict[str, Any] = {
     "updates": UpdateConfig,
     "leave_rules": LeaveRulesConfig,
     "commute": CommuteConfig,
+    "daily": DailyConfig,
 }

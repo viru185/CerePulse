@@ -11,6 +11,7 @@ from calendar import monthrange
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, time, timedelta
 from html import escape
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
@@ -102,6 +103,81 @@ def _eye_icon(colour: str, *, crossed: bool) -> QIcon:
         painter.drawLine(QPointF(3, 13), QPointF(13, 3))
     painter.end()
     return QIcon(pixmap)
+
+
+class DailyTile(QWidget):
+    """The sidebar's picture and quote of the day.
+
+    Lives in the one region of the window that was empty — between the navigation and the
+    portal button — so it is visible from every screen without displacing anything the
+    screens are for. The picture is cropped to cover a fixed frame; the quote wraps beneath
+    it in the tagline's style; the credits the two free providers ask for sit under both.
+    Clicking the picture opens the viewer.
+    """
+
+    clicked = Signal()
+    FRAME = QSize(180, 101)
+
+    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self._pixmap: QPixmap | None = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 6, 0, 6)
+        layout.setSpacing(4)
+
+        self._image = QLabel()
+        self._image.setFixedSize(self.FRAME)
+        self._image.setObjectName("DailyPicture")
+        self._image.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._image.setToolTip("Picture of the day — click for the full picture")
+        self._image.setVisible(False)
+        layout.addWidget(self._image)
+
+        self._quote = QLabel()
+        self._quote.setObjectName("SidebarTagline")
+        self._quote.setWordWrap(True)
+        self._quote.setVisible(False)
+        layout.addWidget(self._quote)
+
+        self._credit = QLabel()
+        self._credit.setObjectName("DailyCredit")
+        self._credit.setWordWrap(True)
+        self._credit.setOpenExternalLinks(True)
+        self._credit.setVisible(False)
+        layout.addWidget(self._credit)
+
+    def show_day(
+        self, quote_text: str, quote_author: str, picture: Path | None, credit: str
+    ) -> None:
+        """``credit`` is HTML; the two providers' lines are joined by the caller."""
+        self._pixmap = QPixmap(str(picture)) if picture is not None else None
+        if self._pixmap is not None and self._pixmap.isNull():
+            self._pixmap = None
+        if self._pixmap is not None:
+            scaled = self._pixmap.scaled(
+                self.FRAME,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            x = (scaled.width() - self.FRAME.width()) // 2
+            y = (scaled.height() - self.FRAME.height()) // 2
+            self._image.setPixmap(scaled.copy(x, y, self.FRAME.width(), self.FRAME.height()))
+        self._image.setVisible(self._pixmap is not None)
+
+        if quote_text:
+            author = f" — {quote_author}" if quote_author else ""
+            self._quote.setText(f"“{quote_text}”{author}")
+        self._quote.setVisible(bool(quote_text))
+
+        self._credit.setText(credit)
+        self._credit.setVisible(bool(credit))
+        self.setVisible(self._pixmap is not None or bool(quote_text))
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 — Qt override
+        if event.button() == Qt.MouseButton.LeftButton and self._image.isVisible():
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 class Card(QFrame):

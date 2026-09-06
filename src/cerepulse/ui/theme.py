@@ -383,6 +383,16 @@ def stylesheet(palette: Palette, *, wallpaper: bool = False) -> str:
         font-weight: 700;
         padding: 4px 14px 2px 14px;
     }}
+    #DailyCredit {{
+        color: {palette.text_faint};
+        font-size: 10px;
+        background: transparent;
+    }}
+    #DailyPicture {{
+        border-radius: 8px;
+        background: {palette.overlay};
+    }}
+
     #SidebarTagline {{
         color: {palette.text_faint};
         font-size: 11px;

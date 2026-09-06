@@ -45,12 +45,14 @@ from cerepulse.intelligence.month import analyze_week, week_start_for
 from cerepulse.notify.startup import set_registered
 from cerepulse.notify.tray import Tray
 from cerepulse.services.attendance import MonthView
+from cerepulse.services.daily import DailyView
 from cerepulse.services.leave import LeaveView as LeaveData
 from cerepulse.services.scopes import Scope
 from cerepulse.transport import pages
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.assets import app_icon
 from cerepulse.ui.controllers import NavigationController, SyncController, UpdateController
+from cerepulse.ui.daily_viewer import DailyViewer
 from cerepulse.ui.login_dialog import LoginDialog
 from cerepulse.ui.theme import Palette, palette_for, stylesheet
 from cerepulse.ui.views.about import AboutView, open_logs
@@ -61,7 +63,7 @@ from cerepulse.ui.views.settings import SettingsView
 from cerepulse.ui.views.sync_panel import SyncPanel
 from cerepulse.ui.views.today import TodayView
 from cerepulse.ui.views.week import WeekView
-from cerepulse.ui.widgets import Banner
+from cerepulse.ui.widgets import Banner, DailyTile
 from cerepulse.ui.workers import TaskRunner
 from cerepulse.update import Channel
 
@@ -157,6 +159,10 @@ class MainWindow(QMainWindow):
         self._rollover.setInterval(60_000)
         self._rollover.timeout.connect(self._roll_over_if_the_day_changed)
         self._rollover.start()
+
+        # The day's quote and picture, after the window is up; they are never urgent.
+        self._daily_view: DailyView | None = None
+        QTimer.singleShot(1500, self._refresh_daily)
 
         # Refresh from anywhere, the way every other desktop app does it.
         for keys in ("F5", "Ctrl+R"):
@@ -277,6 +283,12 @@ class MainWindow(QMainWindow):
             self._nav.addButton(button, index)
             layout.addWidget(button)
 
+        # The picture and quote of the day, in the one region of the window that was
+        # empty. Not in the nav group: that would shift the stack indices.
+        self._daily = DailyTile(self._palette)
+        self._daily.clicked.connect(self._open_daily)
+        self._daily.setVisible(False)
+        layout.addWidget(self._daily)
         layout.addStretch(1)
 
         # Signing a browser in without a password has worked since 0.9 and was reachable
@@ -915,6 +927,8 @@ class MainWindow(QMainWindow):
         logger.info("The date has rolled over to {}", today)
         previous, self._today = self._today, today
         self.today.set_latest_date(today)
+        # A new day has a new quote and picture.
+        self._refresh_daily()
 
         # Only follow the clock while the screen is actually on today. Somebody who left it
         # parked on a past date is reading that date, and yanking them forward at midnight
@@ -1332,6 +1346,50 @@ class MainWindow(QMainWindow):
         from cerepulse.core.secrets import TOMTOM_KEY, get_secret
 
         return self.settings.typed_key() or get_secret(TOMTOM_KEY)
+
+    def _refresh_daily(self) -> None:
+        """Fetch (or read back) today's quote and picture. A failure costs the tile."""
+        if not (self._context.config.daily.quote or self._context.config.daily.picture):
+            self._daily.setVisible(False)
+            return
+        self._runner.submit(
+            "daily",
+            lambda: self._context.daily.today(datetime.now()),
+            on_success=self._show_daily,
+            on_error=lambda exc: logger.warning("Daily tile could not load: {}", exc),
+        )
+
+    def _show_daily(self, view: DailyView) -> None:
+        self._daily_view = view
+        credits = []
+        if view.picture is not None and view.picture.copyright:
+            credits.append(view.picture.copyright)
+        if view.quote is not None:
+            credits.append(f'<a href="{view.quote.credit_url}">{view.quote.credit}</a>')
+        self._daily.show_day(
+            view.quote.text if view.quote else "",
+            view.quote.author if view.quote else "",
+            view.picture.path if view.picture else None,
+            "<br>".join(credits),
+        )
+
+    def _open_daily(self) -> None:
+        if self._daily_view is None:
+            return
+        viewer = DailyViewer(self._daily_view, self)
+        viewer.use_as_background.connect(self._use_as_background)
+        viewer.exec()
+
+    def _use_as_background(self, path: str) -> None:
+        """Today's picture becomes the wallpaper, saved the same way Settings saves."""
+        from dataclasses import replace
+
+        config = self._context.config
+        updated = replace(
+            config, ui=replace(config.ui, background_image=path, background_enabled=True)
+        )
+        self.settings.set_config(updated)
+        self._save_config(updated)
 
     def _refresh_commute(self, *, force: bool = True) -> None:
         """Ask for an arrival estimate. The button never refuses; the service decides cost."""

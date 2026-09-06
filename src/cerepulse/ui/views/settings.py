@@ -263,6 +263,7 @@ class SettingsView(QWidget):
         grid.addWidget(self._build_leave_rules(), 4, 0)
         grid.addWidget(self._build_updates(), 4, 1)
         grid.addWidget(self._build_commute(), 5, 0, 1, 2)
+        grid.addWidget(self._build_daily(), 6, 0)
 
         page.addStretch(1)
 
@@ -393,6 +394,18 @@ class SettingsView(QWidget):
         card.add("On window close", self._background)
         card.add("Wording", self._tone)
         card.add_full(self._startup)
+        return card.finish()
+
+    def _build_daily(self) -> Card:
+        """The two switches for the sidebar tile. Off means no request is made at all."""
+        card = Card(
+            "Daily",
+            "A quote from ZenQuotes and Bing's picture of the day, once a day, in the sidebar.",
+        )
+        self._daily_quote = QCheckBox("Quote of the day")
+        self._daily_picture = QCheckBox("Picture of the day")
+        card.add_full(self._daily_quote)
+        card.add_full(self._daily_picture)
         return card.finish()
 
     def _build_notifications(self) -> Card:
@@ -665,6 +678,8 @@ class SettingsView(QWidget):
 
         self._theme.setCurrentIndex(max(0, self._theme.findData(config.ui.theme)))
         self._swatch.set_theme(config.ui.theme)
+        self._daily_quote.setChecked(config.daily.quote)
+        self._daily_picture.setChecked(config.daily.picture)
         self._wallpaper_path.setText(config.ui.background_image)
         self._wallpaper_on.setChecked(config.ui.background_enabled)
         self._wallpaper_strength.setValue(config.ui.background_strength)
@@ -735,6 +750,11 @@ class SettingsView(QWidget):
                 channel=self._channel.currentData(),
                 check_on_startup=self._check_startup.isChecked(),
                 download_automatically=self._auto_download.isChecked(),
+            ),
+            daily=replace(
+                config.daily,
+                quote=self._daily_quote.isChecked(),
+                picture=self._daily_picture.isChecked(),
             ),
             notifications=replace(
                 config.notifications,
