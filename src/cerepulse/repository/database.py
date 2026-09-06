@@ -184,6 +184,9 @@ class Database:
         """Drop all cached data, keeping the schema. Backs the Settings action."""
         tables = (
             "punch",
+            # Omitted until 0.15, the same way `application` was until 0.13: a flag the
+            # user set on a gap survived the clear and reappeared on the refetched day.
+            "worked_gap",
             "attendance_day",
             "leave_balance",
             "leave_transaction",

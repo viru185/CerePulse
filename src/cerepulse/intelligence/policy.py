@@ -43,3 +43,5 @@ class ShiftPolicy:
             raise ValueError("break_target cannot be negative")
         if self.shift_span.minutes <= 0:
             raise ValueError("shift_span must be positive")
+        if self.shift_span < self.work_target + self.break_target:
+            raise ValueError("shift_span cannot be shorter than work_target plus break_target")

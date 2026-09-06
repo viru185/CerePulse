@@ -89,6 +89,10 @@ class MainWindow(QMainWindow):
 
     def __init__(self, context: AppContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        #: The day on screen. Read by the commute handlers, which are live from
+        #: construction — touching the departure selector before the first day landed
+        #: raised AttributeError, and with no excepthook that was a silent exit.
+        self._analysis: DayAnalysis | None = None
         self._context = context
         self._palette: Palette = palette_for(context.config.ui.theme)
         self._runner = TaskRunner(self)

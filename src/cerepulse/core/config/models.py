@@ -31,7 +31,6 @@ class ShiftConfig:
     work_target_hours: float = 8.0
     break_target_hours: float = 1.0
     shift_span_hours: float = 9.0
-    workweek: tuple[int, ...] = (0, 1, 2, 3, 4)  # Monday=0 .. Sunday=6
 
 
 @dataclass(frozen=True, slots=True)

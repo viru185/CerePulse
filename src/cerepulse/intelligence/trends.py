@@ -228,7 +228,7 @@ def analyze_trends(
         forecast=forecast(
             facts,
             policy=policy,
-            today=today or date.today(),
+            today=today,
             working_days_remaining=working_days_remaining,
         ),
         measured_days=len(facts),

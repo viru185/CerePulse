@@ -23,7 +23,7 @@ fact.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from cerepulse.intelligence.day import DayAnalysis, DayState
 from cerepulse.intelligence.insights import Insight, InsightKind, Severity
@@ -48,7 +48,7 @@ LEAVE_STALE_DAYS = 75
 LEAVE_LOOKBACK_DAYS = 240
 
 
-def day_nudges(analysis: DayAnalysis, *, now: datetime | None = None) -> list[Insight]:
+def day_nudges(analysis: DayAnalysis, *, now: datetime) -> list[Insight]:
     """What is worth saying about the shape of today, beyond its numbers."""
     if analysis.state is not DayState.INCOMPLETE or not analysis.clocked_in:
         # Only while the day is still live and the user is at work. Telling somebody who
@@ -56,7 +56,7 @@ def day_nudges(analysis: DayAnalysis, *, now: datetime | None = None) -> list[In
         # already made, and the fastest way to have notifications switched off.
         return []
 
-    moment = now or datetime.now()
+    moment = now
     if analysis.first_in is None:
         return []
 
@@ -74,7 +74,7 @@ def day_nudges(analysis: DayAnalysis, *, now: datetime | None = None) -> list[In
     ]
 
 
-def leave_nudges(days: list[AttendanceDay], *, today: date | None = None) -> list[Insight]:
+def leave_nudges(days: list[AttendanceDay], *, today: date) -> list[Insight]:
     """Whether it has been a long time since a day off.
 
     Read from the **muster**, not the leave ledger. The obvious source is the ledger's
@@ -91,7 +91,11 @@ def leave_nudges(days: list[AttendanceDay], *, today: date | None = None) -> lis
     holds is finite, and the difference between "you have not taken leave in a year" and
     "the cache only goes back three months" is not one this can tell.
     """
-    when = today or date.today()
+    when = today
+    # The window is this function's own bound, not the caller's: any caller that hands over
+    # more history than this would otherwise get a nudge about a day off a year ago.
+    earliest = when - timedelta(days=LEAVE_LOOKBACK_DAYS)
+    days = [day for day in days if earliest <= day.day <= when]
     off = [
         day.day
         for day in days

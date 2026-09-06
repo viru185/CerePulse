@@ -647,7 +647,10 @@ class TodayView(QWidget):
 
         if self._analysis is None:
             return
-        QApplication.clipboard().setText(summary_text(self._analysis))
+        clipboard = QApplication.clipboard()
+        if clipboard is None:  # offscreen and some remote sessions have none
+            return
+        clipboard.setText(summary_text(self._analysis))
         self._copy.setText("Copied")
         QTimer.singleShot(1500, lambda: self._copy.setText("Copy summary"))
 

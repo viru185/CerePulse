@@ -359,6 +359,16 @@ class AttendanceRepository:
         ).fetchall()
         return [date.fromisoformat(row["day"]) for row in rows]
 
+    def detail_fetched_at(self, employee_code: str, day: date) -> datetime | None:
+        """When a day's punch log was last fetched, or None if never."""
+        row = self.database.execute(
+            "SELECT detail_synced_at FROM attendance_day WHERE employee_code = ? AND day = ?",
+            (employee_code, day.isoformat()),
+        ).fetchone()
+        if row is None or row["detail_synced_at"] is None:
+            return None
+        return datetime.fromisoformat(str(row["detail_synced_at"]))
+
     def detail_is_settled(self, employee_code: str, day: date) -> bool:
         """Whether a day's punch log was fetched after the day was over.
 

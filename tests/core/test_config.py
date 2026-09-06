@@ -82,13 +82,10 @@ def test_validation_rejects_unusable_settings(tmp_path: Path, data: dict) -> Non
 
 def test_save_then_load_round_trips(tmp_path: Path) -> None:
     path = tmp_path / "out" / "cerepulse.toml"
-    original = AppConfig.from_dict(
-        {"shift": {"work_target_hours": 7.0, "workweek": [0, 1, 2, 3, 4, 5]}}
-    )
+    original = AppConfig.from_dict({"shift": {"work_target_hours": 7.0}})
     save_config(original, config_path=path)
     reloaded = load_config(config_path=path)
     assert reloaded.shift.work_target_hours == 7.0
-    assert reloaded.shift.workweek == (0, 1, 2, 3, 4, 5)
 
 
 def test_saved_config_never_contains_a_password(tmp_path: Path) -> None:

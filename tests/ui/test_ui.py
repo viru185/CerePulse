@@ -114,11 +114,18 @@ def test_every_text_colour_clears_the_contrast_floor(palette) -> None:  # type: 
         assert worst >= MIN_CONTRAST, f"{palette.name} {name} is only {worst:.2f}:1"
 
 
-def test_accents_stay_legible_too() -> None:
-    """They carry meaning, not just decoration, so they have to be readable as text."""
+@pytest.mark.parametrize("palette", [DARK, LIGHT], ids=["dark", "light"])
+def test_accents_stay_legible_too(palette) -> None:  # type: ignore[no-untyped-def]
+    """They carry meaning, not just decoration, so they have to be readable as text.
+
+    Over every palette. This ran against the dark one alone, three lines below a test that
+    was parametrised, and the light palette sat at 3.7:1 on the Worked card for months.
+    """
+    backgrounds = (palette.surface, palette.elevated, palette.overlay)
     for name in ("work", "rest", "good", "bad", "adjust"):
-        colour = getattr(DARK, name)
-        assert contrast_ratio(colour, DARK.elevated) >= MIN_CONTRAST
+        colour = getattr(palette, name)
+        worst = min(contrast_ratio(colour, behind) for behind in backgrounds)
+        assert worst >= MIN_CONTRAST, f"{palette.name} {name} is only {worst:.2f}:1"
 
 
 def test_muted_and_faint_stay_distinguishable() -> None:

@@ -44,8 +44,33 @@ def set_app_user_model_id(model_id: str = APP_USER_MODEL_ID) -> bool:
     return True
 
 
+def _report_crash(kind: type[BaseException], exc: BaseException, trace: object) -> None:
+    """Log an unhandled exception and say so on screen, instead of vanishing.
+
+    PySide6 aborts the process on an exception escaping a slot, and it does so without a
+    word: no dialog, and nothing in the log, because the default hook writes to a stderr
+    that a windowed build does not have. The first thing anyone saw of such a crash was the
+    window being gone.
+    """
+    import traceback
+
+    logger.critical(
+        "Unhandled exception:\n{}", "".join(traceback.format_exception(kind, exc, trace))
+    )
+    if QApplication.instance() is not None:
+        from PySide6.QtWidgets import QMessageBox
+
+        QMessageBox.critical(
+            None,
+            f"{about.NAME} hit a problem",
+            f"{kind.__name__}: {exc}\n\nThe details are in the log. The app will keep running, "
+            "but if things look wrong, restart it.",
+        )
+
+
 def run_app(config: AppConfig) -> int:
     """Build the application, show the window, and run the event loop."""
+    sys.excepthook = _report_crash
     set_app_user_model_id()
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough

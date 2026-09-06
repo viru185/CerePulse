@@ -232,6 +232,15 @@ class AttendanceMonth:
                         str(day.ot_hours.minutes),
                         f"{day.portion:g}",
                         day.remarks,
+                        # A back-dated correction that turns LV into CO- changes nothing
+                        # above — same status, portion and times — and comp-off consumption
+                        # is read from exactly these codes. Left out, the correction was
+                        # fetched, compared, and thrown away as "unchanged".
+                        day.user_type_1,
+                        day.user_type_2,
+                        day.shift_code,
+                        str(day.shift_in or ""),
+                        str(day.shift_out or ""),
                     )
                 ).encode()
             )

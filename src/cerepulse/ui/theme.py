@@ -86,12 +86,14 @@ LIGHT = Palette(
     text="#18181B",
     text_muted="#52525B",
     text_faint="#6E6E78",
-    # Darkened so they hold contrast against a white card.
-    work="#0891B2",
+    # Darkened so they hold contrast against a white card — and checked: the first light
+    # palette failed its own 4.5:1 floor on three of these, and the test that would have
+    # caught it ran against the dark palette only.
+    work="#0E7490",
     rest="#B45309",
-    good="#059669",
-    bad="#DC2626",
-    adjust="#7C3AED",
+    good="#047857",
+    bad="#B91C1C",
+    adjust="#6D28D9",
     overlay="#F4F4F5",
 )
 

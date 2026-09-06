@@ -649,7 +649,3 @@ def _booking_text(plan: BreakPlan) -> str:
 def _days(count: float) -> str:
     shown = f"{count:g}"
     return f"{shown} day" if count == 1 else f"{shown} days"
-
-
-def _record_days(records: list[Record]) -> set[date]:
-    return {record.day for record in records}

@@ -292,22 +292,24 @@ def test_load_day_refetches_a_day_whose_log_was_read_before_it_ended(
 # fifteen-minute timer was supposed to do by itself.
 
 
-def test_today_is_re_fetched_every_time_it_is_read(
+def test_today_is_re_fetched_once_its_last_fetch_is_old_enough(
     attendance_service: AttendanceService, gateway: FakeGateway
 ) -> None:
-    """A day still being lived has a punch log that is correct as far as it goes and out of
-    date the moment anyone swipes again. Treating a stored log as settled left Today showing
-    the morning until the user forced a fetch by hand."""
+    """Today is never settled — but it is not worth a page and a postback four times in one
+    second either, and every refresh, month render, gap flag and settings save came through
+    here. A log fetched moments ago is the log there is; one a few minutes old is not."""
     target = date(2026, 7, 1)
     seed_month(gateway, day(target))
-    gateway.punches[target] = punches()
+    gateway.punches[target] = punches()[:1]
     attendance_service.load_month(EMPLOYEE, *JULY)
 
     noon = datetime(2026, 7, 1, 12, 0)
     attendance_service.load_day(EMPLOYEE, target, now=noon)
-    attendance_service.load_day(EMPLOYEE, target, now=noon)
+    attendance_service.load_day(EMPLOYEE, target, now=noon + timedelta(seconds=30))
+    assert gateway.detail_fetches == [target]
 
-    assert gateway.detail_fetches == [target, target], "today is never settled"
+    attendance_service.load_day(EMPLOYEE, target, now=noon + timedelta(minutes=3))
+    assert gateway.detail_fetches == [target, target]
 
 
 def test_today_stays_in_the_backlog_after_its_first_punch_lands(

@@ -62,6 +62,11 @@ from cerepulse.services.scopes import Scope, ScopeStatus
 #: a single refresh can occupy the connection.
 DEFAULT_DETAIL_BATCH = 5
 
+#: How recent a fetch of today's punch log counts as current. The background tick runs every
+#: fifteen minutes; a floor well under that changes nothing the user can notice and stops the
+#: same page being fetched several times in a second when several paths land on Today at once.
+TODAY_DETAIL_FLOOR = timedelta(minutes=2)
+
 
 @dataclass(slots=True)
 class HistoryReport:
@@ -236,9 +241,17 @@ class AttendanceService:
         almost every read this method ever does.
         """
         cached = self._attendance.find_day(employee_code, day)
-        stale = day == (now.date() if now else date.today())
-        if cached is None or stale or not self._attendance.detail_is_settled(employee_code, day):
-            self.refresh_day_detail(employee_code, day)
+        moment = now or datetime.now()
+        if day == moment.date():
+            # Today is never settled, but it is not worth a full page and a postback four
+            # times in one second either — every refresh, month render, gap flag and settings
+            # save came through here. A log fetched moments ago is the log there is.
+            fetched = self._attendance.detail_fetched_at(employee_code, day)
+            due = fetched is None or moment - fetched > TODAY_DETAIL_FLOOR
+        else:
+            due = not self._attendance.detail_is_settled(employee_code, day)
+        if cached is None or due:
+            self.refresh_day_detail(employee_code, day, fetched_at=moment)
             cached = self._attendance.find_day(employee_code, day)
 
         punches = list(cached.punches) if cached else []
@@ -587,8 +600,14 @@ class AttendanceService:
             year, month = year - 1, month + 12
         return self._attendance.prune_before(employee_code, date(year, month, 1))
 
-    def refresh_day_detail(self, employee_code: str, day: date) -> None:
+    def refresh_day_detail(
+        self, employee_code: str, day: date, *, fetched_at: datetime | None = None
+    ) -> None:
         """Fetch and store one day's punch log.
+
+        ``fetched_at`` is the clock the caller is working to. The freshness floor on today's
+        log compares against it, so a caller that injects time has to stamp with the same
+        time or the floor measures against a clock it was never given.
 
         The grid is fetched to find the day's row, and the page it came from goes straight
         into the postback rather than being thrown away and fetched again — which halves the
@@ -602,7 +621,7 @@ class AttendanceService:
             return
 
         punches = self._gateway.fetch_day_detail(target, page=page)
-        self._attendance.save_day_detail(employee_code, day, punches)
+        self._attendance.save_day_detail(employee_code, day, punches, synced_at=fetched_at)
 
     def backfill_detail(
         self,

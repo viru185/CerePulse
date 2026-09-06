@@ -23,7 +23,7 @@ from loguru import logger
 from cerepulse.core.errors import MigrationError
 
 #: Bumped whenever a migration is added. Checked against the database on open.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _migration_001(connection: sqlite3.Connection) -> None:
@@ -286,6 +286,41 @@ def _migration_007(connection: sqlite3.Connection) -> None:
     """)
 
 
+def _migration_008(connection: sqlite3.Connection) -> None:
+    """Tie a worked-gap flag to the day it belongs to.
+
+    Migration 7 created the table without a foreign key, so a flag survived the pruning of
+    its day and "Clear cached data" alike — the same omission that kept every filed
+    application alive through a cache clear until 0.13. Rebuilt with the cascade the punch
+    table has had from the start. Statement by statement: ``executescript`` commits on its
+    own and would escape the migration's transaction.
+    """
+    for statement in (
+        """
+        CREATE TABLE worked_gap_v8 (
+            employee_code TEXT NOT NULL,
+            day           TEXT NOT NULL,
+            gap_start     TEXT NOT NULL,
+            note          TEXT NOT NULL DEFAULT '',
+            created_at    TEXT NOT NULL,
+            PRIMARY KEY (employee_code, day, gap_start),
+            FOREIGN KEY (employee_code, day)
+                REFERENCES attendance_day (employee_code, day) ON DELETE CASCADE
+        )
+        """,
+        """
+        INSERT INTO worked_gap_v8 (employee_code, day, gap_start, note, created_at)
+        SELECT g.employee_code, g.day, g.gap_start, g.note, g.created_at
+          FROM worked_gap g
+          JOIN attendance_day d ON d.employee_code = g.employee_code AND d.day = g.day
+        """,
+        "DROP TABLE worked_gap",
+        "ALTER TABLE worked_gap_v8 RENAME TO worked_gap",
+        "CREATE INDEX idx_worked_gap_day ON worked_gap (employee_code, day)",
+    ):
+        connection.execute(statement)
+
+
 #: Ordered migrations. Append only; never edit one that has shipped.
 MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migration_001,
@@ -295,6 +330,7 @@ MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migration_005,
     _migration_006,
     _migration_007,
+    _migration_008,
 )
 
 

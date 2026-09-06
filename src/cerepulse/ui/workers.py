@@ -124,7 +124,7 @@ class TaskRunner(QObject):
 
     @property
     def activity(self) -> str:
-        return describe(self._queue[0]) if self._queue else ""
+        return describe(self._queue[0].name) if self._queue else ""
 
     def submit(
         self,
@@ -144,7 +144,7 @@ class TaskRunner(QObject):
 
         self._in_flight += 1
         self._active.add(task)
-        self._queue.append(name)
+        self._queue.append(task)
         if self._in_flight == 1:
             self.busy_changed.emit(True)
         self._announce()
@@ -156,8 +156,11 @@ class TaskRunner(QObject):
     def _task_finished(self, task: Task) -> None:
         self._active.discard(task)
         self._in_flight = max(0, self._in_flight - 1)
-        if task.name in self._queue:
-            self._queue.remove(task.name)
+        # The task itself, not its name: two submissions sharing a name — the commute's
+        # refresh and its departure change do — otherwise removed each other's entry and the
+        # status line named the wrong one.
+        if task in self._queue:
+            self._queue.remove(task)
         if self._in_flight == 0:
             self.busy_changed.emit(False)
         self._announce()

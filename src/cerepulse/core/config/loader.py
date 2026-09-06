@@ -92,8 +92,16 @@ def _validate(config: AppConfig) -> None:
         raise ConfigError("portal.base_url must be an https:// URL")
     if config.shift.work_target_hours <= 0:
         raise ConfigError("shift.work_target_hours must be greater than zero")
-    if config.shift.shift_span_hours < config.shift.work_target_hours:
-        raise ConfigError("shift.shift_span_hours cannot be less than shift.work_target_hours")
+    if (
+        config.shift.shift_span_hours
+        < config.shift.work_target_hours + config.shift.break_target_hours
+    ):
+        # The span already prices the break in: a span shorter than work plus break makes the
+        # flat finish time earlier than the break-adjusted one, and every "this break is free"
+        # sentence on Today false.
+        raise ConfigError(
+            "shift.shift_span_hours cannot be less than work_target_hours plus break_target_hours"
+        )
     if config.sync.refresh_interval_minutes < 1:
         raise ConfigError("sync.refresh_interval_minutes must be at least 1")
     if config.ui.background_mode not in {"tray", "foreground"}:
