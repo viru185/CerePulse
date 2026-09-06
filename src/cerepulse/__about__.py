@@ -7,7 +7,7 @@ so there is exactly one place to bump a release.
 
 from __future__ import annotations
 
-__version__ = "0.16.0-beta.1"
+__version__ = "0.16.0-beta.2"
 
 NAME = "CerePulse"
 TAGLINE = "Knows when you can leave, before you ask."
@@ -29,9 +29,18 @@ CREDITS = (
     ("ReportFlow", "https://github.com/viru185/ReportFlow", "packaging and release tooling"),
 )
 
+# The services the app reads from besides the portal, credited in About and beside the
+# switches that turn them on. ZenQuotes' free tier asks for its line with a link.
+PROVIDERS = (
+    ("ZenQuotes", "https://zenquotes.io/", "Inspirational quotes provided by ZenQuotes API"),
+    ("Bing", "https://www.bing.com/", "the picture of the day"),
+    ("TomTom", "https://developer.tomtom.com/", "the journey home"),
+)
+
 __all__ = [
     "AUTHOR",
     "CREDITS",
+    "PROVIDERS",
     "GITHUB_URL",
     "LINKEDIN_URL",
     "NAME",
