@@ -2,10 +2,23 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.16.0-beta.2] - 2026-09-06
+
+### Chores
+- Bump to 0.16.0-beta.2
+
+### Documentation
+- The application is the event; the salary of a comp-off row
+
+### Features
+- One event, one row
+- Ledgers on Pay, a quieter sidebar, a grouped Settings page
+
 ## [0.16.0-beta.1] - 2026-09-06
 
 ### Chores
 - Bump to 0.16.0-beta.1
+- Regenerate the changelog for 0.16.0-beta.1
 
 ### Documentation
 - Fact 15, the salary pages, and the rules for pay and the portable swap
