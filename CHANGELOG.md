@@ -2,6 +2,18 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.16.0-beta.1] - 2026-09-06
+
+### Chores
+- Bump to 0.16.0-beta.1
+
+### Documentation
+- Fact 15, the salary pages, and the rules for pay and the portable swap
+
+### Features
+- The portable build updates itself
+- Payslips, the CTC statement and the monthly report, encrypted at rest
+
 ## [0.15.0-beta.5] - 2026-09-06
 
 ### Bug Fixes
@@ -10,6 +22,7 @@ All notable changes to CerePulse are documented here.
 
 ### Chores
 - Bump to 0.15.0-beta.5
+- Regenerate the changelog for 0.15.0-beta.5
 
 ### Documentation
 - The rules the themes, the tile and the connections taught
