@@ -17,7 +17,7 @@ from collections.abc import Callable
 
 from loguru import logger
 from PySide6.QtCore import QObject, QTimer, Signal
-from PySide6.QtWidgets import QMessageBox, QWidget
+from PySide6.QtWidgets import QMessageBox, QProgressDialog, QWidget
 
 from cerepulse import __about__ as about
 from cerepulse.intelligence.insights import Insight, InsightKind, Severity
@@ -34,7 +34,10 @@ from cerepulse.update import (
     is_installed_build,
     mark_checked,
     mark_seen,
+    previous_release,
     record_update,
+    rollback_candidates,
+    rollback_to,
     should_show_whats_new,
 )
 
@@ -237,6 +240,110 @@ class UpdateController(QObject):
         version = self._pending.version
         try:
             apply_update(version)
+        except Exception as exc:  # noqa: BLE001 — reported, never fatal
+            record_update(version, "failed", str(exc))
+            self.update_failed.emit(str(exc))
+            return
+        self.handover.emit()
+
+    # --- rolling back -----------------------------------------------------------------
+
+    def rollback(self) -> None:
+        """Go back to the version before this one.
+
+        Uses the staged installer when one is still on disk, and otherwise finds the previous
+        release and downloads it — verified, the same way an update is. Three cleanup rules in
+        a row managed to delete the staged file, and each time the button went dead; it now
+        depends on the release list, which nothing on this machine can lose.
+        """
+        staged = rollback_candidates()
+        if staged:
+            version = staged[0]
+            self._confirm_rollback(version, size=0, on_yes=lambda: self._apply_rollback(version))
+            return
+
+        def find() -> Release | None:
+            return previous_release(about.VERSION, channel=self._channel)
+
+        def found(release: Release | None) -> None:
+            if release is None:
+                self.update_failed.emit(
+                    "No earlier release could be found to roll back to. The release list may "
+                    "be unreachable — try again when you are online."
+                )
+                return
+            self._confirm_rollback(
+                release.version,
+                size=release.installer_size,
+                on_yes=lambda: self._download_then_rollback(release),
+            )
+
+        self._runner.submit(
+            "rollback-lookup",
+            find,
+            on_success=found,
+            on_error=lambda exc: self.update_failed.emit(str(exc)),
+        )
+
+    def _confirm_rollback(self, version: str, *, size: int, on_yes: Callable[[], None]) -> None:
+        fetch = f" download {version} ({size // 1_048_576} MB)," if size else ""
+        confirmed = QMessageBox.question(
+            self._window,
+            f"Roll back to {version}?",
+            f"CerePulse will close,{fetch} reinstall {version}, and reopen. Your cached data "
+            f"and settings are untouched.",
+        )
+        if confirmed == QMessageBox.StandardButton.Yes:
+            on_yes()
+
+    def _download_then_rollback(self, release: Release) -> None:
+        dialog = QProgressDialog(f"Downloading {release.version}…", "Cancel", 0, 100, self._window)
+        dialog.setWindowTitle(f"Rolling back to {release.version}")
+        dialog.setAutoClose(False)
+        dialog.setMinimumDuration(0)
+        cancelled = False
+
+        def cancel() -> None:
+            nonlocal cancelled
+            cancelled = True
+
+        dialog.canceled.connect(cancel)
+        # The worker reads a plain flag rather than the dialog: widgets are GUI-thread only.
+        self.download_progress.connect(lambda fraction: dialog.setValue(int(fraction * 100)))
+
+        def run() -> Download:
+            base, _, asset = release.installer_url.rpartition("/")
+            expected = fetch_checksum(f"{base}/{CHECKSUM_ASSET}", asset)
+
+            def progress(fraction: float) -> bool:
+                self.download_progress.emit(fraction)
+                return not cancelled
+
+            return download_installer(
+                release.installer_url,
+                release.version,
+                expected_sha256=expected,
+                on_progress=progress,
+            )
+
+        def done(result: Download) -> None:
+            dialog.close()
+            logger.info(
+                "Rollback installer {} ready (verified={})", result.version, result.verified
+            )
+            self._apply_rollback(result.version)
+
+        def failed(exc: BaseException) -> None:
+            dialog.close()
+            if not cancelled:
+                record_update(release.version, "failed", str(exc))
+                self.update_failed.emit(str(exc))
+
+        self._runner.submit("rollback-download", run, on_success=done, on_error=failed)
+
+    def _apply_rollback(self, version: str) -> None:
+        try:
+            rollback_to(version)
         except Exception as exc:  # noqa: BLE001 — reported, never fatal
             record_update(version, "failed", str(exc))
             self.update_failed.emit(str(exc))

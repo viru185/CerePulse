@@ -399,25 +399,9 @@ class MainWindow(QMainWindow):
     def _check_for_update_now(self) -> None:
         self._updates.check_now(on_error=self._on_error)
 
-    def _rollback(self, version: str) -> None:
-        """Reinstall an earlier version whose installer is still staged."""
-        confirmed = QMessageBox.question(
-            self,
-            f"Roll back to {version}?",
-            f"CerePulse will close, reinstall {version}, and reopen. Your cached data and "
-            f"settings are untouched.",
-        )
-        if confirmed != QMessageBox.StandardButton.Yes:
-            return
-
-        from cerepulse.update import InstallError, rollback_to
-
-        try:
-            rollback_to(version)
-        except InstallError as exc:
-            self.about.banner.show_message(str(exc), Severity.WARNING)
-            return
-        self._quit()
+    def _rollback(self) -> None:
+        """Go back one release. The updater owns the how, including any download."""
+        self._updates.rollback()
 
     def _test_connection(self) -> None:
         """Prove the portal is reachable and the saved credentials still work."""

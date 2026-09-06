@@ -92,6 +92,36 @@ def check_for_update(
     return newest
 
 
+def previous_release(
+    current_version: str | None = None,
+    *,
+    channel: Channel = Channel.STABLE,
+) -> Release | None:
+    """The newest published release *older* than this build that can be installed, or None.
+
+    Roll back used to depend on the previous build's installer still being on disk, and three
+    successive cleanup rules each found a way to have deleted it. What the user means by
+    "roll back" is "the version before this one", and the release list already says which
+    that is — so when nothing is staged, this is what gets downloaded and installed.
+    """
+    current = current_version or about.VERSION
+    payload = _fetch()
+    if payload is None:
+        return None
+
+    candidates = [
+        release
+        for release in (_parse(item) for item in payload)
+        if release is not None
+        and release.is_installable
+        and (channel.accepts_prereleases or not release.prerelease)
+        and is_newer(current, release.version)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda release: Version.parse(release.version) or Version(0, 0))
+
+
 def _fetch() -> list[dict[str, object]] | None:
     try:
         response = httpx.get(

@@ -16,7 +16,7 @@ import respx
 
 from cerepulse.update import downloader
 from cerepulse.update.channel import Channel
-from cerepulse.update.checker import RELEASES_URL, check_for_update
+from cerepulse.update.checker import RELEASES_URL, check_for_update, previous_release
 from cerepulse.update.downloader import DownloadError, download_installer, fetch_checksum
 from cerepulse.update.version import Version, is_newer
 
@@ -262,12 +262,34 @@ def test_cleanup_keeps_one_installer_to_roll_back_to(staged: Path) -> None:
     # The newest below the running version survives, and is offered.
     assert downloader.installer_path("0.14.0").name in left
     assert rollback_candidates("0.14.1")
-    # Older ones, and the running version's own spent installer, are gone.
+    # Older ones are gone.
     assert downloader.installer_path("0.12.0").name not in left
     assert downloader.installer_path("0.13.0").name not in left
-    assert downloader.installer_path("0.14.1").name not in left
+    # The running version's own installer stays: it is what the *next* build rolls back to.
+    assert downloader.installer_path("0.14.1").name in left
     # A newer one is a pending update, not rubbish.
     assert downloader.installer_path("0.15.0").name in left
+
+
+def test_each_build_leaves_the_next_one_something_to_roll_back_to(staged: Path) -> None:
+    """The third rollback bug, pinned as the sequence that exposed it.
+
+    The 0.15.0 rule kept "the newest installer below the running version" and deleted the
+    running version's own — so beta.2 erased beta.2 at first launch, beta.3 arrived to find
+    nothing below it, and erased beta.3. Three releases with an empty rollback, each cleanup
+    looking correct in isolation. Simulate exactly that: install A, then B, then C, running the
+    startup cleanup each time, and B must still be there for C.
+    """
+    from cerepulse.update.downloader import clear_spent_installers
+    from cerepulse.update.installer import rollback_candidates
+
+    staged.mkdir(parents=True, exist_ok=True)
+    for running in ("0.15.0-beta.1", "0.15.0-beta.2", "0.15.0-beta.3"):
+        downloader.installer_path(running).write_bytes(b"x")  # the update that was just applied
+        clear_spent_installers(running)  # what the new build does at first launch
+
+    assert rollback_candidates("0.15.0-beta.3") == ["0.15.0-beta.2"]
+    assert not downloader.installer_path("0.15.0-beta.1").exists()
 
 
 def test_cleanup_leaves_a_lone_previous_version_alone(staged: Path) -> None:
@@ -330,3 +352,50 @@ def test_rollback_still_finds_an_installer_written_by_an_older_build(staged: Pat
     (staged / "CerePulse-0.14.1-Setup.exe").write_bytes(b"x")
 
     assert rollback_candidates("0.15.0") == ["0.14.1"]
+
+
+# --- the release before this one -------------------------------------------------------------
+
+
+@respx.mock
+def test_the_previous_release_is_the_newest_older_one_with_an_installer() -> None:
+    """Roll back no longer depends on a file cleanup may have deleted: when nothing is staged
+    the previous *published* release is fetched. It is the newest one older than this build
+    that actually shipped an installer, on the channel this build follows."""
+    respx.get(RELEASES_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                release("v0.15.0-beta.3", prerelease=True),
+                release("v0.15.0-beta.2", prerelease=True),
+                release("v0.15.0-beta.1", prerelease=True, asset=False),
+                release("v0.14.1"),
+            ],
+        )
+    )
+    found = previous_release("0.15.0-beta.3", channel=Channel.BETA)
+    assert found is not None
+    assert found.version == "0.15.0-beta.2"
+
+
+@respx.mock
+def test_a_stable_build_rolls_back_past_betas() -> None:
+    respx.get(RELEASES_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                release("v0.15.0"),
+                release("v0.15.0-beta.3", prerelease=True),
+                release("v0.14.1"),
+            ],
+        )
+    )
+    found = previous_release("0.15.0", channel=Channel.STABLE)
+    assert found is not None
+    assert found.version == "0.14.1"
+
+
+@respx.mock
+def test_no_earlier_release_means_none_not_an_error() -> None:
+    respx.get(RELEASES_URL).mock(return_value=httpx.Response(200, json=[release("v0.15.0")]))
+    assert previous_release("0.15.0", channel=Channel.STABLE) is None

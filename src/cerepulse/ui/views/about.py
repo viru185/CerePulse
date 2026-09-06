@@ -43,7 +43,7 @@ class AboutView(QWidget):
     """Credits, build state, diagnostics and update history."""
 
     update_check_requested = Signal()
-    rollback_requested = Signal(str)
+    rollback_requested = Signal()
     test_connection_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -210,10 +210,14 @@ class AboutView(QWidget):
             f"staged updates {human_size(self._diagnostics.updates_bytes)}"
         )
 
+        # Never disabled. Whether the previous installer is still on disk is the updater's
+        # problem — it downloads the release when cleanup has lost the file — and a greyed
+        # button reads as "this does not work", which for three releases it did not.
         candidates = rollback_candidates()
-        self._rollback.setEnabled(bool(candidates))
         self._rollback.setToolTip(
-            f"Reinstall {candidates[0]}" if candidates else "No earlier version is kept locally"
+            f"Go back to {candidates[0]}"
+            if candidates
+            else "Go back to the previous release (downloaded if needed)"
         )
 
     def _render_cards(self, diagnostics: Diagnostics) -> None:
@@ -272,9 +276,7 @@ class AboutView(QWidget):
         )
 
     def _request_rollback(self) -> None:
-        candidates = rollback_candidates()
-        if candidates:
-            self.rollback_requested.emit(candidates[0])
+        self.rollback_requested.emit()
 
     def _show_whats_new(self) -> None:
         from cerepulse.ui.whats_new import WhatsNewDialog

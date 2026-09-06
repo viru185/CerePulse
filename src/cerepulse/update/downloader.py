@@ -211,6 +211,14 @@ def clear_spent_installers(current_version: str) -> int:
     already downloaded and waiting for a yes, and deleting it would silently undo the
     background download. Unparseable names are left alone; refusing to delete what cannot
     be identified is cheaper than being wrong.
+
+    And a third mistake, made by the fix for the second. The 0.15.0 rule also deleted *the
+    running version's own installer* as spent — which is precisely the file the **next**
+    version will want to roll back to. Each build erased its own installer at first launch, so
+    when the following build arrived there was never anything below it to keep, and Roll back
+    stayed empty through three releases while a rule that "kept one" looked correct. The
+    running version's installer stays. Two installers on disk at most; ~100 MB is the price
+    of a button that works.
     """
     running = Version.parse(current_version)
     directory = downloads_dir()
@@ -224,10 +232,9 @@ def clear_spent_installers(current_version: str) -> int:
             staged.append((version, file))
 
     older = sorted((entry for entry in staged if entry[0] < running), key=lambda e: e[0])
-    # Everything below the running version except the newest of them, plus the running
-    # version's own installer, which has already been installed.
+    # Everything below the running version except the newest of them. The running version's
+    # own installer is not spent: it is what the next build rolls back to.
     doomed = [path for _v, path in older[:-1]]
-    doomed += [path for version, path in staged if version == running]
 
     removed = 0
     for path in doomed:

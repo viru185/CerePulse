@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from cerepulse.update.channel import Channel
-from cerepulse.update.checker import Release, check_for_update
+from cerepulse.update.checker import Release, check_for_update, previous_release
 from cerepulse.update.downloader import (
     Download,
     DownloadError,
@@ -51,6 +51,7 @@ __all__ = [
     "last_seen_version",
     "mark_checked",
     "mark_seen",
+    "previous_release",
     "record_update",
     "rollback_candidates",
     "rollback_to",
