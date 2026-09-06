@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 from PySide6.QtCore import QDate, Qt, QTimer, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDateEdit,
     QHBoxLayout,
@@ -261,6 +262,11 @@ class TodayView(QWidget):
         top.addWidget(self._picker)
 
         self._next_day = step_button("▶", "Next day", lambda: self._step_day(1))
+        # Reading back through a week is the common case; the brackets make it one key.
+        QShortcut(QKeySequence("["), self).activated.connect(lambda: self._step_day(-1))
+        QShortcut(QKeySequence("]"), self).activated.connect(lambda: self._step_day(1))
+        self._previous_day.setToolTip("Previous day  ([)")
+        self._next_day.setToolTip("Next day  (])")
         top.addWidget(self._next_day)
 
         self._copy = QPushButton("Copy summary")
@@ -275,6 +281,7 @@ class TodayView(QWidget):
         value_row.setSpacing(Space.ROW)
         self._hero_value = _HeroValue(fmt.EMPTY)
         self._hero_value.setObjectName("HeroValue")
+        self._hero_value.setAccessibleName("The time you can leave, or left")
         self._hero_value.clicked.connect(lambda: self._explain("expected_out_break_adjusted"))
         value_row.addWidget(self._hero_value)
         self._presence = StatusChip("", self._palette.text_muted)

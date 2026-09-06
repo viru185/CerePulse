@@ -371,7 +371,21 @@ class PortalGateway:
         page = self._auth.check_response(self._client.get(url, follow_redirects=True)).text
         yield page
 
-        for status in views[1:]:
+        # The plain GET is assumed to render the first status. Verified rather than trusted:
+        # a portal that remembered the last selection, or renamed its default, would drop one
+        # whole status from a fetch that then *replaces* the entity — silently.
+        pending = list(views[1:])
+        rendered = WebFormsState.from_html(page).fields.get(STATUS_SELECT, "")
+        if rendered and rendered != views[0]:
+            logger.warning(
+                "{} opened on {!r} rather than {!r}; fetching it explicitly",
+                menu[1],
+                rendered,
+                views[0],
+            )
+            pending.insert(0, views[0])
+
+        for status in pending:
             state = WebFormsState.from_html(page)
             payload = state.postback(STATUS_SELECT, **{STATUS_SELECT: status})
             logger.debug("Fetching {!r} from {}", status, menu[1])

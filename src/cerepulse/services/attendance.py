@@ -272,7 +272,7 @@ class AttendanceService:
             envelope=_envelope(cached),
             worked_gaps=self._attendance.find_worked_gaps(employee_code, day),
         )
-        nudged = self._with_nudges(analysis, employee_code, now=now)
+        nudged = self._with_nudges(analysis, employee_code, now=moment)
         # Voiced here rather than in the views, so the window, the tray tooltip and the
         # notifications all say the same thing about the same day.
         return voice_day(nudged, tone=Tone.parse(self._config.ui.tone))
@@ -318,7 +318,7 @@ class AttendanceService:
         }
 
     def _with_nudges(
-        self, analysis: DayAnalysis, employee_code: str, *, now: datetime | None
+        self, analysis: DayAnalysis, employee_code: str, *, now: datetime
     ) -> DayAnalysis:
         """Append the habit nudges to a day's own arithmetic.
 

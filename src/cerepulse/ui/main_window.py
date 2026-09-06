@@ -16,7 +16,7 @@ from datetime import date, datetime
 
 from loguru import logger
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QKeyEvent
+from PySide6.QtGui import QCloseEvent, QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -150,6 +150,17 @@ class MainWindow(QMainWindow):
         self._auto.setInterval(context.config.sync.refresh_interval_minutes * 60_000)
         self._auto.timeout.connect(self._on_tick)
         self._auto.start()
+        # The date rollover has its own clock, because the refresh timer stops when the app
+        # stands down for a browser session — and a paused app left overnight, the exact
+        # case the truce exists for, stayed on yesterday until Refresh was pressed.
+        self._rollover = QTimer(self)
+        self._rollover.setInterval(60_000)
+        self._rollover.timeout.connect(self._roll_over_if_the_day_changed)
+        self._rollover.start()
+
+        # Refresh from anywhere, the way every other desktop app does it.
+        for keys in ("F5", "Ctrl+R"):
+            QShortcut(QKeySequence(keys), self).activated.connect(lambda: self.refresh(force=True))
 
     # --- construction ---------------------------------------------------------------
 
@@ -256,6 +267,11 @@ class MainWindow(QMainWindow):
             button.setObjectName("SidebarButton")
             button.setCheckable(True)
             button.setChecked(index == 0)
+            # Ctrl+1..7, in sidebar order. The app had no keyboard route to anything but
+            # Escape, and no accessible names for a screen reader to speak.
+            button.setShortcut(QKeySequence(f"Ctrl+{index + 1}"))
+            button.setAccessibleName(f"{name} screen")
+            button.setToolTip(f"{name}  (Ctrl+{index + 1})")
             button.clicked.connect(lambda _=False, i=index: self._navigation.select(i))
             self._nav.addButton(button, index)
             layout.addWidget(button)
@@ -527,16 +543,13 @@ class MainWindow(QMainWindow):
         self._sync.refresh_leave()
 
     def _refresh_insights(self) -> None:
-        """Insights reads the cache rather than fetching, so a pause does not block it.
+        """Refresh means the same thing on every screen: ask the portal, then re-read.
 
-        It still ends one: the user pressing Refresh anywhere means the same thing, and
-        having it mean something different here is the kind of inconsistency that makes a
-        button feel unreliable.
+        This used to rebuild the trends from the cache and fetch nothing, so the one screen
+        whose numbers most obviously depend on how much history is cached was the one where
+        Refresh did not fetch any. The trends follow the month refresh in `_after_sync`.
         """
-        if self._paused:
-            self._resume()
-            self._sync.refresh(force=True)
-        self._sync.refresh_trends()
+        self.refresh(force=True)
 
     def _open_portal(self, page: str) -> None:
         """Open SpineHR in the browser, signed in, and hand the session over.
@@ -1419,17 +1432,20 @@ class MainWindow(QMainWindow):
             self._on_error(exc)
             return
         logger.warning("Could not load {}: {}", scope, exc)
-        banner = {
-            "insights": self.insights.banner,
-            "leave ledger": self.records.banner,
-            "swipe requests": self.records.banner,
-        }.get(scope, self.today.banner)
-        banner.show_message(
-            f"Could not load {scope}: {_message_for(exc)}",
-            Severity.WARNING,
-            key=scope,
-            offer_logs=True,
-        )
+        banners = {
+            "insights": [self.insights.banner],
+            "leave ledger": [self.records.banner],
+            "swipe requests": [self.records.banner],
+            "applications": [self.records.banner],
+            "day": [self.today.banner, self.week.banner, self.attendance.banner],
+        }.get(scope, [self.today.banner])
+        for banner in banners:
+            banner.show_message(
+                f"Could not load {scope}: {_message_for(exc)}",
+                Severity.WARNING,
+                key=scope,
+                offer_logs=True,
+            )
 
     def _on_error(self, exc: BaseException) -> None:
         if isinstance(exc, SessionTakenError):

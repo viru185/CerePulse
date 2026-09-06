@@ -8,6 +8,7 @@ deletes silently would not fire otherwise.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -62,6 +63,15 @@ class Database:
 
         self._connection = connection
         self._migrate_or_quarantine(connection)
+        # The thread that opened the cache keeps this connection; every other thread gets
+        # its own on first use. One shared connection was reachable from the GUI thread and
+        # the sync worker at once, so a GUI read could land inside a worker's open
+        # transaction and see half a month, and two overlapping transactions raised. WAL
+        # only delivers reader/writer isolation across *connections*.
+        self._local = threading.local()
+        self._local.connection = self._connection
+        self._connections = [self._connection]
+        self._lock = threading.Lock()
         return self
 
     def _migrate_or_quarantine(self, connection: sqlite3.Connection) -> None:
@@ -132,9 +142,11 @@ class Database:
                 logger.warning("Could not move {}: {}", source.name, move_error)
 
     def close(self) -> None:
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
+        for connection in getattr(self, "_connections", []):
+            connection.close()
+        self._connections = []
+        self._local = threading.local()
+        self._connection = None
 
     def __enter__(self) -> Self:
         return self.connect()
@@ -153,7 +165,21 @@ class Database:
     def connection(self) -> sqlite3.Connection:
         if self._connection is None:
             raise RepositoryError("Database is not open; call connect() first")
-        return self._connection
+        # An in-memory database is one per connection, so tests that use one share it.
+        if not isinstance(self.path, Path):
+            return self._connection
+        mine = getattr(self._local, "connection", None)
+        if mine is None:
+            try:
+                mine = self._open()
+            except sqlite3.Error as exc:
+                raise RepositoryError(
+                    f"Could not open the local cache at {self.path}: {exc}"
+                ) from exc
+            self._local.connection = mine
+            with self._lock:
+                self._connections.append(mine)
+        return mine
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:

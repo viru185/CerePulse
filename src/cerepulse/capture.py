@@ -198,6 +198,14 @@ def run_capture(*, out_dir: str, secrets_path: str, config: AppConfig) -> int:
         reports.append(_capture_day_detail(client, auth, menu, destination))
         auth.logout()
 
+    # Pages this run did not produce are leftovers from an older target list, and a stale
+    # capture beside the manifest reads as evidence. Removed, and named in the log.
+    produced = {Path(report.file).name for report in reports if report.file}
+    for stale in sorted(destination.glob("*.html")):
+        if stale.name not in produced:
+            stale.unlink()
+            logger.info("Removed {} — no longer in the capture set", stale.name)
+
     manifest = destination / "manifest.json"
     manifest.write_text(
         json.dumps([asdict(report) for report in reports], indent=2), encoding="utf-8"

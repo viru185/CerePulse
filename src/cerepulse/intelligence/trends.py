@@ -23,7 +23,6 @@ is the maximum of three numbers. Anything claiming to be personal history requir
 
 from __future__ import annotations
 
-import statistics
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, time, timedelta
@@ -31,6 +30,7 @@ from datetime import date, time, timedelta
 from cerepulse.intelligence.day import DayAnalysis, DayState
 from cerepulse.intelligence.month import week_start_for
 from cerepulse.intelligence.policy import ShiftPolicy
+from cerepulse.intelligence.stats import median_duration, median_time
 from cerepulse.models.attendance import AttendanceDay
 from cerepulse.models.values import Duration
 
@@ -214,7 +214,7 @@ def analyze_trends(
     *,
     policy: ShiftPolicy | None = None,
     analyses: dict[date, DayAnalysis] | None = None,
-    today: date | None = None,
+    today: date,
     working_days_remaining: int = 0,
 ) -> TrendReport:
     """Build the full report from every cached day, across as many months as there are."""
@@ -482,19 +482,8 @@ def forecast(
 # --- helpers ----------------------------------------------------------------------------
 
 
-def _median_time(values: Iterable[time | None]) -> time | None:
-    minutes = [_minutes(value) for value in values if value is not None]
-    if not minutes:
-        return None
-    middle = round(statistics.median(minutes))
-    return time(middle // 60 % 24, middle % 60)
-
-
-def _median_duration(values: Iterable[Duration]) -> Duration | None:
-    minutes = [value.minutes for value in values]
-    if not minutes:
-        return None
-    return Duration(round(statistics.median(minutes)))
+_median_time = median_time
+_median_duration = median_duration
 
 
 def _minutes(value: time | None) -> int:

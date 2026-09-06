@@ -116,7 +116,7 @@ class TaskRunner(QObject):
         self._active: set[Task] = set()
         #: Submission order, so the label names the task actually running rather than an
         #: arbitrary member of a set.
-        self._queue: list[str] = []
+        self._queue: list[Task] = []
 
     @property
     def busy(self) -> bool:

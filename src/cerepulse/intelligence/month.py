@@ -15,7 +15,6 @@ Saturday and Sunday, so the numbers stay right for shift workers.
 
 from __future__ import annotations
 
-import statistics
 from calendar import monthrange
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -23,6 +22,7 @@ from datetime import date, time, timedelta
 
 from cerepulse.intelligence.day import DayAnalysis, DayState
 from cerepulse.intelligence.policy import ShiftPolicy
+from cerepulse.intelligence.stats import median_time
 from cerepulse.models.attendance import AttendanceDay, DayStatus
 from cerepulse.models.leave import Holiday
 from cerepulse.models.values import Duration
@@ -271,7 +271,7 @@ def analyze_month(
         estimated_days=sum(1 for r in worked_days if r.estimated),
         unmeasured_days=sum(1 for r in rollups if r.unmeasured),
         on_duty_days=sum(1 for r in rollups if r.on_duty),
-        average_in_time=_average_in_time(days),
+        average_in_time=_typical_in_time(days),
         working_days_elapsed=working_days_elapsed,
         working_days_remaining=working_days_remaining,
         month_target=month_target,
@@ -477,12 +477,13 @@ def _weekly_off_weekdays(days: list[AttendanceDay]) -> set[int]:
     return off - worked
 
 
-def _average_in_time(days: list[AttendanceDay]) -> time | None:
-    stamps = [day.first_in for day in days if day.first_in is not None]
-    if not stamps:
-        return None
-    average = round(statistics.fmean(stamp.hour * 60 + stamp.minute for stamp in stamps))
-    return time(average // 60 % 24, average % 60)
+def _typical_in_time(days: list[AttendanceDay]) -> time | None:
+    """The median first-in over working days.
+
+    A mean over every day with a punch — weekends that were swiped included — is what this
+    was, and it disagreed with the median the trends screen showed for the same month.
+    """
+    return median_time(day.first_in for day in days if day.status.counts_as_worked)
 
 
 def _sum(values: Iterable[Duration]) -> Duration:

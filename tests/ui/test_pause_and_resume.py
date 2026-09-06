@@ -123,15 +123,16 @@ def test_records_refresh_can_end_a_pause(window, monkeypatch) -> None:  # type: 
 
 
 def test_insights_refresh_can_end_a_pause(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """Insights reads the cache rather than fetching, but Refresh has to mean the same
-    thing on every screen or the button stops feeling reliable."""
+    """Refresh means the same thing on every screen — ask the portal, then re-read — or the
+    button stops feeling reliable. Insights used to rebuild from the cache and fetch nothing,
+    on the one screen whose numbers most obviously depend on how much history is cached."""
     asked = _silence_sync(window, monkeypatch)
     window._on_error(SessionTakenError("signed in elsewhere"))
 
     window.insights.refresh_requested.emit()
 
     assert not window._paused
-    assert "refresh_trends" in asked
+    assert "refresh" in asked
 
 
 def test_a_background_tick_does_not_take_the_session_back(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]

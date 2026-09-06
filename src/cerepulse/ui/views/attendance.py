@@ -345,7 +345,8 @@ class AttendanceView(QWidget):
         )
         self._view = view
         # Nothing to fetch is worth saying with the button rather than in a banner.
-        self._fetch_detail.setEnabled(view.pending_detail > 0)
+        # Never disabled — a greyed button reads as broken. With nothing pending it says so
+        # in its own label, and pressing it still answers.
         self._fetch_detail.setText(
             f"Fetch punch detail ({view.pending_detail})"
             if view.pending_detail

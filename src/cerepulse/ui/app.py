@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from types import TracebackType
 
 from loguru import logger
 from PySide6.QtCore import Qt
@@ -44,7 +45,9 @@ def set_app_user_model_id(model_id: str = APP_USER_MODEL_ID) -> bool:
     return True
 
 
-def _report_crash(kind: type[BaseException], exc: BaseException, trace: object) -> None:
+def _report_crash(
+    kind: type[BaseException], exc: BaseException, trace: TracebackType | None
+) -> None:
     """Log an unhandled exception and say so on screen, instead of vanishing.
 
     PySide6 aborts the process on an exception escaping a slot, and it does so without a

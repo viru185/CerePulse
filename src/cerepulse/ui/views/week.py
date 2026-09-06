@@ -37,6 +37,7 @@ from cerepulse.models.values import Duration
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette, Space
 from cerepulse.ui.widgets import (
+    Banner,
     Card,
     DayTimeline,
     EmptyState,
@@ -74,6 +75,10 @@ class WeekView(QWidget):
         layout.setSpacing(Space.GAP)
 
         layout.addLayout(self._build_header())
+        # The one screen with no error surface: a Week that failed to load was
+        # indistinguishable from a Week with no data.
+        self.banner = Banner()
+        layout.addWidget(self.banner)
 
         # The verdict, in a sentence, before any figure that supports it.
         self._verdict = QLabel()
