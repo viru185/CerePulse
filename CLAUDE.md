@@ -14,7 +14,7 @@ repeating them: two copies of a rule is one copy that goes stale.
 
 ```bash
 uv sync --all-extras          # install, including dev tools
-uv run pytest -q              # 1,216 tests, ~35s
+uv run pytest -q              # 1,250 tests, ~35s
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                   # strict, must stay clean
 ```
@@ -84,7 +84,10 @@ duty and comp-off under different `odtype` tokens, and `LeaveList.aspx` is the s
 a `Leave Type` column. Two cells carry more than their heading says: `From Date` appends a
 half-day marker to the weekday (`14-Jun-26 Sun2nd Half`) and `Apply Days` appends the type
 (`5.50 OD`). Unlike the swipe grid these carry the portal's own `App. Id`, so identity does
-not have to be synthesised.
+not have to be synthesised. And the comp-off list holds **earnings only** — every row is
+`0.50 CO+` or `1.00 CO+`; *spending* a comp-off is filed as a **leave** application typed
+`CO-`. The leave grid's remark ends in the approver's empty label (`… <b>Manager :</b>`), and
+the same remark reaches the register and the muster with its emoji mangled to `????`.
 
 **9. A swipe request cannot be filed, or even pre-filled, from a link.** "Add New" is
 `__doPostBack('ctl00$BodyContentPlaceHolder$Menu1','Add New')` against the list page itself.
@@ -395,9 +398,12 @@ through; cards, the sidebar, tables and inputs keep their own opaque rules, and 
 dialog is a widget, and a transparent one over the desktop is unreadable.
 
 **The daily tile is the only thing that talks to anyone but the portal and the maps
-provider.** ZenQuotes (`/api/today`, keyless, one credit line required) and Bing's image
-archive (keyless, copyright line shown verbatim). One request each per calendar day; a
-failure serves the cached day; the Settings switches stop the requests, not merely the tile.
+provider.** ZenQuotes (`/api/today`, keyless; its free tier asks for a linked credit line,
+which sits in Settings › Daily and in About, not under the picture) and Bing's image archive
+(keyless; the copyright line is the picture's tooltip and the viewer's caption, verbatim).
+The tile itself carries the picture and the words and none of the paperwork. One request
+each per calendar day; a failure serves the cached day; the Settings switches stop the
+requests, not merely the tile.
 NASA's picture of the day was rejected because it needs `DEMO_KEY` in the build.
 
 **A notification toggle existing is not evidence the insight can.** `EARLY_EXIT` and
@@ -429,6 +435,16 @@ on that path at all.
 **The date can change while the app is running.** The sync period, the week start and the
 date picker's maximum were each read once at construction, so an app left open overnight
 stayed on yesterday until restarted. One place owns the turnover.
+
+**The application is the event; the muster is the evidence.** The timeline used to lead
+with the muster and suppress applications by `(day, kind)` — and a comp-off spent through a
+`CO-` leave application was `COMP_OFF_SPENT` on the muster and `LEAVE` in the suppression
+table, so one Thursday showed the day *and* both applications. `build_records` now walks
+applications → unexplained credits → leftover muster days → swipes: an application absorbs
+the muster days it explains (`_absorbs`, kind-aware, so a genuine mismatch still shows as
+two rows), owns the title, the amount, the state and the reason as typed, and the muster is
+consulted only for what it lacks. Remarks go through `wording.clean_remark` before anyone
+reads them. A record is dated by its start; the span lives in its title.
 
 **Voice appends, never substitutes.** `intelligence/voice.py` may only add a sentence to an
 insight's detail. It cannot change a number, reword a warning, or drop a line, so no tone
