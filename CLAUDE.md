@@ -14,7 +14,7 @@ repeating them: two copies of a rule is one copy that goes stale.
 
 ```bash
 uv sync --all-extras          # install, including dev tools
-uv run pytest -q              # 1,152 tests, ~25s
+uv run pytest -q              # 1,172 tests, ~35s
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                   # strict, must stay clean
 ```
@@ -347,6 +347,36 @@ release, verified, and hands over. Never disable the button.
 outdoor duty is never short, and a weekly off with hours on it is fetched and reported
 beside the bank — never inside it, because a day off owes nothing. All three were parsed and
 stored from the first release and read by nothing.
+
+**One database connection per thread.** The cache was opened once with
+`check_same_thread=False` and shared between the GUI thread and the sync worker, so a GUI
+read could land inside a worker's open `BEGIN`…`COMMIT` and see half a month, two
+overlapping transactions raised, and WAL — which isolates readers from writers *across
+connections* — did nothing. `Database.connection` now hands each thread its own; an
+in-memory test database still shares one, because `:memory:` is one database per connection.
+This is the prime suspect for the damaged pages the user's cache has had twice.
+
+**Theme names live in two places on purpose, held together by a test.** `core` validates
+`ui.theme` and cannot import `ui`, so `core.config.models.THEMES` and `ui.theme.PALETTES`
+must agree; `test_the_theme_names_the_loader_accepts_are_the_palettes_that_exist` is what
+keeps them so. Every palette is held to the same 4.5:1 floor by the same parametrised test —
+the light palette failed it for months because the accent test ran on dark alone.
+
+**A theme change is applied by walking, not by setters.** Twenty widget classes hold a
+`_palette`; `_apply_theme` finds every widget that has one and hands it the new palette in one
+place, then re-renders. Adding a painted widget needs nothing beyond storing `self._palette`.
+
+**With a wallpaper the plain widget background is transparent, and dialogs must be told.**
+`stylesheet(palette, wallpaper=True)` makes `QWidget` transparent so the `_Backdrop` shows
+through; cards, the sidebar, tables and inputs keep their own opaque rules, and `QDialog`,
+`QMessageBox`, `QMenu`, `QToolTip` and the calendar are given the surface explicitly — a
+dialog is a widget, and a transparent one over the desktop is unreadable.
+
+**The daily tile is the only thing that talks to anyone but the portal and the maps
+provider.** ZenQuotes (`/api/today`, keyless, one credit line required) and Bing's image
+archive (keyless, copyright line shown verbatim). One request each per calendar day; a
+failure serves the cached day; the Settings switches stop the requests, not merely the tile.
+NASA's picture of the day was rejected because it needs `DEMO_KEY` in the build.
 
 **A notification toggle existing is not evidence the insight can.** `EARLY_EXIT` and
 `SWIPE_NEEDED` both derive from `early_exit`, which required `DayState.COMPLETE` — and today
