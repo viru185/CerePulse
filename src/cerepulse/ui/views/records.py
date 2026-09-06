@@ -31,9 +31,15 @@ from PySide6.QtWidgets import (
 
 from cerepulse.intelligence.attention import duplicate_requests
 from cerepulse.intelligence.insights import Severity
-from cerepulse.intelligence.leave import WARNING_WINDOW_DAYS, LeaveLot, LeaveOutlook
+from cerepulse.intelligence.leave import LeaveOutlook
 from cerepulse.intelligence.optimizer import BreakPlan
-from cerepulse.intelligence.records import Record, RecordKind, holiday_calendar
+from cerepulse.intelligence.records import (
+    Record,
+    RecordKind,
+    RecordState,
+    Tone,
+    holiday_calendar,
+)
 from cerepulse.intelligence.sandwich import SandwichAssessment
 from cerepulse.models.leave import Holiday, LeaveCategory
 from cerepulse.services.leave import LeaveView as LeaveData
@@ -76,16 +82,18 @@ HOLIDAY_COLUMNS = ("Date", "Day", "Holiday", "")
 #: same information, fewer entries each, and a question the old one could not express.
 KIND_FILTERS: tuple[tuple[str, Callable[[Record], bool]], ...] = (
     ("All kinds", lambda record: True),
-    ("Leave", lambda record: record.kind is RecordKind.LEAVE),
-    ("Outdoor duty", lambda record: record.kind is RecordKind.OUTDOOR_DUTY),
+    # A day of comp-off is spent through a leave application, and answers both "which days
+    # did I take off" and "where did my comp-off go" — so it matches both filters.
+    ("Leave", lambda record: record.is_kind(RecordKind.LEAVE)),
+    ("Outdoor duty", lambda record: record.is_kind(RecordKind.OUTDOOR_DUTY)),
     (
         "Comp-off",
-        lambda record: record.kind in (RecordKind.COMP_OFF_EARNED, RecordKind.COMP_OFF_SPENT),
+        lambda record: record.is_kind(RecordKind.COMP_OFF_EARNED, RecordKind.COMP_OFF_SPENT),
     ),
-    ("Swipe requests", lambda record: record.kind is RecordKind.SWIPE_REQUEST),
+    ("Swipe requests", lambda record: record.is_kind(RecordKind.SWIPE_REQUEST)),
     # Absence had no entry at all under the old single dropdown, so the one kind that always
     # needs an explanation was the one kind that could not be filtered to.
-    ("Absence", lambda record: record.kind is RecordKind.ABSENCE),
+    ("Absence", lambda record: record.is_kind(RecordKind.ABSENCE)),
 )
 
 #: "Needs doing" leads because it is the only one that is urgent.
@@ -290,7 +298,7 @@ class RecordsView(QWidget):
         )
         more = f" and {len(duplicates) - 4} more" if len(duplicates) > 4 else ""
         self.banner.show_message(
-            f"{len(duplicates)} day(s) carry more than one live request for the same punch: "
+            f"{_days(len(duplicates))} carry more than one live request for the same punch: "
             f"{days}{more}. Cancelling the extra keeps the approver's queue honest.",
             Severity.WARNING,
             key="duplicates",
@@ -351,47 +359,12 @@ class RecordsView(QWidget):
         elif balance.available_balance > 0:
             accent = self._palette.good
 
+        # A balance card shows a balance. The credits behind a comp-off figure — earned,
+        # expiring, used — are events, and live on the timeline below as "Comp-off earned".
         card = Card(balance.leave_type, value=f"{balance.available_balance:g}", accent=accent)
         card.set_caption(_expiry_caption(outlook))
         card.setMinimumWidth(170)
-        if outlook.lots:
-            self._add_lot_rows(card, outlook)
         return card
-
-    def _add_lot_rows(self, card: Card, outlook: LeaveOutlook) -> None:
-        """One line per credit: earned, how much, when it lapses, and when it was used.
-
-        The headline says how much is left; this says which credits that is made of, which
-        is the only form in which "when does my comp-off expire" has an answer. Lapsed
-        credits are dimmed, ones inside the warning window take the amber accent, and the
-        earned-date caveat is said once under the list rather than on every line.
-        """
-        from cerepulse.intelligence.leave import ExpiryBasis
-
-        today = outlook.assessed_on or date.today()
-        for lot in outlook.lots:
-            row = QLabel(_lot_text(lot, today))
-            row.setObjectName("CardCaption")
-            row.setWordWrap(True)
-            if lot.is_spent:
-                colour = self._palette.text_faint
-            elif lot.has_lapsed(today):
-                colour = self._palette.bad
-            elif lot.days_remaining(today) <= WARNING_WINDOW_DAYS:
-                colour = self._palette.rest
-            else:
-                colour = self._palette.text_muted
-            row.setStyleSheet(f"color: {colour};")
-            card.add_detail(row)
-        if outlook.basis is ExpiryBasis.EARNED_PLUS_WINDOW:
-            caveat = QLabel(
-                "Counted from the date each was earned; the portal does not publish an "
-                "approval date for comp-off."
-            )
-            caveat.setObjectName("CardCaption")
-            caveat.setWordWrap(True)
-            caveat.setStyleSheet(f"color: {self._palette.text_faint};")
-            card.add_detail(caveat)
 
     def show_holidays(self, holidays: list[Holiday], *, today: date | None = None) -> None:
         """The published calendar, past dimmed and the next one named."""
@@ -492,7 +465,13 @@ class RecordsView(QWidget):
         shown = [record for record in self._records if by_kind(record) and by_state(record)]
         self._nothing.setVisible(not shown)
 
+        # Grouped under the day rather than dated per row: three things on one Thursday are
+        # one heading and three lines, and the date stops competing with the title.
+        current: date | None = None
         for record in shown[:MAX_ROWS]:
+            if record.day != current:
+                current = record.day
+                self._timeline.addWidget(_DayHeader(record.day, self._palette))
             row = _RecordRow(record, self._palette)
             row.clicked.connect(lambda day=record.day: self.day_selected.emit(day))
             self._timeline.addWidget(row)
@@ -523,27 +502,41 @@ def _empty(layout: QVBoxLayout | QHBoxLayout) -> None:
             widget.deleteLater()
 
 
+class _DayHeader(QLabel):
+    """The date, once, above everything that happened on it. Not a row: not clickable."""
+
+    def __init__(self, day: date, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(fmt.day_label(day), parent)
+        self.setStyleSheet(
+            f"color: {palette.text_muted}; font-weight: 600; font-size: 11px;"
+            f" padding: {Space.SNUG}px 0 2px 0; border-bottom: 1px solid {palette.border};"
+        )
+
+
 class _RecordRow(QWidget):
-    """One entry: when, what kind, and what it said."""
+    """One event: what kind, what it was, what became of it.
+
+    The chip says the kind and the title says the thing, so neither repeats the other. The
+    pill at the end is coloured by *state* — approved green, pending amber, rejected red —
+    and the chip by kind, so the two ends of a row answer two different questions and a
+    rejection is never the same colour as an approval.
+    """
 
     clicked = Signal()
 
     def __init__(self, record: Record, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        if record.note:
+            self.setToolTip(record.note)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, Space.TIGHT // 2, 0, Space.TIGHT // 2)
+        layout.setContentsMargins(0, Space.TIGHT, 0, Space.TIGHT)
         layout.setSpacing(Space.ROW)
 
-        when = QLabel(record.day.strftime("%a %d %b").lstrip("0"))
-        when.setFixedWidth(96)
-        when.setStyleSheet(f"color: {palette.text_muted};")
-        layout.addWidget(when)
-
-        chip = StatusChip(record.kind.label, _kind_colour(record, palette))
-        chip.setFixedWidth(124)
-        layout.addWidget(chip)
+        chip = StatusChip(record.kind.label, _kind_colour(record.kind, palette))
+        chip.setFixedWidth(100)
+        layout.addWidget(chip, 0, Qt.AlignmentFlag.AlignTop)
 
         text = QVBoxLayout()
         text.setSpacing(1)
@@ -555,13 +548,24 @@ class _RecordRow(QWidget):
             detail.setObjectName("CardCaption")
             detail.setWordWrap(True)
             text.addWidget(detail)
+        if record.aside:
+            aside = QLabel(record.aside)
+            aside.setObjectName("CardCaption")
+            aside.setWordWrap(True)
+            aside.setStyleSheet(f"color: {_tone_colour(record.aside_tone, palette)};")
+            text.addWidget(aside)
         layout.addLayout(text, 1)
 
-        # Where it stands, at the end of the row rather than buried in the title. Only the
-        # entries that *are* requests get one — a holiday has no approval state, and a blank
-        # chip on every other row would read as one that failed to load.
-        if record.status:
-            layout.addWidget(StatusChip(record.status, _kind_colour(record, palette)))
+        if record.decided_on is not None:
+            decided = QLabel(f"decided {fmt.day_label(record.decided_on)}")
+            decided.setStyleSheet(f"color: {palette.text_faint}; font-size: 11px;")
+            layout.addWidget(decided, 0, Qt.AlignmentFlag.AlignTop)
+        # Only the entries that *are* requests get a pill — a half day the portal marked for
+        # a late arrival has no approval state, and a blank pill would read as one that
+        # failed to load.
+        if record.state is not RecordState.NONE:
+            pill = StatusChip(record.status, _state_colour(record.state, palette))
+            layout.addWidget(pill, 0, Qt.AlignmentFlag.AlignTop)
 
     def mouseReleaseEvent(self, event: object) -> None:  # noqa: N802 — Qt override
         self.clicked.emit()
@@ -573,19 +577,32 @@ def open_url(url: str) -> None:
     QDesktopServices.openUrl(QUrl(url))
 
 
-def _kind_colour(record: Record, palette: Palette) -> str:
-    if record.needs_action:
-        return palette.bad
-    if record.pending:
-        return palette.rest
+def _kind_colour(kind: RecordKind, palette: Palette) -> str:
     return {
         RecordKind.LEAVE: palette.adjust,
-        RecordKind.OUTDOOR_DUTY: palette.adjust,
+        RecordKind.OUTDOOR_DUTY: palette.work,
         RecordKind.COMP_OFF_EARNED: palette.good,
-        RecordKind.COMP_OFF_SPENT: palette.work,
-        RecordKind.SWIPE_REQUEST: palette.good,
+        RecordKind.COMP_OFF_SPENT: palette.good,
+        RecordKind.SWIPE_REQUEST: palette.text_muted,
         RecordKind.ABSENCE: palette.bad,
-    }.get(record.kind, palette.text_muted)
+    }.get(kind, palette.text_muted)
+
+
+def _state_colour(state: RecordState, palette: Palette) -> str:
+    return {
+        RecordState.APPROVED: palette.good,
+        RecordState.PENDING: palette.rest,
+        RecordState.REJECTED: palette.bad,
+        RecordState.LAPSED: palette.bad,
+    }.get(state, palette.text_muted)
+
+
+def _tone_colour(tone: Tone, palette: Palette) -> str:
+    return {
+        Tone.FAINT: palette.text_faint,
+        Tone.WARN: palette.rest,
+        Tone.BAD: palette.bad,
+    }.get(tone, palette.text_muted)
 
 
 def _expiry_caption(outlook: LeaveOutlook) -> str:
@@ -606,37 +623,13 @@ def _expiry_caption(outlook: LeaveOutlook) -> str:
         return f"lapsed {fmt.day_label(outlook.expires_on)}"
 
     when = fmt.day_label(outlook.expires_on)
-    parts = [f"expires {when}"]
-    if outlook.days_remaining is not None:
-        parts.append(f"{outlook.days_remaining} day(s)")
     open_lots = outlook.open_lots
+    lead = f"{_days(open_lots[0].remaining)} expires" if len(open_lots) > 1 else "expires"
+    parts = [f"{lead} {when}"]
+    if outlook.days_remaining is not None:
+        parts.append(f"{outlook.days_remaining} days")
     if len(open_lots) > 1:
-        parts.insert(
-            0, f"{_days(open_lots[0].remaining)} of {_days(outlook.balance.available_balance)}"
-        )
         parts.append(f"{len(open_lots) - 1} more later")
-    return "  ·  ".join(parts)
-
-
-def _lot_text(lot: LeaveLot, today: date) -> str:
-    """``earned 18 Jul · 1 day · expires 16 Oct (40 days) · unused``."""
-    parts = [f"earned {fmt.day_label(lot.earned_on)}", _days(lot.days)]
-    if lot.is_spent:
-        pass
-    elif lot.has_lapsed(today):
-        parts.append(f"lapsed {fmt.day_label(lot.expires_on)}")
-    else:
-        parts.append(f"expires {fmt.day_label(lot.expires_on)} ({lot.days_remaining(today)} days)")
-    if lot.used_on:
-        spent = ", ".join(
-            f"{fmt.day_label(when)}" + (f" ({amount:g})" if amount != lot.days else "")
-            for when, amount in lot.used_on
-        )
-        parts.append(f"used {spent}")
-    if lot.unattributed:
-        parts.append(f"{_days(lot.unattributed)} used before the cached history")
-    if not lot.used_on and not lot.unattributed:
-        parts.append("unused")
     return " · ".join(parts)
 
 

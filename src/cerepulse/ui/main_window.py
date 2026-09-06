@@ -122,6 +122,7 @@ class MainWindow(QMainWindow):
         self._swipes: list[object] = []
         self._ledger: list[object] = []
         self._applications: list[object] = []
+        self._leave_data: LeaveData | None = None
         #: Months known synced or cached, refreshed on every month render. Held so stepping
         #: the period can decide "does this month need a fetch" without a database read on
         #: the GUI thread.
@@ -815,7 +816,10 @@ class MainWindow(QMainWindow):
             self.today.banner.clear_message("cache")
 
     def _apply_leave(self, data: LeaveData) -> None:
+        self._leave_data = data
         self.records.show_leave(data)
+        # The comp-off credits' expiry and use ride on the timeline's earned rows.
+        self._rebuild_records()
         if self._tray is not None:
             # Expiry warnings are worth a toast; the policy caps them to once a day.
             self._tray.notify_insights(data.insights)
@@ -875,11 +879,19 @@ class MainWindow(QMainWindow):
     def _render_records(self, days: list[object], start: date | None) -> None:
         from cerepulse.intelligence.records import build_records
 
+        lots = [
+            lot
+            for outlook in (self._leave_data.outlooks if self._leave_data else [])
+            if outlook.balance.is_comp_off
+            for lot in outlook.lots
+        ]
         records = build_records(
             days=days,  # type: ignore[arg-type]
             requests=self._swipes,  # type: ignore[arg-type]
             transactions=self._ledger,  # type: ignore[arg-type]
             applications=self._applications,  # type: ignore[arg-type]
+            lots=lots,
+            today=date.today(),
         )
         if start is not None:
             # The other sources are all-time in memory; the window has to bound them too,
@@ -1376,7 +1388,7 @@ class MainWindow(QMainWindow):
         self._runner.submit(
             "pay",
             lambda: self._context.pay.load(self._employee_code),
-            on_success=self.pay.show,
+            on_success=self.pay.show_snapshot,
             on_error=lambda exc: self._on_degraded("pay", exc),
         )
 
@@ -1387,22 +1399,21 @@ class MainWindow(QMainWindow):
         self._runner.submit(
             "pay",
             lambda: self._context.sync.run(lambda: self._context.pay.refresh(self._employee_code)),
-            on_success=self.pay.show,
+            on_success=self.pay.show_snapshot,
             on_error=lambda exc: self._on_degraded("pay", exc),
         )
 
     def _show_daily(self, view: DailyView) -> None:
         self._daily_view = view
-        credits = []
-        if view.picture is not None and view.picture.copyright:
-            credits.append(view.picture.copyright)
-        if view.quote is not None:
-            credits.append(f'<a href="{view.quote.credit_url}">{view.quote.credit}</a>')
+        picture = view.picture
+        caption = "\n".join(
+            part for part in ((picture.title, picture.copyright) if picture else ()) if part
+        )
         self._daily.show_day(
             view.quote.text if view.quote else "",
             view.quote.author if view.quote else "",
-            view.picture.path if view.picture else None,
-            "<br>".join(credits),
+            picture.path if picture else None,
+            caption,
         )
 
     def _open_daily(self) -> None:

@@ -1028,10 +1028,10 @@ def test_the_legend_stays_quiet_when_the_break_was_within_the_allowance(
     assert view._timeline._flat_at is None
 
 
-def test_the_comp_off_card_lists_every_credit(qapp: QApplication) -> None:
-    """The headline says how much is left; the rows say which credits that is, when each
-    lapses, and when each was used — the only form in which "when does my comp-off expire"
-    has an answer. The caveat about the earned date is said once, under the list."""
+def test_the_comp_off_card_shows_only_the_balance(qapp: QApplication) -> None:
+    """A balance card shows a balance. The credits behind it — earned, expiring, used — are
+    events, and live on the timeline; the card says how much is left and when the first of
+    it goes."""
     from PySide6.QtWidgets import QLabel
 
     from cerepulse.intelligence.leave import analyze_leave
@@ -1058,9 +1058,59 @@ def test_the_comp_off_card_lists_every_credit(qapp: QApplication) -> None:
     card = RecordsView(DARK)._card_for(outlook)
 
     text = "\n".join(label.text() for label in card.findChildren(QLabel))
-    assert "18 Jul" in text and "16 Oct (40 days)" in text
-    assert "4 Aug" in text and "2 Nov (57 days)" in text
-    assert text.count("does not publish an approval date") == 1
+    assert "0.5 days expires Fri 16 Oct · 40 days · 1 more later" in text
+    assert "earned" not in text
+    assert "approval date" not in text
+
+
+def test_settings_sections_are_in_order(qapp: QApplication) -> None:
+    """One page, grouped: the headings the jump list points at, in reading order."""
+    from cerepulse.core.config import AppConfig
+    from cerepulse.ui.views.settings import SettingsView
+    from cerepulse.ui.widgets import SectionTitle
+
+    view = SettingsView(AppConfig())
+    assert [title.text() for title in view.findChildren(SectionTitle)] == [
+        "Account",
+        "Work day",
+        "Notifications",
+        "Sync & data",
+        "Appearance",
+        "Journey home",
+        "Daily & Pay",
+        "Updates",
+    ]
+
+
+def test_the_sidebar_tile_carries_no_credit_line(qapp: QApplication, tmp_path: object) -> None:
+    """The picture and the words, not the paperwork. The credits moved to Settings and
+    About; the picture's caption is its tooltip."""
+    from pathlib import Path
+
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QLabel
+
+    from cerepulse.ui.theme import DARK
+    from cerepulse.ui.widgets import DailyTile
+
+    picture = Path(str(tmp_path)) / "day.png"
+    QImage(4, 4, QImage.Format.Format_RGB32).save(str(picture))
+    tile = DailyTile(DARK)
+    tile.show_day("Dare to live.", "Lao Tzu", picture, "Lake Fyans (© someone/Getty)")
+
+    texts = [label.text() for label in tile.findChildren(QLabel)]
+    assert not any("href" in text or "ZenQuotes" in text for text in texts)
+    assert "Lake Fyans" in tile._image.toolTip()  # noqa: SLF001
+
+
+def test_about_credits_the_providers(qapp: QApplication) -> None:
+    from PySide6.QtWidgets import QPushButton
+
+    from cerepulse.ui.views.about import AboutView
+
+    view = AboutView()
+    names = {button.text() for button in view.findChildren(QPushButton)}
+    assert {"ZenQuotes", "Bing", "TomTom"} <= names
 
 
 def test_a_masked_field_can_be_shown_while_typing(qapp: QApplication) -> None:

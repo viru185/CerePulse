@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from datetime import date, time, timedelta
 
-from cerepulse.intelligence.records import RecordKind, build_records
+from cerepulse.intelligence.leave import LeaveLot
+from cerepulse.intelligence.records import RecordKind, RecordState, build_records
 from cerepulse.models.application import Application, ApplicationKind
 from cerepulse.models.attendance import AttendanceDay, DayStatus
 from cerepulse.models.leave import Holiday, LeaveTransaction
@@ -25,6 +26,8 @@ def day(
     *,
     status: DayStatus = DayStatus.PRESENT,
     ut1: str = "DP",
+    ut2: str = "",
+    portion: float = 0.0,
     remarks: str = "Attendance Muster",
 ) -> AttendanceDay:
     return AttendanceDay(
@@ -32,6 +35,8 @@ def day(
         weekday=when.strftime("%a"),
         status=status,
         user_type_1=ut1,
+        user_type_2=ut2,
+        portion=portion,
         total_hours=Duration(540),
         remarks=remarks,
     )
@@ -52,7 +57,9 @@ def holiday(when: date, name: str) -> Holiday:
     return Holiday(day=when, weekday=when.strftime("%a"), name=name)
 
 
-def ledger(when: date | None, *, credit: float = 0.0, consumed: float = 0.0) -> LeaveTransaction:
+def ledger(
+    when: date | None, *, credit: float = 0.0, consumed: float = 0.0, remark: str = ""
+) -> LeaveTransaction:
     return LeaveTransaction(
         leave_type="CO- / CO+",
         opening_balance=0.0,
@@ -60,6 +67,7 @@ def ledger(when: date | None, *, credit: float = 0.0, consumed: float = 0.0) -> 
         credit_days=credit,
         available_balance=1.0,
         transaction_date=when,
+        remark=remark,
     )
 
 
@@ -137,8 +145,10 @@ def test_a_decided_request_says_when_it_was_decided() -> None:
     )
     (entry,) = build_records(requests=[decided])
 
-    assert "decided 31 Jul" in entry.detail
-    assert "9:00 AM" in entry.detail, "what was actually asked for"
+    assert entry.decided_on == date(2026, 7, 31)
+    assert "decided" not in entry.detail, "a date, not a phrase glued to the reason"
+    assert entry.title == "In 9:00 AM", "what was actually asked for"
+    assert entry.detail == "Extra night work"
 
 
 def test_a_pending_request_carries_no_decision_date() -> None:
@@ -155,7 +165,7 @@ def test_a_pending_request_carries_no_decision_date() -> None:
     )
     (entry,) = build_records(requests=[filed])
 
-    assert "decided" not in entry.detail
+    assert entry.decided_on is None
 
 
 def test_a_request_is_titled_by_the_type_the_portal_gave_it() -> None:
@@ -172,7 +182,7 @@ def test_a_request_is_titled_by_the_type_the_portal_gave_it() -> None:
     )
     (entry,) = build_records(requests=[outdoor])
 
-    assert entry.title == "Outdoor Duty request"
+    assert entry.title == "Outdoor Duty: In 9:00 AM"
 
 
 # --- filed applications --------------------------------------------------------------------
@@ -210,6 +220,8 @@ def test_an_outdoor_duty_day_gains_the_status_of_the_application_behind_it() -> 
 
     assert entry.kind is RecordKind.OUTDOOR_DUTY
     assert entry.status == "Approved"
+    assert entry.day == date(2026, 6, 14), "dated from the application, which is the event"
+    assert entry.detail == TRAINING, "the muster's reason, when the application has none"
 
 
 def test_an_approved_application_is_not_listed_beside_the_days_it_produced() -> None:
@@ -232,10 +244,11 @@ def test_an_application_the_muster_knows_nothing_about_gets_its_own_row() -> Non
         ]
     )
 
-    assert entry.title == "Outdoor duty applied for"
+    assert entry.title == "1 day"
+    assert entry.kind is RecordKind.OUTDOOR_DUTY
     assert entry.pending
     assert entry.status == "Pending"
-    assert "Client site" in entry.detail
+    assert entry.detail == "Client site"
 
 
 def test_a_rejected_application_needs_doing_something_about() -> None:
@@ -251,8 +264,8 @@ def test_a_multi_day_application_says_how_far_it_runs() -> None:
             application(date(2026, 6, 14), date(2026, 6, 19), days=5.5, status=SwipeStatus.LAPSED)
         ]
     )
-    assert "5.5 day(s)" in entry.detail
-    assert "to 19 Jun" in entry.detail
+    assert entry.title == "5.5 days, to 19 Jun"
+    assert entry.day == date(2026, 6, 14)
 
 
 def test_a_comp_off_credit_takes_its_status_from_the_application_that_earned_it() -> None:
@@ -262,6 +275,7 @@ def test_a_comp_off_credit_takes_its_status_from_the_application_that_earned_it(
     )
 
     assert entry.kind is RecordKind.COMP_OFF_EARNED
+    assert entry.title == "1 day earned"
     assert entry.status == "Approved"
 
 
@@ -275,11 +289,14 @@ def test_a_leave_day_taken_as_comp_off_finds_its_application_in_the_comp_off_lis
     )
 
     assert entry.status == "Approved"
+    assert entry.kind is RecordKind.COMP_OFF_SPENT
+    assert entry.title == "1 day taken"
 
 
-def test_a_day_covered_twice_reports_the_decided_application() -> None:
-    """Rejected and refiled is a real sequence, and the decision is what applies."""
-    (entry,) = build_records(
+def test_a_day_covered_twice_is_two_events_and_one_day() -> None:
+    """Rejected and refiled is a real sequence. Both are live facts — an answer and a
+    question still open — so both are rows; the day itself is listed zero further times."""
+    records = build_records(
         days=[day(date(2026, 6, 15), status=DayStatus.ON_DUTY, ut1="OD")],
         applications=[
             application(date(2026, 6, 15), status=SwipeStatus.IN_PROCESS),
@@ -287,7 +304,8 @@ def test_a_day_covered_twice_reports_the_decided_application() -> None:
         ],
     )
 
-    assert entry.status == "Rejected"
+    assert {entry.status for entry in records} == {"Pending", "Rejected"}
+    assert len(records) == 2
 
 
 def test_records_without_applications_still_carry_no_status() -> None:
@@ -308,6 +326,8 @@ def test_comp_off_movements_become_entries() -> None:
         RecordKind.COMP_OFF_EARNED,
         RecordKind.COMP_OFF_SPENT,
     }
+    spent = next(entry for entry in records if entry.kind is RecordKind.COMP_OFF_SPENT)
+    assert spent.is_kind(RecordKind.LEAVE), "a day of comp-off is also a day off"
 
 
 def test_an_undated_ledger_row_cannot_go_on_a_timeline() -> None:
@@ -407,13 +427,14 @@ def test_a_both_request_shows_both_times() -> None:
         ]
     )
 
-    assert "9:00 AM to 6:00 PM" in entry.detail
+    assert entry.title == "Both 9:00 AM to 6:00 PM"
+    assert entry.detail == "Work from home."
 
 
 def test_a_one_sided_request_still_reads_naturally() -> None:
     """The fix must not turn "In 9:00 AM" into "In 9:00 AM to"."""
     (entry,) = build_records(requests=[request(date(2026, 7, 3), SwipeStatus.APPROVED)])
-    assert entry.detail.startswith("In 9:00 AM —")
+    assert entry.title == "In 9:00 AM"
 
 
 def test_a_request_with_no_times_names_only_the_punch() -> None:
@@ -428,7 +449,8 @@ def test_a_request_with_no_times_names_only_the_punch() -> None:
         status=SwipeStatus.IN_PROCESS,
     )
     (entry,) = build_records(requests=[bare])
-    assert entry.detail == "Out"
+    assert entry.title == "Out"
+    assert entry.detail == ""
 
 
 def test_a_comp_off_taken_is_read_from_the_muster() -> None:
@@ -438,4 +460,253 @@ def test_a_comp_off_taken_is_read_from_the_muster() -> None:
     (entry,) = build_records(days=[day(date(2026, 6, 20), status=DayStatus.LEAVE, ut1="CO-")])
 
     assert entry.kind is RecordKind.COMP_OFF_SPENT
-    assert entry.title == "Comp-off taken — 1 day(s)"
+    assert entry.title == "1 day taken"
+
+
+# --- one row per event ----------------------------------------------------------------------
+
+HOME = "Need to visit home once in a while."
+
+
+def _august() -> dict[str, list[object]]:
+    """Late August 2026 as the three sources actually described it.
+
+    Three leave applications (two halves on the 27th, a day on the 26th), one comp-off
+    application and its credit on the 4th, the muster days they produced — with the leave
+    grid's ``Manager :`` tail and the muster's ``????`` for the emoji — and three swipes.
+    """
+    return {
+        "days": [
+            day(
+                date(2026, 8, 27),
+                status=DayStatus.HALF_DAY,
+                ut2="CO-",
+                portion=0.5,
+                remarks=f"{HOME} ????",
+            ),
+            day(date(2026, 8, 26), status=DayStatus.LEAVE, ut1="CO-", remarks=f"{HOME} ????"),
+            day(
+                date(2026, 8, 25),
+                status=DayStatus.HALF_DAY,
+                portion=0.5,
+                remarks="Late entry (In Cutoff)",
+            ),
+            day(
+                date(2026, 8, 4),
+                status=DayStatus.HALF_DAY,
+                portion=0.5,
+                remarks="night work, lfo tag rectification.",
+            ),
+        ],
+        "applications": [
+            application(
+                date(2026, 8, 27),
+                kind=ApplicationKind.LEAVE,
+                days=0.5,
+                leave_type="CF",
+                remark=f"{HOME} 🏡✈️ Manager :",
+            ),
+            application(
+                date(2026, 8, 27),
+                kind=ApplicationKind.LEAVE,
+                days=0.5,
+                leave_type="CO-",
+                remark=f"{HOME} 🏡✈️ Manager :",
+            ),
+            application(
+                date(2026, 8, 26),
+                kind=ApplicationKind.LEAVE,
+                days=1.0,
+                leave_type="CO-",
+                remark=f"{HOME} 🏡✈️ Manager :",
+            ),
+            application(
+                date(2026, 8, 4),
+                kind=ApplicationKind.COMP_OFF,
+                days=0.5,
+                remark="night work, lfo tag rectification.",
+            ),
+        ],
+        "transactions": [
+            ledger(date(2026, 8, 4), credit=0.5, remark="night work, lfo tag rectification.")
+        ],
+        "requests": [
+            SwipeRequest(
+                date(2026, 8, 25),
+                "In",
+                time(12, 1),
+                None,
+                "scanner did not log the entry.",
+                SwipeStatus.APPROVED,
+                approve_date=date(2026, 8, 31),
+            ),
+            SwipeRequest(
+                date(2026, 8, 14),
+                "In",
+                time(9, 0),
+                None,
+                "morning meeting.",
+                SwipeStatus.APPROVED,
+                approve_date=date(2026, 8, 31),
+            ),
+            SwipeRequest(
+                date(2026, 8, 12),
+                "Both",
+                time(9, 0),
+                time(18, 0),
+                "Work from home.",
+                SwipeStatus.APPROVED,
+                approve_date=date(2026, 8, 31),
+            ),
+        ],
+    }
+
+
+def test_the_august_fortnight_is_one_row_per_event() -> None:
+    """The screenshot showed eleven rows for eight events: the muster's "Comp-off taken"
+    beside the application that produced it, twice, and the earning half day beside its
+    credit. One event, one row — and every reason as the person typed it."""
+    records = build_records(**_august())  # type: ignore[arg-type]
+
+    assert len(records) == 8
+    by_day: dict[date, list] = {}
+    for entry in records:
+        by_day.setdefault(entry.day, []).append(entry)
+    assert {entry.title for entry in by_day[date(2026, 8, 27)]} == {
+        "Half day of CF",
+        "Half day of CO-",
+    }
+    (twenty_sixth,) = by_day[date(2026, 8, 26)]
+    assert twenty_sixth.title == "1 day of CO-"
+    assert twenty_sixth.kind is RecordKind.COMP_OFF_SPENT
+    (fourth,) = by_day[date(2026, 8, 4)]
+    assert fourth.title == "Half day earned"
+    assert fourth.kind is RecordKind.COMP_OFF_EARNED
+    assert fourth.detail == "night work, lfo tag rectification."
+    late, swipe = sorted(by_day[date(2026, 8, 25)], key=lambda entry: entry.kind.value)
+    assert (
+        late.title == "Half day" and late.detail == "Late entry (In Cutoff)" and late.status == ""
+    )
+    assert swipe.decided_on == date(2026, 8, 31)
+
+    for entry in records:
+        assert "day(s)" not in entry.title
+        assert "Manager" not in entry.detail
+        assert "??" not in entry.detail
+        assert "decided" not in entry.detail
+    assert twenty_sixth.detail == f"{HOME} 🏡✈️"
+
+
+def test_a_comp_off_spent_through_leave_is_both_kinds() -> None:
+    (entry,) = build_records(
+        applications=[application(date(2026, 8, 26), kind=ApplicationKind.LEAVE, leave_type="CO-")]
+    )
+    assert entry.is_kind(RecordKind.LEAVE)
+    assert entry.is_kind(RecordKind.COMP_OFF_SPENT)
+    assert not entry.is_kind(RecordKind.COMP_OFF_EARNED)
+
+
+def test_a_multi_day_leave_is_one_row_dated_from_its_start() -> None:
+    records = build_records(
+        days=[day(date(2026, 6, 10 + offset), status=DayStatus.LEAVE) for offset in range(3)],
+        applications=[
+            application(
+                date(2026, 6, 10),
+                date(2026, 6, 12),
+                kind=ApplicationKind.LEAVE,
+                days=3,
+                leave_type="PL",
+            )
+        ],
+    )
+    (entry,) = records
+    assert entry.day == date(2026, 6, 10)
+    assert entry.title == "3 days of PL, to 12 Jun"
+
+
+def test_an_absent_day_under_a_pending_application_is_the_application() -> None:
+    """The muster still says absent because nobody has approved it yet; the application is
+    the fact that explains the day, and its state carries the urgency."""
+    (entry,) = build_records(
+        days=[day(date(2026, 9, 1), status=DayStatus.ABSENT)],
+        applications=[
+            application(
+                date(2026, 9, 1),
+                kind=ApplicationKind.LEAVE,
+                leave_type="PL",
+                status=SwipeStatus.IN_PROCESS,
+            )
+        ],
+    )
+    assert entry.kind is RecordKind.LEAVE
+    assert entry.pending
+    assert not entry.needs_action
+
+
+def test_an_unexplained_credit_absorbs_its_half_day_only_when_the_reason_matches() -> None:
+    matching = build_records(
+        days=[day(date(2026, 8, 4), status=DayStatus.HALF_DAY, remarks="night work")],
+        transactions=[ledger(date(2026, 8, 4), credit=0.5, remark="Late entry |night work")],
+    )
+    assert [entry.kind for entry in matching] == [RecordKind.COMP_OFF_EARNED]
+
+    differing = build_records(
+        days=[day(date(2026, 8, 4), status=DayStatus.HALF_DAY, remarks="Late entry (In Cutoff)")],
+        transactions=[ledger(date(2026, 8, 4), credit=0.5, remark="Sunday deployment")],
+    )
+    assert {entry.kind for entry in differing} == {RecordKind.COMP_OFF_EARNED, RecordKind.LEAVE}
+
+
+def test_a_comp_off_application_is_an_earning_unless_the_muster_says_it_was_spent() -> None:
+    (earned,) = build_records(
+        applications=[application(date(2026, 7, 18), kind=ApplicationKind.COMP_OFF, days=1)]
+    )
+    assert earned.kind is RecordKind.COMP_OFF_EARNED
+    assert earned.title == "1 day earned"
+
+    (spent,) = build_records(
+        days=[day(date(2026, 7, 18), status=DayStatus.LEAVE, ut1="CO-")],
+        applications=[application(date(2026, 7, 18), kind=ApplicationKind.COMP_OFF, days=1)],
+    )
+    assert spent.kind is RecordKind.COMP_OFF_SPENT
+    assert spent.title == "1 day taken"
+
+
+def test_a_credit_with_a_lot_says_what_became_of_it() -> None:
+    lot = LeaveLot(
+        earned_on=date(2026, 7, 18),
+        days=1.0,
+        expires_on=date(2026, 10, 16),
+        used_on=((date(2026, 8, 27), 0.5),),
+    )
+    (entry,) = build_records(
+        transactions=[ledger(date(2026, 7, 18), credit=1.0)],
+        lots=[lot],
+        today=date(2026, 9, 6),
+    )
+    assert entry.aside == "expires Fri 16 Oct · 40 days · used Thu 27 Aug (0.5) · 0.5 left"
+    assert "approval date" in entry.note
+
+    spent = LeaveLot(
+        earned_on=date(2026, 4, 9),
+        days=0.5,
+        expires_on=date(2026, 7, 8),
+        used_on=((date(2026, 8, 26), 0.5),),
+    )
+    (used,) = build_records(
+        transactions=[ledger(date(2026, 4, 9), credit=0.5)], lots=[spent], today=date(2026, 9, 6)
+    )
+    assert used.aside == "used Wed 26 Aug"
+
+    unused = LeaveLot(earned_on=date(2026, 5, 31), days=0.5, expires_on=date(2026, 8, 29))
+    (lapsed,) = build_records(
+        transactions=[ledger(date(2026, 5, 31), credit=0.5)], lots=[unused], today=date(2026, 9, 6)
+    )
+    assert lapsed.aside == "lapsed Sat 29 Aug · Half day lost"
+
+
+def test_a_stateless_record_reads_as_settled_and_unlabelled() -> None:
+    (entry,) = build_records(days=[day(date(2026, 8, 25), status=DayStatus.HALF_DAY)])
+    assert entry.state is RecordState.NONE
+    assert entry.status == ""
+    assert entry.is_settled

@@ -254,7 +254,7 @@ def _caveat(outlook: LeaveOutlook) -> str:
     The rule is 90 days from approval and the portal publishes no approval date for comp-off,
     so this counts from the earned date instead. Stating that beside the figure is the whole
     reason :class:`ExpiryBasis` exists: a date the user might book leave around has to carry
-    how it was arrived at. On the Records card, not in the toast.
+    how it was arrived at. On the timeline row, not in the toast.
     """
     if outlook.basis is not ExpiryBasis.EARNED_PLUS_WINDOW:
         return ""
