@@ -12,6 +12,7 @@ value never becomes the live policy.
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import partial
 
 from PySide6.QtCore import QRectF, Qt, QTime, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
@@ -34,11 +35,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from cerepulse import __about__ as about
 from cerepulse.core.config import AppConfig, CommuteConfig
 from cerepulse.core.config.models import THEMES
 from cerepulse.intelligence.sandwich import SandwichRule
 from cerepulse.ui.theme import THEME_LABELS, Palette, palette_for
-from cerepulse.ui.widgets import Banner, add_reveal_toggle
+from cerepulse.ui.widgets import Banner, SectionTitle, add_reveal_toggle, link_button
 
 #: Control widths, so nothing stretches to fill the card. Spin boxes need room for their
 #: suffix *and* their stepper buttons, or the arrows sit on top of the number.
@@ -240,31 +242,42 @@ class SettingsView(QWidget):
         self.banner = Banner()
         page.addWidget(self.banner)
 
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(14)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
-        grid.setColumnMinimumWidth(0, COLUMN_MIN_WIDTH)
-        grid.setColumnMinimumWidth(1, COLUMN_MIN_WIDTH)
-        page.addLayout(grid)
+        # Twelve cards in one grid read as a wall. Grouped under headings, each group its own
+        # two-column grid — so a tall card stretches only its neighbour, never a stranger
+        # three rows down — with a jump list at the top so nothing is more than a click away.
+        self._sections: list[SectionTitle] = []
+        jump = QHBoxLayout()
+        jump.setSpacing(8)
+        page.addLayout(jump)
 
-        grid.addWidget(self._build_account(), 0, 0)
-        grid.addWidget(self._build_shift(), 0, 1)
-        grid.addWidget(self._build_notifications(), 1, 0, 2, 1)
-        grid.addWidget(self._build_sync(), 1, 1)
-        grid.addWidget(self._build_appearance(), 2, 1)
-        grid.addWidget(self._build_history(), 3, 0)
-        grid.addWidget(self._build_cache(), 3, 1)
-        # Leave rules and Updates were a full-width row each — two cards of four controls
-        # between them, each leaving half the page empty. Paired, they cost one row instead
-        # of two. Journey home keeps the full width: its address fields are the only
-        # controls on this page that genuinely need it.
-        grid.addWidget(self._build_leave_rules(), 4, 0)
-        grid.addWidget(self._build_updates(), 4, 1)
-        grid.addWidget(self._build_commute(), 5, 0, 1, 2)
-        grid.addWidget(self._build_daily(), 6, 0)
-        grid.addWidget(self._build_pay(), 6, 1)
+        def section(title: str, *cards: tuple[QWidget, int, int, int]) -> None:
+            heading = SectionTitle(title)
+            self._sections.append(heading)
+            jump.addWidget(link_button(title, partial(scroll.ensureWidgetVisible, heading)))
+            page.addSpacing(6)
+            page.addWidget(heading)
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(14)
+            grid.setVerticalSpacing(14)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 1)
+            grid.setColumnMinimumWidth(0, COLUMN_MIN_WIDTH)
+            grid.setColumnMinimumWidth(1, COLUMN_MIN_WIDTH)
+            for card, row, column, span in cards:
+                grid.addWidget(card, row, column, 1, span)
+            page.addLayout(grid)
+
+        section("Account", (self._build_account(), 0, 0, 1), (self._build_cache(), 0, 1, 1))
+        section("Work day", (self._build_shift(), 0, 0, 1), (self._build_leave_rules(), 0, 1, 1))
+        section("Notifications", (self._build_notifications(), 0, 0, 2))
+        section("Sync & data", (self._build_sync(), 0, 0, 1), (self._build_history(), 0, 1, 1))
+        section("Appearance", (self._build_appearance(), 0, 0, 1), (self._build_window(), 0, 1, 1))
+        # Journey home keeps the full width: its address fields are the only controls on
+        # this page that genuinely need it.
+        section("Journey home", (self._build_commute(), 0, 0, 2))
+        section("Daily & Pay", (self._build_daily(), 0, 0, 1), (self._build_pay(), 0, 1, 1))
+        section("Updates", (self._build_updates(), 0, 0, 2))
+        jump.addStretch(1)
 
         page.addStretch(1)
 
@@ -376,13 +389,6 @@ class SettingsView(QWidget):
             "How much of the theme's own colour is laid over the picture. Higher keeps the "
             "text easier to read on a busy image."
         )
-        self._background = _choice(
-            [
-                ("Keep running in the tray", "tray"),
-                ("Close fully", "foreground"),
-            ]
-        )
-        self._startup = QCheckBox("Start when I sign in to Windows")
         self._tone = _choice([("Playful", "playful"), ("Plain", "plain")])
         self._tone.setToolTip(
             "Playful adds a light remark to good news. Warnings stay plain either way."
@@ -392,21 +398,40 @@ class SettingsView(QWidget):
         card.add("Background picture", wallpaper_host)
         card.add_full(self._wallpaper_on)
         card.add("Picture dimming", self._wallpaper_strength)
-        card.add("On window close", self._background)
         card.add("Wording", self._tone)
+        return card.finish()
+
+    def _build_window(self) -> Card:
+        """How the window behaves, split from how it looks."""
+        card = Card("Window & startup")
+        self._background = _choice(
+            [
+                ("Keep running in the tray", "tray"),
+                ("Close fully", "foreground"),
+            ]
+        )
+        self._startup = QCheckBox("Start when I sign in to Windows")
+        card.add("On window close", self._background)
         card.add_full(self._startup)
         return card.finish()
 
     def _build_daily(self) -> Card:
         """The two switches for the sidebar tile. Off means no request is made at all."""
-        card = Card(
-            "Daily",
-            "A quote from ZenQuotes and Bing's picture of the day, once a day, in the sidebar.",
-        )
+        card = Card("Daily", "A quote and a picture, once a day, in the sidebar.")
         self._daily_quote = QCheckBox("Quote of the day")
         self._daily_picture = QCheckBox("Picture of the day")
         card.add_full(self._daily_quote)
         card.add_full(self._daily_picture)
+        # The providers' credit, beside the switches rather than under the picture.
+        zen, bing = about.PROVIDERS[0], about.PROVIDERS[1]
+        credit = QLabel(
+            f'<a href="{zen[1]}">{zen[2]}</a>. Pictures are <a href="{bing[1]}">Bing</a>\'s '
+            "picture of the day, with its own copyright line in the viewer."
+        )
+        credit.setObjectName("CardCaption")
+        credit.setWordWrap(True)
+        credit.setOpenExternalLinks(True)
+        card.add_full(credit)
         return card.finish()
 
     def _build_pay(self) -> Card:

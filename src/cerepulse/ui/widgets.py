@@ -111,7 +111,9 @@ class DailyTile(QWidget):
     Lives in the one region of the window that was empty — between the navigation and the
     portal button — so it is visible from every screen without displacing anything the
     screens are for. The picture is cropped to cover a fixed frame; the quote wraps beneath
-    it in the tagline's style; the credits the two free providers ask for sit under both.
+    it in the tagline's style. Nothing else: the picture's title and copyright are its
+    tooltip and the viewer's caption, and the providers' credits live in Settings and
+    About, so the sidebar carries the picture and the words and not the paperwork.
     Clicking the picture opens the viewer.
     """
 
@@ -140,17 +142,10 @@ class DailyTile(QWidget):
         self._quote.setVisible(False)
         layout.addWidget(self._quote)
 
-        self._credit = QLabel()
-        self._credit.setObjectName("DailyCredit")
-        self._credit.setWordWrap(True)
-        self._credit.setOpenExternalLinks(True)
-        self._credit.setVisible(False)
-        layout.addWidget(self._credit)
-
     def show_day(
-        self, quote_text: str, quote_author: str, picture: Path | None, credit: str
+        self, quote_text: str, quote_author: str, picture: Path | None, caption: str = ""
     ) -> None:
-        """``credit`` is HTML; the two providers' lines are joined by the caller."""
+        """``caption`` is the picture's title and copyright, said on hover."""
         self._pixmap = QPixmap(str(picture)) if picture is not None else None
         if self._pixmap is not None and self._pixmap.isNull():
             self._pixmap = None
@@ -164,14 +159,15 @@ class DailyTile(QWidget):
             y = (scaled.height() - self.FRAME.height()) // 2
             self._image.setPixmap(scaled.copy(x, y, self.FRAME.width(), self.FRAME.height()))
         self._image.setVisible(self._pixmap is not None)
+        self._image.setToolTip(
+            f"{caption}\nClick for the full picture" if caption else "Click for the full picture"
+        )
 
         if quote_text:
             author = f" — {quote_author}" if quote_author else ""
             self._quote.setText(f"“{quote_text}”{author}")
         self._quote.setVisible(bool(quote_text))
 
-        self._credit.setText(credit)
-        self._credit.setVisible(bool(credit))
         self.setVisible(self._pixmap is not None or bool(quote_text))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 — Qt override

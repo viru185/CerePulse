@@ -188,6 +188,20 @@ class AboutView(QWidget):
         built_on = QLabel("Built on " + ", ".join(name for name, _url, _why in about.CREDITS))
         built_on.setObjectName("CardCaption")
         column.addWidget(built_on)
+
+        # The credits the providers ask for. They used to sit in the sidebar under the
+        # picture of the day; this is where paperwork belongs.
+        data_from = QLabel("Data from")
+        data_from.setObjectName("CardCaption")
+        column.addWidget(data_from)
+        providers = QHBoxLayout()
+        providers.setSpacing(Space.SNUG)
+        for name, url, why in about.PROVIDERS:
+            button = _link(name, url)
+            button.setToolTip(f"{why} — {url}")
+            providers.addWidget(button)
+        providers.addStretch(1)
+        column.addLayout(providers)
         return column
 
     # --- rendering --------------------------------------------------------------------
