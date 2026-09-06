@@ -301,6 +301,14 @@ class AttendanceRepository:
         back at risk of looping — the bound that migration 2 exists for still holds for every
         *other* day, and today stops being today. It costs one postback per refresh, for the
         one day whose answer is guaranteed to have changed.
+
+        The second case used to be narrower than the problem. It rescued only a day whose log
+        came back *empty*, because the test was "no punch rows" — and a day fetched at 11:34
+        has one punch row, the morning In, which satisfied "has detail" forever. That day sat
+        in the cache with half a morning on it while the grid beside it said 18:10, and every
+        screen rendered the half. What actually marks a fetch as provisional is *when* it was
+        made: on or before the day itself. A finished day whose detail was fetched that same
+        day is eligible once, whatever it holds; the refetch stamps a later date and settles it.
         """
         now = today or date.today()
         rows = self.database.execute(
@@ -314,19 +322,33 @@ class AttendanceRepository:
                   OR day = ?
                   OR (
                         total_minutes > 0
+                    AND day < ?
                     AND (detail_synced_at IS NULL OR substr(detail_synced_at, 1, 10) <= day)
-                    AND NOT EXISTS (
-                            SELECT 1 FROM punch
-                             WHERE punch.employee_code = attendance_day.employee_code
-                               AND punch.day = attendance_day.day
-                        )
                      )
                  )
              ORDER BY day
             """,
-            (employee_code, f"{year:04d}-{month:02d}", now.isoformat()),
+            (employee_code, f"{year:04d}-{month:02d}", now.isoformat(), now.isoformat()),
         ).fetchall()
         return [date.fromisoformat(row["day"]) for row in rows]
+
+    def detail_is_settled(self, employee_code: str, day: date) -> bool:
+        """Whether a day's punch log was fetched after the day was over.
+
+        The same rule :meth:`days_missing_detail` applies, asked about one day, so the screen
+        that opens a half-fetched day can repair it on the spot instead of waiting for the
+        next sync to reach it. Today is never settled; a fetch made during the day is not.
+        """
+        row = self.database.execute(
+            """
+            SELECT detail_loaded, detail_synced_at FROM attendance_day
+             WHERE employee_code = ? AND day = ?
+            """,
+            (employee_code, day.isoformat()),
+        ).fetchone()
+        if row is None or not row["detail_loaded"] or row["detail_synced_at"] is None:
+            return False
+        return str(row["detail_synced_at"])[:10] > day.isoformat()
 
     def prune_before(self, employee_code: str, cutoff: date) -> int:
         """Delete cached days before ``cutoff``. Returns how many rows went.

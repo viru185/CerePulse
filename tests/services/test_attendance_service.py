@@ -261,6 +261,30 @@ def test_load_day_reuses_stored_punches(
     assert gateway.detail_fetches == [target]  # fetched once
 
 
+def test_load_day_refetches_a_day_whose_log_was_read_before_it_ended(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """The cache held 4 September as a single 11:34 In, fetched at 11:34 that day, and the
+    screen rendered half a morning for weeks. "Already fetched" is not "settled": a log read
+    during the day is provisional, and opening that day should repair it on the spot."""
+    target = date(2026, 7, 1)
+    seed_month(gateway, day(target))
+    attendance_service.load_month(EMPLOYEE, *JULY)
+    attendance_service._attendance.save_day_detail(
+        EMPLOYEE, target, punches()[:1], synced_at=datetime(2026, 7, 1, 11, 34)
+    )
+    gateway.punches[target] = punches()
+
+    analysis = attendance_service.load_day(EMPLOYEE, target, now=datetime(2026, 7, 3, 9, 0))
+
+    assert gateway.detail_fetches == [target]
+    assert len(analysis.segments) == 1
+    assert analysis.last_out is not None and analysis.last_out.time() == time(18, 0)
+    # Settled now: the refetch was stamped after the day, so it is served from the cache.
+    attendance_service.load_day(EMPLOYEE, target, now=datetime(2026, 7, 3, 9, 5))
+    assert gateway.detail_fetches == [target]
+
+
 # --- today is never finished being read -----------------------------------------------
 #
 # The complaint this fixes: Today did not update on its own, and the working routine was

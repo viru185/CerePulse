@@ -282,3 +282,41 @@ def test_a_stored_sync_timestamp_is_used(attendance: AttendanceRepository) -> No
         "SELECT synced_at FROM attendance_day WHERE day = ?", (JUL_1.isoformat(),)
     ).fetchone()
     assert row["synced_at"] == stamp.isoformat()
+
+
+# --- a day fetched while it was still being worked ------------------------------------------
+
+
+def test_a_log_fetched_during_the_day_is_refetched_once_the_day_is_over(
+    attendance: AttendanceRepository,
+) -> None:
+    """From the cache: 4 September held one punch, the 11:34 In, fetched at 11:34 that day and
+    never again. The retry branch rescued only a log that came back *empty* — one punch row
+    satisfied "has detail" forever, and every screen rendered half a morning against a grid
+    that said 18:10. What marks a fetch as provisional is when it was made, not what it held."""
+    attendance.save_month(make_month(make_day(JUL_1, total="9.01")))
+    morning = [make_punches()[0]]
+    attendance.save_day_detail(EMPLOYEE, JUL_1, morning, synced_at=datetime(2026, 7, 1, 11, 34))
+
+    assert attendance.days_missing_detail(EMPLOYEE, 2026, 7, today=JUL_2) == [JUL_1]
+    assert not attendance.detail_is_settled(EMPLOYEE, JUL_1)
+
+    attendance.save_day_detail(
+        EMPLOYEE, JUL_1, make_punches(), synced_at=datetime(2026, 7, 2, 9, 0)
+    )
+
+    assert attendance.days_missing_detail(EMPLOYEE, 2026, 7, today=JUL_2) == []
+    assert attendance.detail_is_settled(EMPLOYEE, JUL_1)
+
+
+def test_a_same_day_fetch_is_not_retried_while_it_is_still_that_day(
+    attendance: AttendanceRepository,
+) -> None:
+    """Today is already in the backlog by its own rule; the provisional rule is for days that
+    have finished, or it would be two rules producing the same postback."""
+    attendance.save_month(make_month(make_day(JUL_1, total="9.01")))
+    attendance.save_day_detail(
+        EMPLOYEE, JUL_1, [make_punches()[0]], synced_at=datetime(2026, 7, 1, 11, 34)
+    )
+
+    assert attendance.days_missing_detail(EMPLOYEE, 2026, 7, today=JUL_1) == [JUL_1]

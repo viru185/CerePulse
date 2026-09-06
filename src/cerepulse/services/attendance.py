@@ -224,12 +224,14 @@ class AttendanceService:
         "Already stored" was the wrong test for today. A day in progress has a punch log that
         is *correct as far as it goes* and out of date the moment anyone swipes again, so
         treating a stored log as settled left Today showing the morning until the user forced
-        a fetch by hand. Anything already fetched for a day that has finished is settled and
-        is served from the cache, which is almost every read this method ever does.
+        a fetch by hand. A finished day is settled only once its log was fetched *after* it
+        ended — a log fetched at 11:34 that day is the morning half, and "already stored" was
+        the wrong test for that too. Everything settled is served from the cache, which is
+        almost every read this method ever does.
         """
         cached = self._attendance.find_day(employee_code, day)
         stale = day == (now.date() if now else date.today())
-        if cached is None or not cached.detail_loaded or stale:
+        if cached is None or stale or not self._attendance.detail_is_settled(employee_code, day):
             self.refresh_day_detail(employee_code, day)
             cached = self._attendance.find_day(employee_code, day)
 
