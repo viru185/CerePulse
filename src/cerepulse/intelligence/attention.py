@@ -94,6 +94,11 @@ def _classify(
 
     if not day.status.counts_as_worked:
         return None
+    # Worked off site: no swipes to measure, so a shortfall here is an artefact of the
+    # measurement, not of the day. A day half on duty and half present resolves to a half
+    # day and reached the shortfall test below, where it reliably came up four hours short.
+    if day.has_outdoor_duty:
+        return None
 
     if _is_unmeasured(day, analysis):
         return Attention(
@@ -109,7 +114,8 @@ def _classify(
             "A punch is missing; the hours shown were inferred.",
         )
 
-    shortfall = policy.work_target - _worked(day, policy, analysis)
+    # Against what this day owes, not a whole target: a half day is not four hours short.
+    shortfall = policy.owed_for(day.portion) - _worked(day, policy, analysis)
     if shortfall > SHORTFALL_TOLERANCE and not _covered(requests):
         return Attention(
             day.day,

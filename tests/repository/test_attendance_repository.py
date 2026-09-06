@@ -207,7 +207,7 @@ def test_days_missing_detail_lists_the_backlog(attendance: AttendanceRepository)
         make_month(
             make_day(JUL_1),
             make_day(JUL_2, status=DayStatus.HALF_DAY),
-            make_day(date(2026, 7, 4), status=DayStatus.WEEKLY_OFF),
+            make_day(date(2026, 7, 4), status=DayStatus.WEEKLY_OFF, total="0.00"),
         )
     )
     assert attendance.days_missing_detail(EMPLOYEE, 2026, 7) == [JUL_1, JUL_2]
@@ -221,9 +221,18 @@ def test_fetched_days_leave_the_backlog(attendance: AttendanceRepository) -> Non
 
 
 def test_non_working_days_are_never_in_the_backlog(attendance: AttendanceRepository) -> None:
-    """Weekends have no punches to fetch; queueing them would waste requests forever."""
-    attendance.save_month(make_month(make_day(JUL_1, status=DayStatus.WEEKLY_OFF)))
+    """A weekend with nothing on it has no punches to fetch; queueing it would waste requests
+    forever."""
+    attendance.save_month(make_month(make_day(JUL_1, status=DayStatus.WEEKLY_OFF, total="0.00")))
     assert attendance.days_missing_detail(EMPLOYEE, 2026, 7) == []
+
+
+def test_a_weekend_that_was_worked_is_fetched(attendance: AttendanceRepository) -> None:
+    """The Saturday that earns a comp-off is marked WO with nine hours on it. The backlog
+    only queued present and half days, so the one day the comp-off feature is about was
+    the one day the app held no punches for."""
+    attendance.save_month(make_month(make_day(JUL_1, status=DayStatus.WEEKLY_OFF, total="9.00")))
+    assert attendance.days_missing_detail(EMPLOYEE, 2026, 7) == [JUL_1]
 
 
 # --- offline history ------------------------------------------------------------------

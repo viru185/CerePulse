@@ -59,9 +59,14 @@ class DayFact:
     #: Only ever set from a punch log. The grid has nothing to derive a break from.
     break_taken: Duration | None
     estimated: bool
+    #: What this day owed — half a target for a half day. Absent means a whole day.
+    owed: Duration | None = None
+
+    def target(self, policy: ShiftPolicy) -> Duration:
+        return self.owed if self.owed is not None else policy.work_target
 
     def met(self, policy: ShiftPolicy) -> bool:
-        return self.worked >= policy.work_target
+        return self.worked >= self.target(policy)
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +279,7 @@ def build_facts(
                 last_out=day.last_out,
                 break_taken=break_taken,
                 estimated=not exact,
+                owed=policy.owed_for(day.portion),
             )
         )
     return facts
@@ -407,11 +413,11 @@ def summarize_months(facts: Sequence[DayFact], *, policy: ShiftPolicy) -> list[M
                 year=year,
                 month=month,
                 worked=worked,
-                target=Duration(len(same) * policy.work_target.minutes),
+                target=_sum(fact.target(policy) for fact in same),
                 overtime=_sum(
-                    _clamp(fact.worked - policy.work_target)
+                    _clamp(fact.worked - fact.target(policy))
                     for fact in same
-                    if fact.worked > policy.work_target
+                    if fact.worked > fact.target(policy)
                 ),
                 short_days=sum(1 for fact in same if not fact.met(policy)),
                 working_days=len(same),

@@ -319,6 +319,11 @@ class AttendanceView(QWidget):
             self.worked.set_caption(
                 f"of {fmt.duration(analysis.elapsed_target)} owed so far  ·  "
                 f"{fmt.duration(analysis.month_target)} for the full month"
+                + (
+                    f"  ·  plus {fmt.duration(analysis.off_day_worked)} on days off"
+                    if analysis.off_day_worked
+                    else ""
+                )
             )
         else:
             self.worked.set_caption(

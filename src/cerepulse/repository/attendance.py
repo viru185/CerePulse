@@ -343,7 +343,7 @@ class AttendanceRepository:
             SELECT day FROM attendance_day
              WHERE employee_code = ?
                AND substr(day, 1, 7) = ?
-               AND status IN ('present', 'half_day')
+               AND (status IN ('present', 'half_day') OR total_minutes > 0)
                AND (
                      detail_loaded = 0
                   OR day = ?

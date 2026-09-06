@@ -81,6 +81,9 @@ OUTDOOR_DUTY_CODES = frozenset({"OD", "ODT"})
 #: The muster's codes for a comp-off *taken*. The only record of consumption anywhere:
 #: the leave ledger writes ``consumed_days = 0.0`` on every row it has.
 COMP_OFF_TAKEN_CODES = frozenset({"CO-", "CO"})
+#: Codes that say a weekly off or holiday was nevertheless worked — the comp-off earned
+#: on a Saturday, a weekly-off-present marking, a plain present code beside the off.
+OFF_DAY_WORKED_CODES = frozenset({"CO+", "WOP", "DP", "P", "PR"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +144,20 @@ class AttendanceDay:
         """
         codes = {self.user_type_1.strip().upper(), self.user_type_2.strip().upper()}
         return self.status is DayStatus.ON_DUTY or bool(codes & OUTDOOR_DUTY_CODES)
+
+    @property
+    def worked_on_off_day(self) -> bool:
+        """A weekly off or holiday with hours on it.
+
+        The status stays ``WEEKLY_OFF`` — the day owes nothing and must not be measured
+        against a target — but the hours are real and used to be discarded outright. Worse,
+        the sync backlog only fetched punch detail for present and half days, so the Saturday
+        that *earned* a comp-off was the one day about which the app held nothing at all.
+        """
+        if self.status not in (DayStatus.WEEKLY_OFF, DayStatus.HOLIDAY):
+            return False
+        codes = {self.user_type_1.strip().upper(), self.user_type_2.strip().upper()}
+        return self.total_hours.minutes > 0 or bool(codes & OFF_DAY_WORKED_CODES)
 
     @property
     def took_comp_off(self) -> bool:

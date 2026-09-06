@@ -686,12 +686,10 @@ class MainWindow(QMainWindow):
 
         # Offer every month the portal can serve, not only what is cached, so history is
         # reachable from the picker. The fetchable list needs the portal, so fall back to
-        # the cache when offline.
-        # Synced, not merely non-empty: a month before the employee joined is genuinely
-        # empty and should not read as "not synced" forever.
-        cached = self._context.attendance.synced_months() | set(
-            self._context.attendance.cached_months(self._employee_code)
-        )
+        # the cache when offline. The cached set rides on the view: it is read off-thread
+        # where the month was loaded, because this slot runs on the GUI thread and the two
+        # queries it used to make here ran on every month render.
+        cached = set(view.known_months)
         # Kept for _change_month, which must not pay a database read per step.
         self._synced_months = cached
         months = sorted(cached | {(year, month)}, reverse=True)

@@ -758,3 +758,39 @@ def test_an_empty_month_is_not_refetched_forever(
 
     plan = attendance_service.history_plan(EMPLOYEE, months=12, today=date(2026, 7, 29))
     assert (2026, 1) not in plan
+
+
+# --- one day, one answer, on every screen -------------------------------------------------
+
+
+def test_insights_and_today_agree_on_a_day_the_log_stops_short_of(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """The month view passed the grid envelope and the worked-gap flags into the analysis;
+    the Insights screen built its own analyses without either. So the four repairs that
+    make a day agree with the portal applied on Today, Week and Attendance and were skipped
+    on Insights — same day, two worked totals, two habit medians."""
+    target = date(2026, 7, 1)
+    seed_month(gateway, day(target, total="9.10", last_out=time(18, 10)))
+    gateway.punches[target] = [
+        Punch(at=time(9, 0), direction=PunchDirection.IN),
+        Punch(at=time(15, 21), direction=PunchDirection.OUT),
+    ]
+    attendance_service.load_month(EMPLOYEE, *JULY, today=date(2026, 7, 2))
+    attendance_service.load_day(EMPLOYEE, target, now=datetime(2026, 7, 2, 9, 0))
+
+    view = attendance_service.load_month(EMPLOYEE, *JULY, today=date(2026, 7, 2))
+    trends = attendance_service.load_trends(EMPLOYEE, today=date(2026, 7, 2), months=1)
+
+    assert view.analysis.total_worked == Duration(550)
+    assert trends.report.months[-1].worked == Duration(550)
+
+
+def test_the_month_view_carries_the_months_the_cache_knows(
+    attendance_service: AttendanceService, gateway: FakeGateway
+) -> None:
+    """Read where the month is loaded, off the GUI thread. The window used to make the two
+    queries itself, in a slot that runs on every month render."""
+    seed_month(gateway, day(date(2026, 7, 1)))
+    view = attendance_service.load_month(EMPLOYEE, *JULY)
+    assert (2026, 7) in view.known_months

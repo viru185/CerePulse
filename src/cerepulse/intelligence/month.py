@@ -48,6 +48,13 @@ class DayRollup:
     #: Why the day is what it is, when the portal bothered to say. The only thing that
     #: explains a week of outdoor duty.
     note: str = ""
+    #: What this day is measured against — half a target for a half day. Zero for a day
+    #: that owes nothing, so summing it over any set of days gives that set's target.
+    owed: Duration = Duration(0)
+    #: A weekly off or holiday that was nevertheless worked. Those hours are real and were
+    #: being discarded outright; they are reported beside the bank rather than inside it,
+    #: because a day off owes nothing and its hours are not a surplus against a target.
+    off_day_worked: bool = False
 
     @property
     def counts_toward_target(self) -> bool:
@@ -188,6 +195,17 @@ class MonthAnalysis:
     #: can scale a chart against the same target the numbers beside it used, rather than
     #: reaching for a default of its own.
     policy: ShiftPolicy = ShiftPolicy()
+    #: What the month has asked for *so far* — the only target already owed.
+    #:
+    #: The Worked card used to compare against :attr:`month_target`, which spans the whole
+    #: month. On the second of August that read "0m of 168h", presenting a month's work as a
+    #: debt on a day when nothing had been worked and nothing was owed. What is owed is what
+    #: the elapsed working days add up to — each at its own size, so a half day owes half —
+    #: and the rest is a forecast, labelled one.
+    elapsed_target: Duration = Duration(0)
+    #: Hours worked on weekly offs and holidays. Real, and previously discarded; kept out of
+    #: the bank because a day off owes nothing to be measured against.
+    off_day_worked: Duration = Duration(0)
 
     @property
     def is_ahead(self) -> bool:
@@ -196,17 +214,6 @@ class MonthAnalysis:
     @property
     def working_days_total(self) -> int:
         return self.working_days_elapsed + self.working_days_remaining
-
-    @property
-    def elapsed_target(self) -> Duration:
-        """What the month has asked for *so far* — the only target already owed.
-
-        The Worked card used to compare against :attr:`month_target`, which spans the whole
-        month. On the second of August that read "0m of 168h", presenting a month's work as
-        a debt on a day when nothing had been worked and nothing was owed. What is owed is
-        what the elapsed working days add up to; the rest is a forecast and is labelled one.
-        """
-        return Duration(self.working_days_elapsed * self.policy.work_target.minutes)
 
     @property
     def has_started(self) -> bool:
@@ -235,22 +242,18 @@ def analyze_month(
     # was never real. It is counted as a day still to come instead.
     worked_days = [r for r in rollups if r.is_working_day and not r.in_progress]
     total_worked = _sum(r.worked for r in worked_days)
-    total_overtime = _sum(
-        _clamp(r.worked - policy.work_target) for r in worked_days if r.worked > policy.work_target
-    )
-    short_days = sum(
-        1 for r in worked_days if r.worked < policy.work_target and r.status.counts_as_worked
-    )
+    # Each day against its own size: a half day is over target at four hours and one.
+    total_overtime = _sum(_clamp(r.worked - r.owed) for r in worked_days if r.worked > r.owed)
+    short_days = sum(1 for r in worked_days if r.worked < r.owed and r.status.counts_as_worked)
 
     working_days_elapsed = len(worked_days)
     working_days_remaining = _remaining_working_days(
         days, year=year, month=month, holidays=holidays or [], today=today
     ) + sum(1 for r in rollups if r.in_progress)
 
-    elapsed_target = Duration(working_days_elapsed * policy.work_target.minutes)
-    month_target = Duration(
-        (working_days_elapsed + working_days_remaining) * policy.work_target.minutes
-    )
+    elapsed_target = _sum(r.owed for r in worked_days)
+    # Days still to come are assumed whole; nothing says otherwise until they are on the grid.
+    month_target = elapsed_target + Duration(working_days_remaining * policy.work_target.minutes)
     bank_delta = total_worked - elapsed_target
 
     required = None
@@ -275,6 +278,8 @@ def analyze_month(
         bank_delta=bank_delta,
         required_daily_average=required,
         policy=policy,
+        elapsed_target=elapsed_target,
+        off_day_worked=_sum(r.worked for r in rollups if r.off_day_worked),
     )
 
 
@@ -307,7 +312,7 @@ def analyze_week(
         week_start=week_start,
         days=rollups,
         total_worked=_sum(r.worked for r in completed),
-        target=Duration(len(completed) * policy.work_target.minutes),
+        target=_sum(r.owed for r in completed),
         in_progress=_sum(r.worked for r in working if r.in_progress),
         days_ahead=_week_days_ahead(
             days,
@@ -384,16 +389,19 @@ def _rollup(
     # reported separately instead.
     unmeasured = _is_unmeasured(day, analysis)
 
+    is_working_day = day.status.counts_as_worked and not unmeasured
     return DayRollup(
         day=day.day,
         worked=worked,
         status=day.status,
         estimated=estimated and not unmeasured,
-        is_working_day=day.status.counts_as_worked and not unmeasured,
+        is_working_day=is_working_day,
         unmeasured=unmeasured,
         in_progress=_is_in_progress(day, analysis, today),
         on_duty=day.has_outdoor_duty,
         note=day.remarks.strip() if day.remarks.strip() != _ROUTINE_REMARK else "",
+        owed=policy.owed_for(day.portion) if is_working_day else Duration(0),
+        off_day_worked=day.worked_on_off_day,
     )
 
 

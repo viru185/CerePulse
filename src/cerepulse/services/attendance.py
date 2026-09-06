@@ -132,6 +132,10 @@ class MonthView:
     #: build the month rollup; carrying it means a screen can show one day's detail without
     #: a second trip through the repository.
     analyses: dict[date, DayAnalysis] = field(default_factory=dict)
+    #: Every month the cache can serve — synced or holding rows. Carried so the period
+    #: picker can be filled without the window reading the database on the GUI thread,
+    #: which it did on every month render.
+    known_months: frozenset[tuple[int, int]] = frozenset()
 
     @property
     def is_stale(self) -> bool:
@@ -214,7 +218,9 @@ class AttendanceService:
         if cached is None:
             cached = AttendanceMonth(employee_code=employee_code, year=year, month=month)
 
-        return self._build_view(cached, year, month, from_cache=from_cache, today=today)
+        view = self._build_view(cached, year, month, from_cache=from_cache, today=today)
+        known = self.synced_months() | set(self.cached_months(employee_code))
+        return replace(view, known_months=frozenset(known))
 
     def load_day(
         self, employee_code: str, day: date, *, now: datetime | None = None
@@ -257,6 +263,46 @@ class AttendanceService:
         # Voiced here rather than in the views, so the window, the tray tooltip and the
         # notifications all say the same thing about the same day.
         return voice_day(nudged, tone=Tone.parse(self._config.ui.tone))
+
+    def _analyses_for(
+        self, employee_code: str, days: list[AttendanceDay], *, today: date
+    ) -> dict[date, DayAnalysis]:
+        """One punch-level analysis per day that has a log, built the same way everywhere.
+
+        The month view and the Insights screen each had their own comprehension, and only
+        one of them passed the grid envelope and the user's worked-gap flags — so the four
+        repairs that make a day agree with the portal were applied on Today, Week and
+        Attendance and skipped on Insights, and a gap marked as work counted on one screen
+        and not the other. Same day, two worked totals, two habit medians. One builder.
+
+        Today gets the clock; every other day is genuinely finished. Without it, today was
+        analysed as a *completed* day — its open punch pair read as a missing punch and its
+        worked time as zero — while the Today screen analysed the same punches with `now`.
+        """
+        if not days:
+            return {}
+        # Fetched once each. Reading them per day put a query per day behind a dict
+        # comprehension, which is a lot of round trips for values that never change.
+        requests = self._swipes.find_all(employee_code)
+        flagged = self._attendance.find_worked_gaps_between(
+            employee_code, min(d.day for d in days), max(d.day for d in days)
+        )
+        return {
+            day.day: analyze_day(
+                list(day.punches),
+                day=day.day,
+                policy=self.policy,
+                swipe_requests=requests,
+                now=datetime.now() if day.day == today else None,
+                # The portal's own row for the day, which is the authority on how far the day
+                # reached. `pair_punches` declines to *close* today with it — today's last-out
+                # is the latest swipe so far — but still repairs today's arrival from it.
+                envelope=_envelope(day),
+                worked_gaps=flagged.get(day.day),
+            )
+            for day in days
+            if day.detail_loaded and day.punches
+        }
 
     def _with_nudges(
         self, analysis: DayAnalysis, employee_code: str, *, now: datetime | None
@@ -311,12 +357,7 @@ class AttendanceService:
         span = months if months is not None else self._config.sync.history_months
         start = _months_before(date(now.year, now.month, 1), span - 1)
         days = self._attendance.find_days_between(employee_code, start, now)
-
-        analyses = {
-            day.day: analyze_day(list(day.punches), day=day.day, policy=self.policy)
-            for day in days
-            if day.detail_loaded and day.punches
-        }
+        analyses = self._analyses_for(employee_code, days, today=now)
 
         this_month = [day for day in days if (day.day.year, day.day.month) == (now.year, now.month)]
         # An unfinished today contributes no measured hours, so it has to be counted as a
@@ -653,47 +694,15 @@ class AttendanceService:
         today: date | None,
     ) -> MonthView:
         code = month.employee_code
-        # Fetched once. Reading it per day put one query per day of punch detail behind a
-        # dict comprehension, which is a lot of round trips for a value that never changes.
-        requests = self._swipes.find_all(code)
-        # Today gets the clock; every other day is genuinely finished. Without it, today was
-        # analysed as a *completed* day here — its open punch pair read as a missing punch
-        # and its worked time as zero — while the Today screen analysed the same punches
-        # with `now` and inferred the in-progress pair. Same day, two answers, and this one
-        # fed the Week timelines, the day drawer and `find_attention`.
         current = today or date.today()
-        # One query for the month rather than one per day — the same reason the swipe
-        # requests above are fetched once.
-        days = list(month.days)
-        flagged = (
-            self._attendance.find_worked_gaps_between(
-                code, min(d.day for d in days), max(d.day for d in days)
-            )
-            if days
-            else {}
-        )
-        analyses = {
-            day.day: analyze_day(
-                list(day.punches),
-                day=day.day,
-                policy=self.policy,
-                swipe_requests=requests,
-                now=datetime.now() if day.day == current else None,
-                # The portal's own row for the day, which is the authority on how far the day
-                # reached. `pair_punches` declines to *close* today with it — today's last-out
-                # is the latest swipe so far — but still repairs today's arrival from it.
-                envelope=_envelope(day),
-                worked_gaps=flagged.get(day.day),
-            )
-            for day in month.days
-            if day.detail_loaded and day.punches
-        }
+        analyses = self._analyses_for(code, list(month.days), today=current)
         # Today alone gets the nudges, because that is the only day they are about — and
         # because the tray reads today out of this dict whenever the screen is showing some
         # other date. Without it, the same day carried different insights on the two paths.
         if current in analyses:
             analyses[current] = self._with_nudges(analyses[current], code, now=datetime.now())
 
+        requests = self._swipes.find_all(code)
         holidays = self._holidays.find_all()
         analysis = analyze_month(
             list(month.days),
