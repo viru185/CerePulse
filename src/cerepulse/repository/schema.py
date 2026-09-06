@@ -23,7 +23,7 @@ from loguru import logger
 from cerepulse.core.errors import MigrationError
 
 #: Bumped whenever a migration is added. Checked against the database on open.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def _migration_001(connection: sqlite3.Connection) -> None:
@@ -321,6 +321,28 @@ def _migration_008(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _migration_009(connection: sqlite3.Connection) -> None:
+    """Pay statements, encrypted at rest.
+
+    One row per document — the CTC statement, the monthly grid, each month's slip — holding a
+    DPAPI blob rather than columns. Salary is the one thing in this cache that must not be
+    readable by any process that can open the file, and DPAPI binds it to the signed-in
+    Windows account with no key of ours to keep anywhere.
+    """
+    connection.execute(
+        """
+        CREATE TABLE pay_document (
+            employee_code TEXT NOT NULL,
+            kind          TEXT NOT NULL,   -- 'ctc' | 'monthly' | 'payslip'
+            period        TEXT NOT NULL,   -- '' for the CTC, a label or YYYYMM otherwise
+            blob          BLOB NOT NULL,   -- DPAPI-protected JSON
+            synced_at     TEXT NOT NULL,
+            PRIMARY KEY (employee_code, kind, period)
+        )
+        """
+    )
+
+
 #: Ordered migrations. Append only; never edit one that has shipped.
 MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migration_001,
@@ -331,6 +353,7 @@ MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migration_006,
     _migration_007,
     _migration_008,
+    _migration_009,
 )
 
 

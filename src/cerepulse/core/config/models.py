@@ -173,6 +173,14 @@ class UpdateConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class PayConfig:
+    """The Pay screen. Off by default: salary on a screen that sits open on an office desk is
+    a choice, and the figures are masked until clicked even when it is on."""
+
+    enabled: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class DailyConfig:
     """The sidebar's quote and picture of the day.
 
@@ -200,6 +208,7 @@ class AppConfig:
     leave_rules: LeaveRulesConfig = field(default_factory=LeaveRulesConfig)
     commute: CommuteConfig = field(default_factory=CommuteConfig)
     daily: DailyConfig = field(default_factory=DailyConfig)
+    pay: PayConfig = field(default_factory=PayConfig)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
@@ -279,4 +288,5 @@ _SECTION_TYPES: dict[str, Any] = {
     "leave_rules": LeaveRulesConfig,
     "commute": CommuteConfig,
     "daily": DailyConfig,
+    "pay": PayConfig,
 }

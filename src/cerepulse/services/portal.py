@@ -13,6 +13,7 @@ already on screen is the one asked for.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator
 from datetime import date
 from typing import TypeVar
@@ -25,11 +26,21 @@ from cerepulse.core.errors import ParserError, PrivilegeError
 from cerepulse.models.application import Application, ApplicationKind
 from cerepulse.models.attendance import AttendanceMonth, Punch
 from cerepulse.models.leave import Holiday, LeaveBalance, LeaveTransaction
+from cerepulse.models.pay import CtcStatement, MonthlyStatement, Payslip
 from cerepulse.models.swipe import SwipeRequest
 from cerepulse.parsers.applications import parse_applications
 from cerepulse.parsers.attendance import ParsedDay, parse_month, parse_punches
 from cerepulse.parsers.leave import current_balances, parse_holidays, parse_leave_register
 from cerepulse.parsers.menu import MenuIndex, parse_menu
+from cerepulse.parsers.pay import (
+    monthly_periods,
+    parse_ctc,
+    parse_monthly,
+    parse_payslip,
+    payslip_periods,
+    payslip_template_name,
+    template_macros,
+)
 from cerepulse.parsers.swipe import parse_swipe_requests
 from cerepulse.repository.employee import Employee
 from cerepulse.transport import pages
@@ -47,6 +58,12 @@ MENU_ATTENDANCE = ("My Attendance", "Time > Attendance")
 MENU_SWIPE = ("Apply", "Time > Swipe")
 MENU_LEAVE_REGISTER = ("My Leave Register", "Leave > My Info")
 MENU_HOLIDAYS = ("Holiday List", "Self Service > Quick Info")
+MENU_CTC = ("CTC", "Self Service > Salary")
+MENU_MONTHLY_PAY = ("Monthly Report", "Self Service > Salary")
+MENU_PAYSLIP = ("Payslip", "Self Service > Salary")
+#: The page control both salary reports post to render themselves.
+PAY_REFRESH = "ctl00$BodyContentPlaceHolder$btnRefresh"
+PAY_PERIOD = "ctl00$BodyContentPlaceHolder$drpPeriod"
 
 # Controls on the attendance page.
 MONTH_SELECT = "ctl00$BodyContentPlaceHolder$drpFromMonth"
@@ -395,6 +412,92 @@ class PortalGateway:
 
     def fetch_holidays(self) -> list[Holiday]:
         return parse_holidays(self._fetch(*MENU_HOLIDAYS))
+
+    # --- pay --------------------------------------------------------------------------
+
+    def fetch_ctc(self) -> CtcStatement:
+        """The CTC statement. Renders on a plain GET."""
+        return parse_ctc(self._fetch(*MENU_CTC))
+
+    def fetch_monthly_pay(self) -> MonthlyStatement:
+        """The year-at-a-glance salary grid, for the page's default (current) period.
+
+        The page renders nothing until its own Refresh is posted; the period selector is
+        left on whatever the page opened on, which is the running financial year.
+        """
+
+        def get() -> MonthlyStatement:
+            url = self._url(*MENU_MONTHLY_PAY)
+            page = self._auth.check_response(self._client.get(url, follow_redirects=True)).text
+            state = WebFormsState.from_html(page)
+            label = next(
+                (
+                    label
+                    for value, label in monthly_periods(page)
+                    if value == state.fields.get(PAY_PERIOD)
+                ),
+                "",
+            )
+            rendered = self._auth.check_response(
+                self._client.post(url, data=state.submit(PAY_REFRESH), follow_redirects=True)
+            ).text
+            return parse_monthly(rendered, period_label=label)
+
+        return self._retrying_stale_menu(get)
+
+    def fetch_payslip_periods(self) -> list[tuple[str, str]]:
+        """``[("202607", "July , 2026"), ...]``, newest first."""
+        return payslip_periods(self._fetch(*MENU_PAYSLIP))
+
+    def fetch_payslip(self, period: str) -> Payslip:
+        """One month's slip, through the page's two JSON methods.
+
+        ``GetTemplate`` returns the slip's HTML template and names the placeholders;
+        ``GetSalarySlipData`` fills them. Both are ASP.NET page methods on the page the
+        menu's link *redirects to* — calling them on the link's own path is a server error.
+        """
+
+        def get() -> Payslip:
+            entry_url = self._url(*MENU_PAYSLIP)
+            response = self._auth.check_response(self._client.get(entry_url, follow_redirects=True))
+            base = str(response.url).split("?")[0]
+            headers = {
+                "Content-Type": "application/json; charset=utf-8",
+                "X-Requested-With": "XMLHttpRequest",
+            }
+            template_name = payslip_template_name(response.text)
+            template = self._auth.check_response(
+                self._client.post(
+                    f"{base}/GetTemplate",
+                    content=json.dumps({"strFileName": template_name}),
+                    headers=headers,
+                    follow_redirects=True,
+                )
+            ).json()
+            macros = template_macros(str(template.get("d", "")))
+            body = {
+                "lstMacro": [{"MacroName": name} for name in macros],
+                "lstPaySlipFilter": [{"EmpCode": 0, "MnthYr": period}],
+                "objReportFilters": {
+                    "Supplementary": True,
+                    "ArrearsPaidIn": True,
+                    "PrintArrearsSeparate": True,
+                    "PrintSupplementarySeparate": True,
+                    "fromMnth_year": period,
+                    "toMnth_year": period,
+                },
+            }
+            answer = self._auth.check_response(
+                self._client.post(
+                    f"{base}/GetSalarySlipData",
+                    content=json.dumps(body),
+                    headers=headers,
+                    follow_redirects=True,
+                )
+            ).json()
+            return parse_payslip(answer, period=period)
+
+        return self._retrying_stale_menu(get)
 
     # --- identity -------------------------------------------------------------------
 

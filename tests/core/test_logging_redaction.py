@@ -41,6 +41,16 @@ def test_form_secrets_are_removed(raw: str, secret: str) -> None:
     assert secret not in out
 
 
+def test_salary_fields_are_redacted() -> None:
+    out = redact(
+        "hdnEmpPanNo=ABCDE1234F&hdnPayslipHTML=%3Ctable%3E&"
+        '{"MacroName": "@@AllEarnings", "MacroValue": "<td>14,295.00</td>"}'
+    )
+    assert "ABCDE1234F" not in out
+    assert "%3Ctable%3E" not in out
+    assert "14,295.00" not in out
+
+
 def test_non_secret_fields_survive() -> None:
     out = redact("__VIEWSTATE=abc123&txtUser=CIPL00364&__EVENTTARGET=btnLogin")
     assert "txtUser=CIPL00364" in out

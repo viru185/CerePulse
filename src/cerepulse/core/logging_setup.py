@@ -34,6 +34,10 @@ _SENSITIVE_KEYS = (
     "txtPassword",
     "txtHdnPass",
     "hEnSa",
+    # The salary pages: a PAN in a hidden field, and the slip itself in a postback field.
+    "hdnEmpPanNo",
+    "hdnPayslipHTML",
+    "MacroValue",
     "password",
     "pwd",
     "ASP.NET_SessionId",

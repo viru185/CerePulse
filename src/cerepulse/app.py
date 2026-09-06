@@ -32,10 +32,12 @@ from cerepulse.repository.leave import (
     SwipeRequestRepository,
     SyncMetadataRepository,
 )
+from cerepulse.repository.pay import PayRepository
 from cerepulse.services.attendance import AttendanceService
 from cerepulse.services.commute import CommuteService
 from cerepulse.services.daily import DailyService
 from cerepulse.services.leave import LeaveService
+from cerepulse.services.pay import PayService
 from cerepulse.services.portal import PortalGateway
 from cerepulse.services.sync import SyncCoordinator
 from cerepulse.transport.client import HttpClient
@@ -55,6 +57,7 @@ class AppContext:
     sync: SyncCoordinator
     commute: CommuteService
     daily: DailyService
+    pay: PayService
     employees: EmployeeRepository
 
     # --- lifecycle ------------------------------------------------------------------
@@ -130,6 +133,7 @@ class AppContext:
         self.leave.use_config(config)
         self.commute.use_config(config)
         self.daily.use_config(config)
+        self.pay.use_config(config)
 
     def sign_out(self, *, forget: bool = False) -> None:
         self.auth.logout()
@@ -202,6 +206,7 @@ def build_app(
     # and a maps outage must never look like the HR portal being down.
     commute = CommuteService(config=resolved, api_key=secrets.get_secret(secrets.TOMTOM_KEY))
     daily = DailyService(config=resolved, cache_dir=paths.cache_dir())
+    pay = PayService(gateway=gateway, repository=PayRepository(database), config=resolved)
 
     context = AppContext(
         config=resolved,
@@ -214,6 +219,7 @@ def build_app(
         sync=sync,
         commute=commute,
         daily=daily,
+        pay=pay,
         employees=employee_repo,
     )
 

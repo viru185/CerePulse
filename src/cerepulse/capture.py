@@ -69,6 +69,12 @@ TARGETS: tuple[tuple[str, str, str], ...] = (
     ("outdoor_duty_list", "Apply", "Leave > Outdoor Duty"),
     ("comp_off_list", "Apply", "Leave > Comp. Off"),
     ("holiday_list", "Holiday List", "Self Service > Quick Info"),
+    # Salary. Never captured before the Pay screen was asked for; the parsers are written
+    # from what these actually contain, not from what a page called "Payslip" ought to.
+    ("salary_ctc", "CTC", "Self Service > Salary"),
+    ("salary_ctc_download", "Download CTC", "Self Service > Salary"),
+    ("salary_payslip", "Payslip", "Self Service > Salary"),
+    ("salary_monthly", "Monthly Report", "Self Service > Salary"),
 )
 
 #: Pages whose grid shows one selection at a time, as
@@ -118,6 +124,20 @@ FILTERED_TARGETS: tuple[tuple[str, str, str, str], ...] = (
         "My Leave Register",
         "Leave > My Info",
         "ctl00$BodyContentPlaceHolder$btnView2",
+    ),
+    # The salary reports render nothing until a period is submitted; the plain GET is the
+    # empty shell. These post the page's own Refresh with its default period selected.
+    (
+        "salary_payslip_data",
+        "Payslip",
+        "Self Service > Salary",
+        "ctl00$BodyContentPlaceHolder$btnRefresh",
+    ),
+    (
+        "salary_monthly_data",
+        "Monthly Report",
+        "Self Service > Salary",
+        "ctl00$BodyContentPlaceHolder$btnRefresh",
     ),
 )
 

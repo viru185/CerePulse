@@ -58,6 +58,7 @@ from cerepulse.ui.theme import Palette, palette_for, stylesheet
 from cerepulse.ui.views.about import AboutView, open_logs
 from cerepulse.ui.views.attendance import AttendanceView
 from cerepulse.ui.views.insights import InsightsView
+from cerepulse.ui.views.pay import PayView
 from cerepulse.ui.views.records import RecordsView, open_url
 from cerepulse.ui.views.settings import SettingsView
 from cerepulse.ui.views.sync_panel import SyncPanel
@@ -67,7 +68,7 @@ from cerepulse.ui.widgets import Banner, DailyTile
 from cerepulse.ui.workers import TaskRunner
 from cerepulse.update import Channel
 
-SCREENS = ("Today", "Week", "Attendance", "Insights", "Records", "Settings", "About")
+SCREENS = ("Today", "Week", "Attendance", "Insights", "Records", "Pay", "Settings", "About")
 TODAY_SCREEN = SCREENS.index("Today")
 SETTINGS_SCREEN = SCREENS.index("Settings")
 
@@ -163,6 +164,7 @@ class MainWindow(QMainWindow):
         # The day's quote and picture, after the window is up; they are never urgent.
         self._daily_view: DailyView | None = None
         QTimer.singleShot(1500, self._refresh_daily)
+        QTimer.singleShot(1800, self._load_pay)
 
         # Refresh from anywhere, the way every other desktop app does it.
         for keys in ("F5", "Ctrl+R"):
@@ -188,6 +190,7 @@ class MainWindow(QMainWindow):
         self.attendance = AttendanceView(self._palette)
         self.insights = InsightsView(self._palette)
         self.records = RecordsView(self._palette)
+        self.pay = PayView(self._palette)
         self.settings = SettingsView(self._context.config)
         self.about = AboutView()
 
@@ -197,10 +200,14 @@ class MainWindow(QMainWindow):
             self.attendance,
             self.insights,
             self.records,
+            self.pay,
             self.settings,
             self.about,
         ):
             self._stack.addWidget(view)
+
+        self.pay.refresh_requested.connect(self._fetch_pay)
+        self.pay.settings_requested.connect(lambda: self._navigation.drill_to(SETTINGS_SCREEN))
 
         for banner in (self.today.banner, self.records.banner, self.insights.banner):
             banner.logs_requested.connect(open_logs)
@@ -274,7 +281,7 @@ class MainWindow(QMainWindow):
             button.setObjectName("SidebarButton")
             button.setCheckable(True)
             button.setChecked(index == 0)
-            # Ctrl+1..7, in sidebar order. The app had no keyboard route to anything but
+            # Ctrl+1..8, in sidebar order. The app had no keyboard route to anything but
             # Escape, and no accessible names for a screen reader to speak.
             button.setShortcut(QKeySequence(f"Ctrl+{index + 1}"))
             button.setAccessibleName(f"{name} screen")
@@ -1054,6 +1061,7 @@ class MainWindow(QMainWindow):
         )
         self._auto.setInterval(config.sync.refresh_interval_minutes * 60_000)  # type: ignore[attr-defined]
         self._apply_theme(config.ui.theme)  # type: ignore[attr-defined]
+        self._load_pay()
         if self._tray is not None:
             self._tray.update_config(config.notifications)  # type: ignore[attr-defined]
         if self._month_view is not None:
@@ -1359,6 +1367,30 @@ class MainWindow(QMainWindow):
             on_error=lambda exc: logger.warning("Daily tile could not load: {}", exc),
         )
 
+    def _load_pay(self) -> None:
+        """Show what the cache holds for Pay. Never fetches: that is the screen's Refresh."""
+        if not self._context.pay.enabled:
+            self.pay.set_enabled_state(False)
+            return
+        self.pay.set_enabled_state(True)
+        self._runner.submit(
+            "pay",
+            lambda: self._context.pay.load(self._employee_code),
+            on_success=self.pay.show,
+            on_error=lambda exc: self._on_degraded("pay", exc),
+        )
+
+    def _fetch_pay(self) -> None:
+        """Fetch the salary pages, through the coordinator so an expired session is replayed."""
+        if not self._context.pay.enabled:
+            return
+        self._runner.submit(
+            "pay",
+            lambda: self._context.sync.run(lambda: self._context.pay.refresh(self._employee_code)),
+            on_success=self.pay.show,
+            on_error=lambda exc: self._on_degraded("pay", exc),
+        )
+
     def _show_daily(self, view: DailyView) -> None:
         self._daily_view = view
         credits = []
@@ -1520,6 +1552,7 @@ class MainWindow(QMainWindow):
             "leave ledger": [self.records.banner],
             "swipe requests": [self.records.banner],
             "applications": [self.records.banner],
+            "pay": [self.pay.banner],
             "day": [self.today.banner, self.week.banner, self.attendance.banner],
         }.get(scope, [self.today.banner])
         for banner in banners:

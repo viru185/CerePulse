@@ -214,6 +214,7 @@ class Database:
             # user set on a gap survived the clear and reappeared on the refetched day.
             "worked_gap",
             "attendance_day",
+            "pay_document",
             "leave_balance",
             "leave_transaction",
             "swipe_request",

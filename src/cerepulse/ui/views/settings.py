@@ -264,6 +264,7 @@ class SettingsView(QWidget):
         grid.addWidget(self._build_updates(), 4, 1)
         grid.addWidget(self._build_commute(), 5, 0, 1, 2)
         grid.addWidget(self._build_daily(), 6, 0)
+        grid.addWidget(self._build_pay(), 6, 1)
 
         page.addStretch(1)
 
@@ -406,6 +407,17 @@ class SettingsView(QWidget):
         self._daily_picture = QCheckBox("Picture of the day")
         card.add_full(self._daily_quote)
         card.add_full(self._daily_picture)
+        return card.finish()
+
+    def _build_pay(self) -> Card:
+        """One switch. The screen it enables fetches only on its own Refresh."""
+        card = Card(
+            "Pay",
+            "Payslips, the CTC statement and the monthly report, read from the portal when "
+            "you ask. Kept encrypted to your Windows account and masked on screen.",
+        )
+        self._pay_enabled = QCheckBox("Show the Pay screen")
+        card.add_full(self._pay_enabled)
         return card.finish()
 
     def _build_notifications(self) -> Card:
@@ -680,6 +692,7 @@ class SettingsView(QWidget):
         self._swatch.set_theme(config.ui.theme)
         self._daily_quote.setChecked(config.daily.quote)
         self._daily_picture.setChecked(config.daily.picture)
+        self._pay_enabled.setChecked(config.pay.enabled)
         self._wallpaper_path.setText(config.ui.background_image)
         self._wallpaper_on.setChecked(config.ui.background_enabled)
         self._wallpaper_strength.setValue(config.ui.background_strength)
@@ -756,6 +769,7 @@ class SettingsView(QWidget):
                 quote=self._daily_quote.isChecked(),
                 picture=self._daily_picture.isChecked(),
             ),
+            pay=replace(config.pay, enabled=self._pay_enabled.isChecked()),
             notifications=replace(
                 config.notifications,
                 enabled=self._notify.isChecked(),
