@@ -121,6 +121,23 @@ class DayAnalysis:
         return self.state is DayState.INCOMPLETE
 
     @property
+    def finish_times_differ(self) -> bool:
+        """Whether an over-long break has moved the finish time.
+
+        `expected_out` is the flat figure — first in plus the shift span — and it was
+        computed, stored, and read by nothing: every screen showed only the break-adjusted
+        time. The user wants both, because the adjusted one quietly absorbs an extra hour of
+        lunch into "when can I leave" with no trace that it did. Compared directly rather
+        than via ``break_taken > break_target``: the three policy values are set
+        independently, so the two can also differ when the span is not their sum.
+        """
+        return (
+            self.expected_out is not None
+            and self.expected_out_break_adjusted is not None
+            and self.expected_out != self.expected_out_break_adjusted
+        )
+
+    @property
     def completion(self) -> float:
         """Fraction of the work target met. Exceeds 1.0 on an overtime day, deliberately."""
         if self.policy.work_target.minutes <= 0:

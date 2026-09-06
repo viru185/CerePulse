@@ -834,3 +834,19 @@ def test_a_past_day_with_an_open_in_reads_finished_not_working() -> None:
     analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=two_days_on)
 
     assert presence_of(analysis, is_today=False) is Presence.FINISHED
+
+
+# --- the finish time the extra break moved ---------------------------------------------------
+
+
+def test_the_two_finish_times_are_told_apart_only_when_they_differ() -> None:
+    """The flat figure was computed and read by nothing; every screen showed the adjusted
+    one, so an extra hour of lunch moved "when can I leave" with no trace that it had."""
+    on_time = analyze_day(punches(*FULL_DAY), day=DAY)
+    assert not on_time.finish_times_differ
+
+    long_lunch = (("09:00", "in"), ("13:00", "out"), ("14:30", "in"))
+    moved = analyze_day(punches(*long_lunch), day=DAY, now=at("15:00"))
+    assert moved.finish_times_differ
+    assert moved.expected_out.time() == time(18, 0)
+    assert moved.expected_out_break_adjusted.time() == time(18, 30)

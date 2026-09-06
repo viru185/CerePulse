@@ -403,6 +403,9 @@ class DayTimeline(QWidget):
         self._palette = palette
         self._segments: tuple[WorkSegment, ...] = ()
         self._leave_at: datetime | None = None
+        #: The finish time before an over-long break pushed it out. Drawn fainter, so the
+        #: eye still lands on the one that counts.
+        self._flat_at: datetime | None = None
         self._now: datetime | None = None
         self._start: datetime | None = None
         self._end: datetime | None = None
@@ -419,6 +422,7 @@ class DayTimeline(QWidget):
         segments: tuple[WorkSegment, ...],
         *,
         leave_at: datetime | None = None,
+        flat_at: datetime | None = None,
         now: datetime | None = None,
         status_label: str = "",
         status_colour: str | None = None,
@@ -440,6 +444,7 @@ class DayTimeline(QWidget):
         self._segments = segments
         self._worked_spans = tuple(worked_spans)
         self._leave_at = leave_at
+        self._flat_at = flat_at
         self._now = now
         self._status_label = status_label
         self._status_colour = status_colour
@@ -647,6 +652,10 @@ class DayTimeline(QWidget):
         markers = []
         if self._leave_at is not None:
             markers.append((self._leave_at, self._palette.good, "leave", True))
+        if self._flat_at is not None and self._flat_at != self._leave_at:
+            # Where the day would have ended without the extra break — the figure the
+            # adjusted line silently absorbed. Muted, so "leave" stays the answer.
+            markers.append((self._flat_at, self._palette.text_muted, "flat", True))
         if self._now is not None:
             markers.append((self._now, self._palette.text, "now", False))
 

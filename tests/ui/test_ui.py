@@ -979,3 +979,35 @@ def test_every_timeline_gets_told_about_an_adjustment(qapp: QApplication) -> Non
     for module in (attendance, week):
         source = inspect.getsource(module)
         assert "worked_spans=" in source, f"{module.__name__} drops the adjustment"
+
+
+def test_the_legend_names_the_flat_finish_when_a_break_moved_it(qapp: QApplication) -> None:
+    """Both times, not one: the adjusted figure is the answer, and the flat one is what the
+    extra break cost — a number the user asked to see rather than have silently absorbed."""
+    from cerepulse.intelligence.day import analyze_day
+    from cerepulse.ui.views.today import TodayView
+
+    long_lunch = (("09:00", "in"), ("13:00", "out"), ("14:30", "in"), ("18:00", "out"))
+    analysis = analyze_day(punches(*long_lunch), day=DAY)
+    view = TodayView(DARK)
+    view.show_analysis(analysis, is_today=False)
+
+    legend = view._legend.text()
+    assert "free at 6:30 PM" in legend
+    assert "6:00 PM without the extra break" in legend
+    assert view._timeline._flat_at is not None
+    assert view._timeline._flat_at.time() == time(18, 0)
+
+
+def test_the_legend_stays_quiet_when_the_break_was_within_the_allowance(
+    qapp: QApplication,
+) -> None:
+    from cerepulse.intelligence.day import analyze_day
+    from cerepulse.ui.views.today import TodayView
+
+    on_time = (("09:00", "in"), ("13:00", "out"), ("14:00", "in"), ("18:00", "out"))
+    view = TodayView(DARK)
+    view.show_analysis(analyze_day(punches(*on_time), day=DAY), is_today=False)
+
+    assert "without the extra break" not in view._legend.text()
+    assert view._timeline._flat_at is None

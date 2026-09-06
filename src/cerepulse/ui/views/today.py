@@ -76,6 +76,25 @@ _COVERED_BY: dict[NextActionKind, set[InsightKind]] = {
 }
 
 
+class _HeroValue(QLabel):
+    """The sixty-point time, clickable for the arithmetic behind it.
+
+    The explanation for the finish time — both the flat and the break-adjusted figure, with
+    a note saying why they differ — has existed since 0.5 and was reachable from nothing.
+    """
+
+    clicked = Signal()
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Why this time?")
+
+    def mousePressEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        self.clicked.emit()
+        super().mousePressEvent(event)  # type: ignore[arg-type]
+
+
 class TodayView(QWidget):
     """Instruction, progress, metric cards, timeline, and the punch log."""
 
@@ -254,8 +273,9 @@ class TodayView(QWidget):
 
         value_row = QHBoxLayout()
         value_row.setSpacing(Space.ROW)
-        self._hero_value = QLabel(fmt.EMPTY)
+        self._hero_value = _HeroValue(fmt.EMPTY)
         self._hero_value.setObjectName("HeroValue")
+        self._hero_value.clicked.connect(lambda: self._explain("expected_out_break_adjusted"))
         value_row.addWidget(self._hero_value)
         self._presence = StatusChip("", self._palette.text_muted)
         self._presence.setVisible(False)
@@ -425,6 +445,11 @@ class TodayView(QWidget):
         self._timeline.set_day(
             analysis.segments,
             leave_at=analysis.leave_at if analysis.segments else None,
+            flat_at=(
+                analysis.expected_out
+                if analysis.segments and analysis.finish_times_differ
+                else None
+            ),
             now=datetime.now() if is_today and analysis.is_ongoing else None,
             status_label=self._status_label,
             status_colour=self._status_colour,
@@ -533,6 +558,13 @@ class TodayView(QWidget):
             f"{fmt.duration_words(analysis.worked)} worked"
         )
 
+    @staticmethod
+    def _flat_note(analysis: DayAnalysis) -> str:
+        """The finish time the extra break moved, when it moved it. Empty otherwise."""
+        if not analysis.finish_times_differ:
+            return ""
+        return f" · {fmt.clock(analysis.expected_out)} if the extra break were not counted"
+
     def _tick(self) -> None:
         """Update only the caption. Re-analyzing every second would make numbers flicker."""
         if self._analysis is None or self._analysis.leave_at is None:
@@ -543,6 +575,7 @@ class TodayView(QWidget):
         else:
             self._hero_caption.setText(
                 f"{remaining} to go · in at {fmt.clock(self._analysis.first_in)}"
+                + self._flat_note(self._analysis)
             )
 
     def _strip_insights(self, analysis: DayAnalysis, *, is_today: bool) -> list[Insight]:
@@ -567,6 +600,10 @@ class TodayView(QWidget):
         ]
         if analysis.leave_at is not None and analysis.segments:
             parts.append(f"dashed = free at {fmt.clock(analysis.leave_at)}")
+            if analysis.finish_times_differ:
+                parts.append(
+                    f"faint dashed = {fmt.clock(analysis.expected_out)} without the extra break"
+                )
         if any(segment.end_inferred or segment.start_inferred for segment in analysis.segments):
             parts.append("hatched = inferred from a missing punch")
         if analysis.worked_spans:
