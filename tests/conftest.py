@@ -11,6 +11,13 @@ from cerepulse.core import paths
 # Must be set before any QApplication is constructed, so it lives at import time in the
 # root conftest rather than in a package that may load second.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# The offscreen platform reads fonts from one folder through FreeType and knows nothing of
+# the system's. Without this every glyph is a box of one fixed width, so any test that
+# measures text — the layout QC above all — measures nothing real.
+if os.name == "nt":
+    os.environ.setdefault(
+        "QT_QPA_FONTDIR", str(Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts")
+    )
 
 
 @pytest.fixture(autouse=True)
