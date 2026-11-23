@@ -14,7 +14,17 @@ from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QPointF,
+    QPropertyAnimation,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -31,6 +41,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QFrame,
+    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -262,6 +273,235 @@ class Card(QFrame):
         if self._clickable and event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mouseReleaseEvent(event)
+
+
+class Toast(QFrame):
+    """A short note that something was done, which fades away by itself.
+
+    The app had no way to say "done": a Settings save changed one line of text beside the
+    Save button (the same text every time, so a second save looked like nothing happened),
+    and a history sync started from Insights reported to a banner on the Settings screen.
+    Banners are for conditions that last; this is for events.
+
+    Opaque on purpose: over a wallpaper the plain widget background is transparent, and a
+    note drawn straight on a photograph is unreadable.
+    """
+
+    closed = Signal()
+
+    #: Milliseconds on screen before fading, by severity: a warning gets longer to be read.
+    HOLD = {
+        Severity.SUCCESS: 3000,
+        Severity.INFO: 3000,
+        Severity.WARNING: 5500,
+        Severity.CRITICAL: 7000,
+    }
+    FADE_IN = 150
+    FADE_OUT = 450
+
+    def __init__(
+        self, text: str, severity: Severity, palette: Palette, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("Toast")
+        self.severity = severity
+        self.text = text
+        self._palette = palette
+        self._label = QLabel(text, self)
+        # Portal text reaches these, and it is not trusted markup.
+        self._label.setTextFormat(Qt.TextFormat.PlainText)
+        self._label.setWordWrap(True)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(Space.GAP, Space.ROW, Space.GAP, Space.ROW)
+        layout.addWidget(self._label)
+        self._margins = layout
+        self.setMaximumWidth(TOAST_WIDTH)
+
+        self._effect = QGraphicsOpacityEffect(self)
+        self._effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._effect)
+        self._fade = QPropertyAnimation(self._effect, b"opacity", self)
+        # Connected once; `_gone` checks whether this was a fade *out*.
+        self._fade.finished.connect(self._gone)
+        self._hold = QTimer(self)
+        self._hold.setSingleShot(True)
+        self._hold.timeout.connect(self.dismiss)
+        self._leaving = False
+
+    def fit_to_text(self) -> QSize:
+        """Size to the message: as wide as its text, up to :data:`TOAST_WIDTH`, then wrapped.
+
+        Done by hand because a layout's size hint for a word-wrapped label is a guess made
+        before the width is known — the first version trusted it and drew three empty
+        slivers in the corner.
+        """
+        margins = self._margins.contentsMargins()
+        side = margins.left() + margins.right()
+        frame = 6  # the 4px accent edge and the 1px border opposite it
+        natural = self._label.fontMetrics().horizontalAdvance(self.text) + 4
+        width = min(TOAST_WIDTH, natural + side + frame)
+        inner = width - side - frame
+        height = self._label.heightForWidth(inner)
+        if height <= 0:
+            height = self._label.fontMetrics().height()
+        size = QSize(width, height + margins.top() + margins.bottom() + 2)
+        self.setFixedSize(size)
+        return size
+
+    def show_for_a_while(self) -> None:
+        self._animate(1.0, self.FADE_IN)
+        self._hold.start(self.HOLD.get(self.severity, 3000))
+
+    def again(self) -> None:
+        """The same message once more: keep this one up rather than stacking a copy."""
+        if self._leaving:
+            self._leaving = False
+            self._fade.stop()
+            self._animate(1.0, self.FADE_IN)
+        self._hold.start(self.HOLD.get(self.severity, 3000))
+
+    def dismiss(self) -> None:
+        if self._leaving:
+            return
+        self._leaving = True
+        self._hold.stop()
+        self._animate(0.0, self.FADE_OUT)
+
+    def _animate(self, to: float, duration: int) -> None:
+        self._fade.stop()
+        self._fade.setDuration(duration)
+        self._fade.setStartValue(self._effect.opacity())
+        self._fade.setEndValue(to)
+        self._fade.start()
+
+    def _gone(self) -> None:
+        if self._leaving and self._effect.opacity() <= 0.0:
+            self.closed.emit()
+
+    def enterEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        # Hovering holds it, so a note being read does not fade out from under the pointer.
+        self._hold.stop()
+        super().enterEvent(event)  # type: ignore[arg-type]
+
+    def leaveEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        if not self._leaving:
+            self._hold.start(1500)
+        super().leaveEvent(event)  # type: ignore[arg-type]
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 — Qt override
+        self.dismiss()
+        super().mouseReleaseEvent(event)
+
+    @property
+    def _palette(self) -> Palette:
+        return self._theme
+
+    @_palette.setter
+    def _palette(self, palette: Palette) -> None:
+        # A property, because the theme walk in `_apply_theme` only assigns `_palette`: a
+        # toast already on screen restyles the moment it is handed the new one.
+        self._theme = palette
+        self._restyle()
+
+    def _restyle(self) -> None:
+        palette = self._theme
+        edge = {
+            Severity.SUCCESS: palette.good,
+            Severity.INFO: palette.work,
+            Severity.WARNING: palette.rest,
+            Severity.CRITICAL: palette.bad,
+        }.get(self.severity, palette.work)
+        self.setStyleSheet(
+            f"#Toast {{ background-color: {palette.elevated}; border: 1px solid {palette.border};"
+            f" border-left: 4px solid {edge}; border-radius: 10px; }}"
+            f"#Toast QLabel {{ color: {palette.text}; background: transparent; }}"
+        )
+
+
+class ToastStack(QWidget):
+    """Where toasts appear: the bottom-right of the window, newest at the bottom, three at most.
+
+    Positioned by hand over the window's content rather than placed in a layout, because it
+    floats above whatever screen is showing. It follows the parent's size through an event
+    filter, so it never needs telling about a resize.
+    """
+
+    MAX = 3
+    MARGIN = 20
+
+    def __init__(self, palette: Palette, parent: QWidget) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self._toasts: list[Toast] = []
+        parent.installEventFilter(self)
+        self.hide()
+
+    @property
+    def messages(self) -> list[str]:
+        """What is on screen now, oldest first. For tests and for anyone reading it aloud."""
+        return [toast.text for toast in self._toasts if not toast._leaving]
+
+    def show_message(self, text: str, severity: Severity = Severity.SUCCESS) -> None:
+        for toast in self._toasts:
+            if toast.text == text and toast.severity is severity:
+                toast.again()
+                return
+        while len(self._toasts) >= self.MAX:
+            self._drop(self._toasts[0])
+        toast = Toast(text, severity, self._palette, self)
+        toast.closed.connect(lambda t=toast: self._drop(t))
+        self._toasts.append(toast)
+        toast.show()
+        self.show()
+        self.raise_()
+        self._place()
+        toast.show_for_a_while()
+
+    def _drop(self, toast: Toast) -> None:
+        if toast in self._toasts:
+            self._toasts.remove(toast)
+        try:
+            toast.setParent(None)
+            toast.deleteLater()
+            if not self._toasts:
+                self.hide()
+            else:
+                self._place()
+        except RuntimeError:
+            # A fade that finished while the window was being torn down: the layout went
+            # first, and there is nothing left to tidy.
+            return
+
+    def _place(self) -> None:
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        sizes = [toast.fit_to_text() for toast in self._toasts]
+        if not sizes:
+            return
+        gap = Space.SNUG
+        width = max(size.width() for size in sizes)
+        height = sum(size.height() for size in sizes) + gap * (len(sizes) - 1)
+        self.setGeometry(
+            parent.width() - width - self.MARGIN,
+            parent.height() - height - self.MARGIN,
+            width,
+            height,
+        )
+        # Newest at the bottom, each right-aligned: the corner stays put as notes come and go.
+        top = 0
+        for toast, size in zip(self._toasts, sizes, strict=True):
+            toast.setGeometry(width - size.width(), top, size.width(), size.height())
+            top += size.height() + gap
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 — Qt override
+        if watched is self.parentWidget() and event.type() == QEvent.Type.Resize:
+            self._place()
+        return False
+
+
+#: Widest a toast grows before its text wraps.
+TOAST_WIDTH = 380
 
 
 class Banner(QLabel):

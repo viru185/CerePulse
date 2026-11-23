@@ -65,7 +65,7 @@ from cerepulse.ui.views.settings import SettingsView
 from cerepulse.ui.views.sync_panel import SyncPanel
 from cerepulse.ui.views.today import TodayView
 from cerepulse.ui.views.week import WeekView
-from cerepulse.ui.widgets import Banner, DailyTile
+from cerepulse.ui.widgets import Banner, DailyTile, ToastStack
 from cerepulse.ui.workers import TaskRunner
 from cerepulse.update import Channel
 
@@ -120,6 +120,10 @@ class MainWindow(QMainWindow):
         self._paused = False
         #: A sign-in dialog is open. See :meth:`prompt_sign_in`.
         self._signing_in = False
+        #: A Refresh the user pressed is in flight; its result gets a note.
+        self._announce_sync = False
+        #: Records' own Refresh is in flight; the leave data landing gets a note.
+        self._announce_records = False
         self._scopes: list[object] = []
         self._busy_scope: Scope | None = None
         #: The two record sources that arrive on their own schedules, kept so the
@@ -198,6 +202,8 @@ class MainWindow(QMainWindow):
 
         self._stack = QStackedWidget()
         layout.addWidget(self._stack, 1)
+        #: Short fading notes that an action happened. Floats over every screen.
+        self.toasts = ToastStack(self._palette, central)
 
         self.today = TodayView(self._palette)
         self.week = WeekView(self._palette)
@@ -348,6 +354,15 @@ class MainWindow(QMainWindow):
         self._status.setText(shown)
         self._status.setToolTip(f"{text}\n\nClick for what has been synced, and when")
 
+    def notify_action(self, text: str, severity: Severity = Severity.SUCCESS) -> None:
+        """Say that something the user asked for happened, then let it fade.
+
+        Every control that does something now answers here, on whichever screen is open:
+        Settings saved, history fetched, a day re-read, a gap marked, the cache cleared.
+        Before this, most of them answered nowhere, and some answered on a different screen.
+        """
+        self.toasts.show_message(text, severity)
+
     def _build_controllers(self) -> None:
         self._navigation = NavigationController(self._stack, self._nav, SCREENS, self)
         self._navigation.screen_changed.connect(self._on_screen_changed)
@@ -393,9 +408,7 @@ class MainWindow(QMainWindow):
         self._sync.scopes_ready.connect(self._on_scopes_ready)
         self._sync.scope_started.connect(self._on_scope_started)
         self._sync.scope_finished.connect(self._on_scope_finished)
-        self._sync.history_finished.connect(
-            lambda summary: self.settings.banner.show_message(summary, Severity.SUCCESS)
-        )
+        self._sync.history_finished.connect(self._history_finished)
         self._sync.failed.connect(self._on_error)
         self._sync.degraded.connect(self._on_degraded)
 
@@ -594,6 +607,9 @@ class MainWindow(QMainWindow):
             self._resume()
         if not quiet:
             self._set_status("Refreshing…")
+            # Said when it finishes — see `_on_sync_finished`. Only for a Refresh someone
+            # pressed: a note every fifteen minutes for the background tick would be noise.
+            self._announce_sync = True
         self._sync.refresh(force=force)
 
     def _asked_for_the_portal(self) -> None:
@@ -612,6 +628,7 @@ class MainWindow(QMainWindow):
         """Records' own Refresh, which must also be able to end a pause."""
         self._asked_for_the_portal()
         self._set_status("Refreshing…")
+        self._announce_records = True
         self._sync.refresh_leave()
 
     def _refresh_insights(self) -> None:
@@ -716,6 +733,7 @@ class MainWindow(QMainWindow):
     def sync_history(self) -> None:
         self._asked_for_the_portal()
         self.settings.banner.show_message("Fetching history…", Severity.INFO)
+        self.notify_action("Fetching past months in the background", Severity.INFO)
         self._sync.sync_history()
 
     def _sync_scope(self, scope: Scope) -> None:
@@ -725,6 +743,13 @@ class MainWindow(QMainWindow):
 
     def cancel_history(self) -> None:
         self._sync.cancel_history()
+        self.notify_action("Stopping the history sync after the current month", Severity.INFO)
+
+    def _history_finished(self, summary: str) -> None:
+        # Both: the banner keeps the full report on Settings, and the note says it is done
+        # wherever the user is — it was started from Insights as often as from Settings.
+        self.settings.banner.show_message(summary, Severity.SUCCESS)
+        self.notify_action(summary)
 
     def _open_sync_panel(self) -> None:
         """Show what is fresh and what is not, with a button per thing."""
@@ -761,10 +786,16 @@ class MainWindow(QMainWindow):
 
     def _on_scope_finished(self, scope: Scope, count: int) -> None:
         self._busy_scope = None
-        if scope is Scope.DAY_DETAIL and count:
-            self.attendance.banner.show_message(
-                f"Fetched punch detail for {count} day(s).", Severity.SUCCESS
+        # A note, on whatever screen is open. This used to be a banner on Attendance — so
+        # "Sync this day", pressed on Today, reported to a screen nobody was looking at.
+        if scope is Scope.DAY_DETAIL:
+            self.notify_action(
+                f"Fetched punch detail for {count} day{'s' if count != 1 else ''}"
+                if count
+                else "Punch detail is already up to date"
             )
+        else:
+            self.notify_action(f"{scope.label} refreshed")
 
     # --- rendering ------------------------------------------------------------------
 
@@ -879,6 +910,9 @@ class MainWindow(QMainWindow):
 
     def _apply_leave(self, data: LeaveData) -> None:
         self._leave_data = data
+        if self._announce_records:
+            self._announce_records = False
+            self.notify_action("Records refreshed")
         self.records.show_leave(data)
         # The comp-off credits' expiry and use ride on the timeline's earned rows.
         self._rebuild_records()
@@ -1164,8 +1198,9 @@ class MainWindow(QMainWindow):
         stamp = day.strftime("%d-%b-%y")
         clipboard.setText(stamp)
         self._set_status(f"Copied {stamp}")
+        self.notify_action(f"Copied {stamp} — paste it as the request date in SpineHR")
 
-    def _save_config(self, config: object) -> None:
+    def _save_config(self, config: object, *, announce: bool = True) -> None:
         from cerepulse.core.config import save_config
 
         try:
@@ -1175,6 +1210,7 @@ class MainWindow(QMainWindow):
             # outside the scroll area, so on a long page the banner and the button were
             # never visible together and a failed save looked like nothing happening.
             self.settings.show_save_result(f"Could not save: {exc}", failed=True)
+            self.notify_action("Settings could not be saved", Severity.WARNING)
             return
 
         # The services keep their own reference to the config, so pushing it through the
@@ -1207,6 +1243,10 @@ class MainWindow(QMainWindow):
         self.settings.show_save_result(
             f"Saved. Switching tray mode applies on the next start.{note}"
         )
+        if announce:
+            # The save bar says the same text every time, so a second save looked like
+            # nothing had happened. The note appears afresh on every save.
+            self.notify_action("Settings saved")
 
     def _flag_gap(self, day: object, gap_start: object, worked: bool, note: str = "") -> None:
         """Store "that gap was work" and re-render the day it belongs to.
@@ -1215,6 +1255,11 @@ class MainWindow(QMainWindow):
         SpineHR holds — correcting the record with the employer is still a swipe request the
         user files themselves, which is the read-only stance the whole app keeps.
         """
+
+        def saved(_result: object) -> None:
+            self._sync.load_day(day)  # type: ignore[arg-type]
+            self.notify_action("Marked as work" if worked else "Counted as a break again")
+
         self._runner.submit(
             "flag-gap",
             lambda: self._context.attendance.set_gap_worked(
@@ -1224,8 +1269,10 @@ class MainWindow(QMainWindow):
                 worked=worked,
                 note=note,
             ),
-            on_success=lambda _result: self._sync.load_day(day),  # type: ignore[arg-type]
-            on_error=lambda exc: self._set_status(f"Could not save that: {_message_for(exc)}"),
+            on_success=saved,
+            on_error=lambda exc: self.notify_action(
+                f"Could not save that: {_message_for(exc)}", Severity.WARNING
+            ),
         )
 
     # --- the journey home -----------------------------------------------------------
@@ -1537,6 +1584,7 @@ class MainWindow(QMainWindow):
         def shown(snapshot: object) -> None:
             self.pay.banner.clear_message("pay")
             self.pay.show_snapshot(snapshot)  # type: ignore[arg-type]
+            self.notify_action("Pay refreshed")
 
         self._runner.submit(
             "pay",
@@ -1575,7 +1623,9 @@ class MainWindow(QMainWindow):
             config, ui=replace(config.ui, background_image=path, background_enabled=True)
         )
         self.settings.set_config(updated)
-        self._save_config(updated)
+        self._save_config(updated, announce=False)
+        # The Settings save bar is where this used to report, and Settings is not open.
+        self.notify_action("Today's picture is now the background")
 
     def _refresh_commute(self, *, force: bool = True) -> None:
         """Ask for an arrival estimate. The button never refuses; the service decides cost."""
@@ -1604,9 +1654,11 @@ class MainWindow(QMainWindow):
             return
 
         outcome = self._tray.self_test()
-        self.settings.banner.show_message(
-            outcome,
-            Severity.SUCCESS if outcome.startswith("Sent") else Severity.WARNING,
+        sent = outcome.startswith("Sent")
+        self.settings.banner.show_message(outcome, Severity.SUCCESS if sent else Severity.WARNING)
+        self.notify_action(
+            "Test notification sent" if sent else "The test notification could not be shown",
+            Severity.SUCCESS if sent else Severity.WARNING,
         )
 
     def _apply_theme(self, theme: str, *, rerender: bool = True) -> None:
@@ -1642,7 +1694,11 @@ class MainWindow(QMainWindow):
         )
 
     def _sign_out(self, forget: bool) -> None:
-        self._sync.sign_out(forget=forget, on_success=lambda _: self.prompt_sign_in())
+        def done(_result: object) -> None:
+            self.notify_action("Signed out" + (" and the saved password removed" if forget else ""))
+            self.prompt_sign_in()
+
+        self._sync.sign_out(forget=forget, on_success=done)
 
     def _clear_cache(self) -> None:
         confirmed = QMessageBox.question(
@@ -1653,11 +1709,22 @@ class MainWindow(QMainWindow):
         )
         if confirmed != QMessageBox.StandardButton.Yes:
             return
-        self._sync.clear_cache(on_success=lambda _: self.refresh(force=True))
+
+        def cleared(_result: object) -> None:
+            self.notify_action("Cached data cleared — fetching it again")
+            self.refresh(force=True)
+
+        self._sync.clear_cache(on_success=cleared)
 
     # --- feedback -------------------------------------------------------------------
 
     def _on_sync_finished(self, failures: list[str]) -> None:
+        if self._announce_sync:
+            self._announce_sync = False
+            if failures:
+                self.notify_action(f"Refreshed, but {failures[0]}", Severity.WARNING)
+            else:
+                self.notify_action("Everything is up to date")
         if failures:
             self.today.banner.show_message(
                 f"Some data could not be refreshed: {failures[0]}",
