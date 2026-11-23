@@ -7,7 +7,7 @@ the photographer's copyright line, without a key. The image URL is relative to
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import httpx
@@ -21,8 +21,12 @@ TIMEOUT_SECONDS = 15.0
 
 def fetch_today(
     *, day: date, into: Path, market: str = "en-IN", user_agent: str = "CerePulse"
-) -> tuple[Path, str, str, str]:
-    """Download today's image into ``into`` and return (path, title, copyright, link)."""
+) -> tuple[Path, str, str, str, date | None]:
+    """Download today's image into ``into``: (path, title, copyright, link, Bing's own date).
+
+    The date is the image's ``startdate`` — the day Bing published it for — so the cache can
+    tell an image from yesterday that Bing has not replaced yet from today's.
+    """
     headers = {"User-Agent": user_agent}
     try:
         response = httpx.get(
@@ -37,7 +41,7 @@ def fetch_today(
     except (httpx.HTTPError, ValueError) as exc:
         raise DailyError(f"Picture of the day is unavailable: {exc}") from exc
 
-    url, title, copyright, link = parse(payload)
+    url, title, copyright, link, published = parse(payload)
     target = into / f"picture-{day:%Y%m%d}.jpg"
     try:
         image = httpx.get(url, timeout=TIMEOUT_SECONDS, follow_redirects=True, headers=headers)
@@ -46,11 +50,12 @@ def fetch_today(
         target.write_bytes(image.content)
     except (httpx.HTTPError, OSError) as exc:
         raise DailyError(f"Picture of the day could not be saved: {exc}") from exc
-    return target, title, copyright, link
+    return target, title, copyright, link, published
 
 
-def parse(payload: object) -> tuple[str, str, str, str]:
-    """``images[0]`` carries ``url`` (relative), ``title``, ``copyright``, ``copyrightlink``."""
+def parse(payload: object) -> tuple[str, str, str, str, date | None]:
+    """``images[0]`` carries ``url`` (relative), ``title``, ``copyright``, ``copyrightlink``
+    and ``startdate`` (``20260905``)."""
     images = payload.get("images") if isinstance(payload, dict) else None
     if not isinstance(images, list) or not images or not isinstance(images[0], dict):
         raise DailyError("Picture of the day came back in a shape nobody expected")
@@ -65,4 +70,12 @@ def parse(payload: object) -> tuple[str, str, str, str]:
         str(first.get("title") or "").strip(),
         str(first.get("copyright") or "").strip(),
         str(first.get("copyrightlink") or "").strip(),
+        _published(first.get("startdate")),
     )
+
+
+def _published(raw: object) -> date | None:
+    try:
+        return datetime.strptime(str(raw), "%Y%m%d").date()
+    except ValueError:
+        return None

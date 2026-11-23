@@ -55,7 +55,8 @@ class DailyViewer(QDialog):
 
         if view.quote is not None:
             quote = QLabel(
-                f"“{view.quote.text}”" + (f" — {view.quote.author}" if view.quote.author else "")
+                f"“{view.quote.text}”"
+                + (f" — {view.quote.attribution}" if view.quote.attribution else "")
             )
             quote.setWordWrap(True)
             layout.addWidget(quote)

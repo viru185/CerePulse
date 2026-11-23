@@ -16,6 +16,15 @@ class Quote:
     #: The credit the free tier requires, shown wherever the quote is.
     credit: str = "Inspirational quotes provided by ZenQuotes API"
     credit_url: str = "https://zenquotes.io/"
+    #: Where the words come from, beyond who said them — the anime, for an anime quote.
+    work: str = ""
+    #: Which provider answered: "zenquotes" or "anime".
+    source: str = "zenquotes"
+
+    @property
+    def attribution(self) -> str:
+        """ "Wasuke Itadori, Jujutsu Kaisen", or just the author."""
+        return ", ".join(part for part in (self.author, self.work) if part)
 
 
 @dataclass(frozen=True, slots=True)

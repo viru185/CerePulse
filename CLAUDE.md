@@ -443,12 +443,17 @@ through; cards, the sidebar, tables and inputs keep their own opaque rules, and 
 dialog is a widget, and a transparent one over the desktop is unreadable.
 
 **The daily tile is the only thing that talks to anyone but the portal and the maps
-provider.** ZenQuotes (`/api/today`, keyless; its free tier asks for a linked credit line,
-which sits in Settings › Daily and in About, not under the picture) and Bing's image archive
-(keyless; the copyright line is the picture's tooltip and the viewer's caption, verbatim).
-The tile itself carries the picture and the words and none of the paperwork. One request
-each per calendar day; a failure serves the cached day; the Settings switches stop the
-requests, not merely the tile.
+provider.** Animechan (`/v1/quotes/random`, keyless, the default source), ZenQuotes
+(`/api/today`, keyless) — both ask for a linked credit line, which sits in Settings › Daily
+and in About, not under the picture — and Bing's image archive (keyless; the copyright line
+is the picture's tooltip and the viewer's caption, verbatim). The tile itself carries the
+picture and the words and none of the paperwork. Each source is asked once per *its own*
+day: ZenQuotes turns at 00:00 UTC (fetched at local midnight in India it still served
+yesterday's quote, stored as today's), Bing dates its image with `startdate`, and the random
+anime quote uses the local day. A failure serves the cached day and is retried after 5, 15,
+then every 60 minutes, and at once on a wake or when the network returns — it used to wait
+for the next midnight. The Settings switches stop the requests, not merely the tile, and take
+effect on Save. Tests can never reach these services: the root conftest blocks all three.
 NASA's picture of the day was rejected because it needs `DEMO_KEY` in the build.
 
 **A notification toggle existing is not evidence the insight can.** `EARLY_EXIT` and

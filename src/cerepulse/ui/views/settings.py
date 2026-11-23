@@ -47,6 +47,12 @@ from cerepulse.ui.widgets import Banner, SectionTitle, add_reveal_toggle, link_b
 NUMBER_WIDTH = 122
 WIDE_NUMBER_WIDTH = 148
 CHOICE_WIDTH = 190
+#: The quote sources, as Settings names them. Anime first: it is the default.
+QUOTE_SOURCE_LABELS = (
+    ("anime", "Anime (Animechan)"),
+    ("zenquotes", "Inspirational (ZenQuotes)"),
+    ("alternate", "Take turns, day by day"),
+)
 TIME_WIDTH = 108
 
 #: Floor for each grid column. Without it the column holding the widest label claims the
@@ -253,7 +259,9 @@ class SettingsView(QWidget):
         def section(title: str, *cards: tuple[QWidget, int, int, int]) -> None:
             heading = SectionTitle(title)
             self._sections.append(heading)
-            jump.addWidget(link_button(title, partial(scroll.ensureWidgetVisible, heading)))
+            # Doubled, or a button reads "&" as a mnemonic: "Sync & data" drew as "Sync _data".
+            label = title.replace("&", "&&")
+            jump.addWidget(link_button(label, partial(scroll.ensureWidgetVisible, heading)))
             page.addSpacing(6)
             page.addWidget(heading)
             grid = QGridLayout()
@@ -421,13 +429,22 @@ class SettingsView(QWidget):
         card = Card("Daily", "A quote and a picture, once a day, in the sidebar.")
         self._daily_quote = QCheckBox("Quote of the day")
         self._daily_picture = QCheckBox("Picture of the day")
+        self._quote_source = QComboBox()
+        for value, label in QUOTE_SOURCE_LABELS:
+            self._quote_source.addItem(label, value)
+        self._quote_source.setMinimumWidth(CHOICE_WIDTH)
+        # Off means off: the source has nothing to choose between with no quote asked for.
+        self._daily_quote.toggled.connect(self._quote_source.setEnabled)
         card.add_full(self._daily_quote)
+        card.add("Quotes from", self._quote_source)
         card.add_full(self._daily_picture)
         # The providers' credit, beside the switches rather than under the picture.
-        zen, bing = about.PROVIDERS[0], about.PROVIDERS[1]
+        providers = {name: (url, line) for name, url, line in about.PROVIDERS}
+        zen, anime, bing = providers["ZenQuotes"], providers["Animechan"], providers["Bing"]
         credit = QLabel(
-            f'<a href="{zen[1]}">{zen[2]}</a>. Pictures are <a href="{bing[1]}">Bing</a>\'s '
-            "picture of the day, with its own copyright line in the viewer."
+            f'<a href="{zen[0]}">{zen[1]}</a>. <a href="{anime[0]}">{anime[1]}</a>. '
+            f'Pictures are <a href="{bing[0]}">Bing</a>\'s picture of the day, with its own '
+            "copyright line in the viewer."
         )
         credit.setObjectName("CardCaption")
         credit.setWordWrap(True)
@@ -718,6 +735,10 @@ class SettingsView(QWidget):
         self._swatch.set_theme(config.ui.theme)
         self._daily_quote.setChecked(config.daily.quote)
         self._daily_picture.setChecked(config.daily.picture)
+        self._quote_source.setCurrentIndex(
+            max(0, self._quote_source.findData(config.daily.quote_source))
+        )
+        self._quote_source.setEnabled(config.daily.quote)
         self._pay_enabled.setChecked(config.pay.enabled)
         self._wallpaper_path.setText(config.ui.background_image)
         self._wallpaper_on.setChecked(config.ui.background_enabled)
@@ -803,6 +824,7 @@ class SettingsView(QWidget):
                 config.daily,
                 quote=self._daily_quote.isChecked(),
                 picture=self._daily_picture.isChecked(),
+                quote_source=self._quote_source.currentData(),
             ),
             pay=replace(config.pay, enabled=self._pay_enabled.isChecked()),
             notifications=replace(

@@ -21,7 +21,7 @@ import tomli_w
 from loguru import logger
 
 from cerepulse.core import paths
-from cerepulse.core.config.models import THEMES, AppConfig, ShiftConfig
+from cerepulse.core.config.models import QUOTE_SOURCES, THEMES, AppConfig, ShiftConfig
 from cerepulse.core.errors import ConfigError
 
 ENV_PREFIX = "CEREPULSE__"
@@ -120,6 +120,8 @@ def _validate(config: AppConfig) -> None:
         raise ConfigError("sync.refresh_interval_minutes must be at least 1")
     if config.ui.background_mode not in {"tray", "foreground"}:
         raise ConfigError("ui.background_mode must be 'tray' or 'foreground'")
+    if config.daily.quote_source not in QUOTE_SOURCES:
+        raise ConfigError(f"daily.quote_source must be one of {', '.join(QUOTE_SOURCES)}")
     if config.ui.theme not in THEMES:
         raise ConfigError(f"ui.theme must be one of {', '.join(THEMES)}")
     if not 0 <= config.ui.background_strength <= 100:

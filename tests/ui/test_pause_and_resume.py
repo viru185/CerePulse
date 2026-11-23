@@ -318,3 +318,47 @@ def test_an_ordinary_minute_is_not_a_wake(window, monkeypatch) -> None:  # type:
     monkeypatch.setattr(module.time, "time", lambda: window._beat + 61)
     window._heartbeat()
     assert asked == []
+
+
+# --- the daily tile follows Settings and keeps asking until it is today's ------------------
+
+
+def test_saving_settings_refreshes_the_daily_tile_at_once(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Switching the tile off left it on screen, and switching it on showed nothing, until a
+    restart: Settings changed what tomorrow's fetch would do and asked for nothing now."""
+    asked: list[int] = []
+    monkeypatch.setattr(window, "_refresh_daily", lambda: asked.append(1))
+    monkeypatch.setattr(window._sync, "load_today", lambda *_a: None)
+
+    window._save_config(window._context.config)
+
+    assert asked == [1]
+
+
+def test_switching_both_off_hides_the_tile_without_asking(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from dataclasses import replace
+
+    submitted: list[str] = []
+    monkeypatch.setattr(window._runner, "submit", lambda name, *a, **k: submitted.append(name))
+    config = window._context.config
+    window._context.apply_config(
+        replace(config, daily=replace(config.daily, quote=False, picture=False))
+    )
+    window._daily.setVisible(True)
+
+    window._refresh_daily()
+
+    assert not window._daily.isVisibleTo(window)
+    assert submitted == []
+
+
+def test_the_heartbeat_keeps_asking_until_the_tile_is_settled(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    asked: list[int] = []
+    monkeypatch.setattr(window, "_refresh_daily", lambda: asked.append(1))
+
+    window._daily_settled = False
+    window._heartbeat()
+    window._daily_settled = True
+    window._heartbeat()
+
+    assert asked == [1]

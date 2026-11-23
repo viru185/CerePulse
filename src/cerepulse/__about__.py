@@ -33,6 +33,7 @@ CREDITS = (
 # switches that turn them on. ZenQuotes' free tier asks for its line with a link.
 PROVIDERS = (
     ("ZenQuotes", "https://zenquotes.io/", "Inspirational quotes provided by ZenQuotes API"),
+    ("Animechan", "https://animechan.io/", "Anime quotes provided by Animechan"),
     ("Bing", "https://www.bing.com/", "the picture of the day"),
     ("TomTom", "https://developer.tomtom.com/", "the journey home"),
 )

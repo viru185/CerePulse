@@ -30,6 +30,24 @@ def isolated_data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Itera
     paths.data_root.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def no_daily_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The quote and picture providers are real web services; no test may reach them.
+
+    Any window a test builds schedules a daily fetch, and a test that lives long enough —
+    the layout QC does — would otherwise ask ZenQuotes, Animechan and Bing for real. Tests
+    that exercise the providers inject their own fetchers, which this leaves alone.
+    """
+    from cerepulse.core.errors import DailyError
+    from cerepulse.daily import animechan, bing, zenquotes
+
+    def offline(**_kwargs: object) -> object:
+        raise DailyError("no network in tests")
+
+    for module in (animechan, bing, zenquotes):
+        monkeypatch.setattr(module, "fetch_today", offline)
+
+
 @pytest.fixture(scope="session")
 def qapp() -> Iterator[object]:
     """One QApplication for the whole session; Qt forbids a second.

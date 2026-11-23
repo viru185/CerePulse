@@ -174,6 +174,9 @@ class MainWindow(QMainWindow):
 
         # The day's quote and picture, after the window is up; they are never urgent.
         self._daily_view: DailyView | None = None
+        #: Whether today's tile is complete; until it is, the heartbeat keeps asking.
+        self._daily_settled = False
+        self._daily_in_flight = False
         QTimer.singleShot(1500, self._refresh_daily)
         QTimer.singleShot(1800, self._load_pay)
 
@@ -991,9 +994,14 @@ class MainWindow(QMainWindow):
         """Once a minute: notice a wake from sleep, then a change of date."""
         now = time.time()
         away, self._beat = now - self._beat, now
-        if away > WAKE_GAP_SECONDS:
+        woke = away > WAKE_GAP_SECONDS
+        if woke:
             self._back_after(f"{away / 60:.0f} minutes asleep")
         self._roll_over_if_the_day_changed()
+        if not woke and not self._daily_settled:
+            # A quote or picture is still owed today — the first try failed, or the
+            # provider had not turned its day over. The service decides when to really ask.
+            self._refresh_daily()
 
     def _watch_the_network(self) -> None:
         """Hear about the network coming back, from Windows itself where it can say."""
@@ -1027,6 +1035,7 @@ class MainWindow(QMainWindow):
         of the day usually happened in the seconds before the Wi-Fi reconnected.
         """
         logger.info("Catching up: {}", reason)
+        self._context.daily.retry_now()
         self._refresh_daily()
         if not self._paused:
             self.refresh(force=False, quiet=True)
@@ -1179,6 +1188,10 @@ class MainWindow(QMainWindow):
         self._auto.setInterval(config.sync.refresh_interval_minutes * 60_000)  # type: ignore[attr-defined]
         self._apply_theme(config.ui.theme)  # type: ignore[attr-defined]
         self._load_pay()
+        # The daily switches and source take effect now. They used to change what the
+        # *next* fetch would do, and the next fetch was tomorrow's: switching the tile off
+        # left it on screen, and switching it on showed nothing until a restart.
+        self._refresh_daily()
         if self._tray is not None:
             self._tray.update_config(config.notifications)  # type: ignore[attr-defined]
         if self._month_view is not None:
@@ -1473,15 +1486,33 @@ class MainWindow(QMainWindow):
         return self.settings.typed_key() or get_secret(TOMTOM_KEY)
 
     def _refresh_daily(self) -> None:
-        """Fetch (or read back) today's quote and picture. A failure costs the tile."""
+        """Read back today's quote and picture, fetching whatever is not today's.
+
+        Cheap to call often: the service answers from its cache when that is current and
+        keeps its own backoff when it is not, so the heartbeat can ask every minute until
+        the tile is settled without asking the network every minute.
+        """
         if not (self._context.config.daily.quote or self._context.config.daily.picture):
             self._daily.setVisible(False)
+            self._daily_settled = True
             return
+        if self._daily_in_flight:
+            return
+        self._daily_in_flight = True
+
+        def shown(view: DailyView) -> None:
+            self._daily_in_flight = False
+            self._show_daily(view)
+
+        def failed(exc: BaseException) -> None:
+            self._daily_in_flight = False
+            logger.warning("Daily tile could not load: {}", exc)
+
         self._runner.submit(
             "daily",
             lambda: self._context.daily.today(datetime.now()),
-            on_success=self._show_daily,
-            on_error=lambda exc: logger.warning("Daily tile could not load: {}", exc),
+            on_success=shown,
+            on_error=failed,
         )
 
     def _load_pay(self) -> None:
@@ -1516,13 +1547,14 @@ class MainWindow(QMainWindow):
 
     def _show_daily(self, view: DailyView) -> None:
         self._daily_view = view
+        self._daily_settled = view.settled
         picture = view.picture
         caption = "\n".join(
             part for part in ((picture.title, picture.copyright) if picture else ()) if part
         )
         self._daily.show_day(
             view.quote.text if view.quote else "",
-            view.quote.author if view.quote else "",
+            view.quote.attribution if view.quote else "",
             picture.path if picture else None,
             caption,
         )

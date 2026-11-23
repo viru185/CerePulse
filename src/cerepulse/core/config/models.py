@@ -59,6 +59,9 @@ class SyncConfig:
 #: Every theme the app ships, plus "system" for following Windows. The palettes themselves
 #: live in ``ui.theme``; the names are here because the loader validates them and ``core``
 #: cannot import ``ui``. A test keeps the two lists identical.
+#: Where the quote of the day comes from. Kept here rather than imported from the daily
+#: service, because config is the layer everything else depends on.
+QUOTE_SOURCES: tuple[str, ...] = ("anime", "zenquotes", "alternate")
 THEMES: tuple[str, ...] = ("dark", "light", "sakura", "neon", "ocean", "solar", "system")
 
 
@@ -191,6 +194,8 @@ class DailyConfig:
 
     quote: bool = True
     picture: bool = True
+    #: "anime" (Animechan), "zenquotes", or "alternate" to take turns by date.
+    quote_source: str = "anime"
 
 
 @dataclass(frozen=True, slots=True)

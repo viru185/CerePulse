@@ -46,6 +46,18 @@ def _quote(day: date) -> Quote:
     )
 
 
+def _anime(day: date) -> Quote:
+    return Quote(
+        text="Whatever happens, happens.",
+        author="Spike Spiegel",
+        day=day,
+        credit="Anime quotes provided by Animechan",
+        credit_url="https://animechan.io/",
+        work="Cowboy Bebop",
+        source="anime",
+    )
+
+
 def _picture(day: date, into: Path) -> tuple[Path, str, str, str]:
     """A dusk gradient standing in for the picture of the day."""
     into.mkdir(parents=True, exist_ok=True)
@@ -95,7 +107,11 @@ def build_window(data_root: Path, *, theme: str = "dark") -> Any:
     context = build_app(config=config, database_path=data_root / "qc.db")
     context.client.request = _offline  # type: ignore[method-assign]
     context.daily = DailyService(
-        config=config, cache_dir=paths.cache_dir(), fetch_quote=_quote, fetch_picture=_picture
+        config=config,
+        cache_dir=paths.cache_dir(),
+        fetch_quote=_quote,
+        fetch_anime=_anime,
+        fetch_picture=_picture,
     )
     seed.seed(context)
 
