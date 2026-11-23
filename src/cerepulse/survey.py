@@ -28,6 +28,7 @@ indexing every page's title, grids, buttons, dropdowns, links and postback targe
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import time
@@ -242,7 +243,9 @@ def describe_page(page: SurveyPage, body: str) -> None:
         page.links.append({"text": text[:80], "href": anchor.get("href", "")[:400]})
 
     seen: set[tuple[str, str]] = set()
-    for match in _POSTBACK.finditer(body):
+    # Unescaped first: ASP.NET writes these into href attributes as &#39;…&#39;, which is why
+    # the first survey found no Add New on a page that has one.
+    for match in _POSTBACK.finditer(html.unescape(body)):
         key = (match.group(1), match.group(2))
         if key not in seen:
             seen.add(key)
