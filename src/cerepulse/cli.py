@@ -47,6 +47,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="TOML file holding portal credentials (default: .secrets.toml).",
     )
 
+    survey = sub.add_parser(
+        "survey",
+        help="Walk every portal link read-only and index what each page holds (dev tool).",
+    )
+    survey.add_argument(
+        "--out",
+        default="Research/captures/survey",
+        help="Directory for the pages and index (default: Research/captures/survey).",
+    )
+    survey.add_argument(
+        "--secrets",
+        default=".secrets.toml",
+        help="TOML file holding portal credentials (default: .secrets.toml).",
+    )
+    survey.add_argument(
+        "--depth", type=int, default=2, help="How many links deep past the menu (default: 2)."
+    )
+    survey.add_argument(
+        "--delay", type=float, default=1.0, help="Seconds between requests (default: 1)."
+    )
+
     sub.add_parser("paths", help="Print resolved data directories and exit.")
 
     sync = sub.add_parser(
@@ -97,6 +118,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         from cerepulse.capture import run_capture
 
         return run_capture(out_dir=args.out, secrets_path=args.secrets, config=config)
+
+    if args.command == "survey":
+        from cerepulse.survey import run_survey
+
+        return run_survey(
+            out_dir=args.out,
+            secrets_path=args.secrets,
+            config=config,
+            depth=args.depth,
+            delay=args.delay,
+        )
 
     if args.command == "sync":
         from cerepulse.headless import run_sync
