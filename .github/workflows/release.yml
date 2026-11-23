@@ -50,16 +50,18 @@ jobs:
           }
           Write-Host "Releasing $version"
 
-      # A tag carrying a pre-release label (v0.5.0-beta.1) publishes to the beta channel.
-      # This used to be hardcoded false, so a beta tag would have shipped to everyone.
+      # Every release starts as a beta. Versions are plain numbers now (0.17.0, 0.17.1,
+      # 0.18.0), bumped by what changed, and a build reaches the stable channel only when it
+      # is promoted after testing — `gh release edit vX.Y.Z --prerelease=false --latest`,
+      # the same build, never a rebuild. The hyphen used to decide this, and with plain
+      # numbers that rule would have published every beta to everyone.
       - name: Decide the channel
         id: channel
         shell: pwsh
         run: |
           $tag = "${{ github.event.inputs.tag || github.ref_name }}"
-          $isPre = $tag -match '-'
-          "prerelease=$($isPre.ToString().ToLower())" >> $env:GITHUB_OUTPUT
-          Write-Host "$tag -> prerelease=$isPre"
+          "prerelease=true" >> $env:GITHUB_OUTPUT
+          Write-Host "$tag -> published as a pre-release (beta); promote it once tested"
 
       - name: Install InnoSetup
         run: choco install innosetup --no-progress -y

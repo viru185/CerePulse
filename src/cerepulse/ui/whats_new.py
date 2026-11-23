@@ -138,12 +138,15 @@ class UpdateAvailableDialog(QDialog):
         layout.setContentsMargins(24, 22, 24, 20)
         layout.setSpacing(12)
 
-        heading = QLabel(f"{release.display_name} is available")
+        # "Beta" belongs to the release on offer — the flag is that release's. It used to be
+        # appended to "You are running …", describing the installed build with a fact about
+        # a different one; and with plain version numbers the flag is the only way to tell.
+        channel = " (beta)" if release.prerelease else ""
+        heading = QLabel(f"{release.display_name}{channel} is available")
         heading.setStyleSheet("font-size: 19px; font-weight: 700;")
         layout.addWidget(heading)
 
-        channel = " · beta" if release.prerelease else ""
-        current = QLabel(f"You are running {about.VERSION}{channel}.")
+        current = QLabel(f"You are running {about.VERSION}.")
         current.setObjectName("CardCaption")
         layout.addWidget(current)
 

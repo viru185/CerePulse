@@ -38,3 +38,11 @@ commit_parsers = [
   { message = "^chore", group = "Chores" },
   { message = ".*", group = "Other" },
 ]
+
+[bump]
+# Betas are plain versions now, numbered by what changed: a fix bumps the patch, a feature
+# the minor, a breaking change the major — even below 1.0, where semver would otherwise let a
+# feature bump only the patch. `git cliff --bumped-version` prints the next one.
+features_always_bump_minor = true
+breaking_always_bump_major = true
+

@@ -90,6 +90,43 @@ def test_beta_is_still_offered_stable_releases() -> None:
     assert not found.prerelease
 
 
+# --- plain version numbers (from 0.17) -----------------------------------------------------
+#
+# Betas are plain numbers now, bumped by what changed, and published as GitHub pre-releases;
+# promoting one flips that flag on the same build. The updater never read the hyphen — it
+# reads the flag — so these hold without a change to it, and must keep holding.
+
+
+@respx.mock
+def test_a_plain_numbered_beta_reaches_beta_users_only() -> None:
+    respx.get(RELEASES_URL).mock(
+        return_value=httpx.Response(200, json=[release("v0.17.0", prerelease=True)])
+    )
+    assert check_for_update("0.16.0-beta.2", channel=Channel.STABLE) is None
+    found = check_for_update("0.16.0-beta.2", channel=Channel.BETA)
+    assert found is not None and found.version == "0.17.0"
+
+
+@respx.mock
+def test_promoting_a_beta_offers_the_same_version_to_stable_users() -> None:
+    """Promotion is the flag, not a new number: the build a beta user already runs reaches
+    stable users unchanged, and the beta user is not offered it again."""
+    respx.get(RELEASES_URL).mock(
+        return_value=httpx.Response(
+            200, json=[release("v0.17.1"), release("v0.18.0", prerelease=True)]
+        )
+    )
+    stable = check_for_update("0.14.1", channel=Channel.STABLE)
+    assert stable is not None and stable.version == "0.17.1"
+    assert check_for_update("0.18.0", channel=Channel.BETA) is None
+
+
+def test_a_patch_beta_follows_the_minor_it_fixes() -> None:
+    assert is_newer("0.17.1", "0.17.0")
+    assert is_newer("0.18.0", "0.17.9")
+    assert is_newer("0.17.0", "0.16.0-beta.2"), "the first plain number tops the last suffixed one"
+
+
 @respx.mock
 def test_the_newest_wins_whatever_order_the_api_returns() -> None:
     respx.get(RELEASES_URL).mock(

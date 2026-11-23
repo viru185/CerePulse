@@ -5,53 +5,62 @@
 One source of truth: `__version__` in `src/cerepulse/__about__.py`. Hatchling reads it at
 build time, and the About dialog, the updater and the InnoSetup build read it at runtime.
 
-A tag containing a hyphen is a **pre-release**; anything else is stable. That single rule
-drives the release workflow's channel decision, so `v0.15.0-beta.1` reaches beta users only
-and `v0.15.0` reaches everyone.
+From 0.17 every version is a **plain number**, bumped by what changed since the last tag:
 
-## Cutting a beta
+| Commits since the last tag | Bump | Example |
+|---|---|---|
+| only `fix:` (and chores, docs, tests) | patch | 0.17.0 → 0.17.1 |
+| any `feat:` | minor | 0.17.1 → 0.18.0 |
+| any breaking change (`feat!:`, `BREAKING CHANGE:`) | major | 0.18.0 → 1.0.0 |
 
-```bash
+`[bump]` in `cliff.toml` encodes that table — including below 1.0, where semver would
+otherwise let a feature bump only the patch — and `tools/bump.py` applies it. The
+`-beta.N` suffixes of 0.15 and 0.16 are retired.
+
+**Every release is published as a beta** (a GitHub pre-release), whatever its number. A
+release becomes stable only when it has been tested and is promoted — see below. The updater
+has always decided by GitHub's pre-release flag, not by the version text, so beta users see
+both channels and stable users see only promoted releases.
+
+## Cutting a release
+
+```powershell
 # 1. Everything green first.
-uv run pytest -q && uv run ruff check . && uv run ruff format --check . && uv run mypy
+uv run pytest -q; uv run ruff check .; uv run ruff format --check .; uv run mypy
 
-# 2. Bump.
-#    __about__.py: __version__ = "0.15.0-beta.1"
+# 2. Work out the number and write it, with the changelog.
+uv run python tools/bump.py            # says what it would be
+uv run python tools/bump.py --write    # writes __about__.py and CHANGELOG.md
 
-# 3. Changelog, from the commits.
-git-cliff --config cliff.toml --tag v0.15.0-beta.1 -o CHANGELOG.md
-
-# 4. Commit, push, tag.
-git commit -am "chore: bump to 0.15.0-beta.1"
-git commit -am "chore: regenerate the changelog for 0.15.0-beta.1"
+# 3. Commit, push dev, tag.
+git commit -am "chore: bump to 0.18.0"
 git push origin dev
-git tag -a v0.15.0-beta.1 -m "..." && git push origin v0.15.0-beta.1
+git tag -a v0.18.0 -m "CerePulse 0.18.0"; git push origin v0.18.0
 ```
 
-Conventional Commits, enforced by commitlint on PRs. The body explains *why*.
+Development happens on a branch and is merged into `dev` before each release; the release is
+cut from `dev`. Conventional Commits, enforced by commitlint on PRs. The body explains *why*.
 
 ## Promoting to stable
 
-Stable tags live on `main`.
+Only once the release has been used and checked — "fully tested, QC'd and bug free" is the
+bar. Promotion does not rebuild or renumber anything: the exact build beta users have been
+running is what stable users get.
 
-```bash
-# On dev: drop the pre-release suffix, regenerate, push.
-# Then:
-git checkout main && git merge --ff-only dev && git push origin main
-git tag -a v0.15.0 -m "..." && git push origin v0.15.0
+```powershell
+git checkout main; git merge --ff-only v0.18.0; git push origin main
+gh release edit v0.18.0 --prerelease=false --latest
+gh release view v0.18.0 --json isPrerelease,isLatest
 ```
 
-Confirm it published as a full release rather than a prerelease:
-
-```bash
-gh release view v0.15.0 --json isPrerelease,assets
-```
+A tag cannot be reused, so a fix found during testing is a new patch release (0.18.1), tested
+in turn, and that is the one promoted.
 
 ## What CI does
 
 `.github/workflows/release.yml`, on a tag:
 
-1. Decides the channel from the tag (hyphen → prerelease).
+1. Publishes every tag as a pre-release (beta); promotion is a separate, manual step.
 2. Builds the app folder, the portable zip and the InnoSetup installer.
 3. Writes `SHA256SUMS.txt`.
 4. Publishes the release with all three attached.
