@@ -157,3 +157,164 @@ def test_a_quiet_call_while_paused_says_so_rather_than_going_silent(window, monk
     window.refresh(force=True, quiet=True)
 
     assert "Paused" in window._status_text
+
+
+# --- every fetch button ends a pause; nothing quiet does ---------------------------------
+#
+# 23 Nov: the browser had the session, the user pressed Pay's Refresh, and Pay went straight
+# to its service. Three requests, no session, three "signed in somewhere else", and the only
+# way out was a restart. Every control that fetches now asks for the session back first.
+
+
+def test_pay_refresh_ends_a_pause(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from dataclasses import replace
+
+    _silence_sync(window, monkeypatch)
+    config = window._context.config
+    window._context.pay.use_config(replace(config, pay=replace(config.pay, enabled=True)))
+    submitted: list[str] = []
+    monkeypatch.setattr(window._runner, "submit", lambda name, *a, **k: submitted.append(name))
+    window._on_error(SessionTakenError("signed in elsewhere"))
+
+    window.pay.refresh_requested.emit()
+
+    assert not window._paused
+    assert window._context.auth._reclaiming
+    assert submitted == ["pay"]
+
+
+@pytest.mark.parametrize("control", ["fetch detail", "sync panel", "history"])
+def test_every_fetch_button_ends_a_pause(window, monkeypatch, control) -> None:  # type: ignore[no-untyped-def]
+    from cerepulse.services.scopes import Scope
+
+    _silence_sync(window, monkeypatch)
+    for name in ("sync_scope", "sync_history"):
+        monkeypatch.setattr(window._sync, name, lambda *a, **k: None)
+    window._on_error(SessionTakenError("signed in elsewhere"))
+
+    {
+        "fetch detail": window.attendance.fetch_detail_requested.emit,
+        "sync panel": lambda: window._sync_scope(Scope.LEAVE),
+        "history": window.sync_history,
+    }[control]()
+
+    assert not window._paused
+    assert window._context.auth._reclaiming
+
+
+def test_stepping_to_an_unsynced_month_while_paused_fetches_nothing(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    _silence_sync(window, monkeypatch)
+    fetched: list[object] = []
+    monkeypatch.setattr(window._sync, "sync_scope", lambda scope: fetched.append(scope))
+    monkeypatch.setattr(window._sync, "load_from_cache", lambda: None)
+    window._on_error(SessionTakenError("signed in elsewhere"))
+
+    window._change_month(2026, 2)
+
+    assert fetched == []
+    assert window._paused
+
+
+def test_the_controller_is_told_about_the_pause(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """It decides whether a stale month or a due day may be fetched, so it has to know."""
+    _silence_sync(window, monkeypatch)
+    window._on_error(SessionTakenError("signed in elsewhere"))
+    assert window._sync.paused
+    window.refresh(force=True)
+    assert not window._sync.paused
+
+
+# --- after a blip, the screens say so no longer ------------------------------------------
+
+
+def test_a_clean_sync_clears_the_problems_earlier_fetches_reported(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """ "Could not load day: Network unavailable" stayed on three screens after the network
+    came back, until the app was restarted — most of why it looked as if it needed one."""
+    window._on_degraded("day", TransportError("offline"))
+    for banner in (window.today.banner, window.week.banner, window.attendance.banner):
+        assert banner.isVisibleTo(banner.parentWidget())
+
+    window._on_sync_finished([])
+
+    for banner in (window.today.banner, window.week.banner, window.attendance.banner):
+        assert not banner.isVisibleTo(banner.parentWidget())
+
+
+def test_a_clean_sync_leaves_the_session_notice_alone(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    _silence_sync(window, monkeypatch)
+    window._on_error(SessionTakenError("signed in elsewhere"))
+    window._on_sync_finished([])
+    assert window.today.banner.isVisibleTo(window.today.banner.parentWidget())
+
+
+# --- prompts -------------------------------------------------------------------------------
+
+
+def test_only_one_sign_in_dialog_at_a_time(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`exec` runs a nested loop, so each queued task failing on the same lost session
+    opened another dialog over the first."""
+    opened: list[int] = []
+
+    def open_one() -> None:
+        opened.append(1)
+        window.prompt_sign_in()  # a second failure arriving while the first dialog is up
+
+    monkeypatch.setattr(window, "_prompt_sign_in", open_one)
+    window.prompt_sign_in()
+
+    assert opened == [1]
+    assert not window._signing_in
+
+
+def test_being_offline_at_launch_asks_for_no_password(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from cerepulse.core.errors import AuthenticationError, NetworkUnreachableError
+
+    prompted: list[int] = []
+    monkeypatch.setattr(window, "prompt_sign_in", lambda: prompted.append(1))
+
+    window._silent_sign_in_failed(NetworkUnreachableError("getaddrinfo failed"))
+    assert prompted == []
+    assert "Offline" in window._status_text
+
+    window._silent_sign_in_failed(AuthenticationError("rejected"))
+    assert prompted == [1]
+
+
+# --- waking up -----------------------------------------------------------------------------
+
+
+def test_waking_from_sleep_catches_up_at_once(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from cerepulse.ui import main_window as module
+
+    asked = _silence_sync(window, monkeypatch)
+    daily: list[int] = []
+    monkeypatch.setattr(window, "_refresh_daily", lambda: daily.append(1))
+    monkeypatch.setattr(module.time, "time", lambda: window._beat + 3 * 3600)
+
+    window._heartbeat()
+
+    assert asked == ["refresh"]
+    assert daily == [1], "the quote fetched before the Wi-Fi came back is retried"
+
+
+def test_waking_while_paused_stays_paused(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from cerepulse.ui import main_window as module
+
+    asked = _silence_sync(window, monkeypatch)
+    monkeypatch.setattr(window, "_refresh_daily", lambda: None)
+    window._on_error(SessionTakenError("signed in elsewhere"))
+    monkeypatch.setattr(module.time, "time", lambda: window._beat + 3 * 3600)
+
+    window._heartbeat()
+
+    assert asked == []
+    assert window._paused
+
+
+def test_an_ordinary_minute_is_not_a_wake(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from cerepulse.ui import main_window as module
+
+    asked = _silence_sync(window, monkeypatch)
+    monkeypatch.setattr(module.time, "time", lambda: window._beat + 61)
+    window._heartbeat()
+    assert asked == []

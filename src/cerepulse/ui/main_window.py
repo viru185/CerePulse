@@ -11,6 +11,7 @@ it, so the window is useful immediately rather than after a round trip to the po
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from datetime import date, datetime
 
@@ -83,6 +84,8 @@ SIDEBAR_WIDTH = 196
 #: from the geometry rather than read off the widget, because the first status is set before
 #: the layout has ever run and ``width()`` would still be reporting a default.
 STATUS_TEXT_WIDTH = SIDEBAR_WIDTH - 16 - 30
+#: A minute timer that finds this much time has passed has woken from sleep.
+WAKE_GAP_SECONDS = 180
 
 
 class MainWindow(QMainWindow):
@@ -115,6 +118,8 @@ class MainWindow(QMainWindow):
         #: Set when the portal session was taken elsewhere. While paused the app serves
         #: cache and does not touch the network until the user asks it to.
         self._paused = False
+        #: A sign-in dialog is open. See :meth:`prompt_sign_in`.
+        self._signing_in = False
         self._scopes: list[object] = []
         self._busy_scope: Scope | None = None
         #: The two record sources that arrive on their own schedules, kept so the
@@ -159,8 +164,13 @@ class MainWindow(QMainWindow):
         # case the truce exists for, stayed on yesterday until Refresh was pressed.
         self._rollover = QTimer(self)
         self._rollover.setInterval(60_000)
-        self._rollover.timeout.connect(self._roll_over_if_the_day_changed)
+        self._rollover.timeout.connect(self._heartbeat)
         self._rollover.start()
+        #: Wall-clock time of the last heartbeat. A minute timer that finds far more than a
+        #: minute has passed has just woken from sleep.
+        self._beat = time.time()
+        self._online = True
+        self._watch_the_network()
 
         # The day's quote and picture, after the window is up; they are never urgent.
         self._daily_view: DailyView | None = None
@@ -221,9 +231,7 @@ class MainWindow(QMainWindow):
         self.attendance.refresh_requested.connect(lambda: self.refresh(force=True))
         self.attendance.month_changed.connect(self._change_month)
         self.attendance.day_selected.connect(self._open_day)
-        self.attendance.fetch_detail_requested.connect(
-            lambda: self._sync.sync_scope(Scope.DAY_DETAIL)
-        )
+        self.attendance.fetch_detail_requested.connect(lambda: self._sync_scope(Scope.DAY_DETAIL))
         self.attendance.open_portal.connect(lambda: self._open_portal(pages.ATTENDANCE_REPORT))
         self.today.sync_day_requested.connect(self._sync_day)
         # Through `refresh`, not straight to the service. A Refresh button that cannot end
@@ -446,10 +454,11 @@ class MainWindow(QMainWindow):
 
     def _test_connection(self) -> None:
         """Prove the portal is reachable and the saved credentials still work."""
+        self._asked_for_the_portal()
         self.about.banner.show_message("Testing the connection to SpineHR…", Severity.INFO)
         self._runner.submit(
             "connection-test",
-            self._context.gateway.fetch_employee,
+            lambda: self._context.sync.run(self._context.gateway.fetch_employee),
             on_success=lambda employee: self.about.banner.show_message(
                 f"Connected. Signed in as {getattr(employee, 'code', 'unknown')}.",
                 Severity.SUCCESS,
@@ -461,9 +470,37 @@ class MainWindow(QMainWindow):
 
     def _sign_in_silently(self) -> None:
         self._set_status("Signing in…")
-        self._sync.sign_in_silently(self._on_signed_in, self.prompt_sign_in)
+        self._sync.sign_in_silently(self._on_signed_in, self._silent_sign_in_failed)
+
+    def _silent_sign_in_failed(self, exc: BaseException) -> None:
+        """Ask for a password only when the password is the problem.
+
+        Started with Windows, the app often runs before the network is up, and any failure
+        used to open the sign-in dialog over the desktop — for a saved password that was
+        fine. Offline, the next background refresh signs in by itself once the portal can
+        be reached, so the cache is shown and nothing is asked.
+        """
+        if isinstance(exc, TransportError):
+            self._set_status("Offline — showing cached data")
+            return
+        self.prompt_sign_in()
 
     def prompt_sign_in(self) -> None:
+        """One sign-in dialog at a time.
+
+        ``exec`` runs a nested event loop, so every queued task that failed on the same lost
+        session opened another dialog on top of the first — a stack of identical prompts
+        appearing and closing as they were answered.
+        """
+        if self._signing_in:
+            return
+        self._signing_in = True
+        try:
+            self._prompt_sign_in()
+        finally:
+            self._signing_in = False
+
+    def _prompt_sign_in(self) -> None:
         dialog = LoginDialog(
             username=self._context.config.portal.username,
             remember=self._context.config.portal.remember_me,
@@ -556,10 +593,21 @@ class MainWindow(QMainWindow):
             self._set_status("Refreshing…")
         self._sync.refresh(force=force)
 
-    def _refresh_records(self) -> None:
-        """Records' own Refresh, which must also be able to end a pause."""
+    def _asked_for_the_portal(self) -> None:
+        """Every control the user presses to fetch something comes through here first.
+
+        Pressing one is the user asking for the session back, as plainly as Refresh is. Pay,
+        Fetch punch detail, the sync panel's buttons, Sync history and Test connection each
+        went straight to a service, so while paused they either did nothing or — Pay — made
+        three requests with no session, read each as a fresh eviction, and left the app
+        paused with no way out but a restart.
+        """
         if self._paused:
             self._resume()
+
+    def _refresh_records(self) -> None:
+        """Records' own Refresh, which must also be able to end a pause."""
+        self._asked_for_the_portal()
         self._set_status("Refreshing…")
         self._sync.refresh_leave()
 
@@ -614,6 +662,7 @@ class MainWindow(QMainWindow):
         give way: it has a cache to fall back on and the browser does not.
         """
         self._paused = True
+        self._sync.paused = True
         self._auto.stop()
 
         # The session is gone, so stop pretending otherwise. Left alone, the cookie jar
@@ -644,6 +693,7 @@ class MainWindow(QMainWindow):
         the thing it says it is.
         """
         self._paused = False
+        self._sync.paused = False
         for banner in self._session_banners:
             banner.clear_message("session")
         self._context.auth.expect_reclaim()
@@ -661,8 +711,14 @@ class MainWindow(QMainWindow):
         return (self.today.banner, self.records.banner, self.attendance.banner)
 
     def sync_history(self) -> None:
+        self._asked_for_the_portal()
         self.settings.banner.show_message("Fetching history…", Severity.INFO)
         self._sync.sync_history()
+
+    def _sync_scope(self, scope: Scope) -> None:
+        """One thing, fetched now — from the sync panel or a screen's own button."""
+        self._asked_for_the_portal()
+        self._sync.sync_scope(scope)
 
     def cancel_history(self) -> None:
         self._sync.cancel_history()
@@ -671,7 +727,7 @@ class MainWindow(QMainWindow):
         """Show what is fresh and what is not, with a button per thing."""
         if self._sync_panel is None:
             self._sync_panel = SyncPanel(self._palette, self)
-            self._sync_panel.scope_requested.connect(self._sync.sync_scope)
+            self._sync_panel.scope_requested.connect(self._sync_scope)
             self._sync_panel.refresh_all_requested.connect(lambda: self.refresh(force=True))
         self._sync.report_scopes()
         self._sync_panel.show()
@@ -685,8 +741,7 @@ class MainWindow(QMainWindow):
         ``SessionTakenError`` and did nothing at all — and the way out was to press a
         different button first, which nothing on screen said.
         """
-        if self._paused:
-            self._resume()
+        self._asked_for_the_portal()
         self._set_status(f"Fetching {fmt.day_label(day)}…")
         self._sync.sync_day(day)
 
@@ -928,6 +983,50 @@ class MainWindow(QMainWindow):
         self._roll_over_if_the_day_changed()
         self.refresh(force=True, quiet=True)
 
+    def _heartbeat(self) -> None:
+        """Once a minute: notice a wake from sleep, then a change of date."""
+        now = time.time()
+        away, self._beat = now - self._beat, now
+        if away > WAKE_GAP_SECONDS:
+            self._back_after(f"{away / 60:.0f} minutes asleep")
+        self._roll_over_if_the_day_changed()
+
+    def _watch_the_network(self) -> None:
+        """Hear about the network coming back, from Windows itself where it can say."""
+        try:
+            from PySide6.QtNetwork import QNetworkInformation
+
+            if not QNetworkInformation.loadDefaultBackend():
+                logger.info("No network-status backend; relying on the wake check alone")
+                return
+            info = QNetworkInformation.instance()
+        except (ImportError, RuntimeError) as exc:  # pragma: no cover — platform dependent
+            logger.info("Network status is unavailable: {}", exc)
+            return
+        if info is None:
+            return
+        online = QNetworkInformation.Reachability.Online
+        self._online = info.reachability() == online
+
+        def changed(reachability: QNetworkInformation.Reachability) -> None:
+            was, self._online = self._online, reachability == online
+            if self._online and not was:
+                self._back_after("the network came back")
+
+        info.reachabilityChanged.connect(changed)
+
+    def _back_after(self, reason: str) -> None:
+        """Catch up now rather than at the next tick, which may be fifteen minutes off.
+
+        Paused stays paused: a session someone else holds is no less theirs for the laptop
+        having slept. The quote and picture are retried either way, because the first fetch
+        of the day usually happened in the seconds before the Wi-Fi reconnected.
+        """
+        logger.info("Catching up: {}", reason)
+        self._refresh_daily()
+        if not self._paused:
+            self.refresh(force=False, quiet=True)
+
     def _roll_over_if_the_day_changed(self) -> None:
         """Notice midnight.
 
@@ -970,7 +1069,9 @@ class MainWindow(QMainWindow):
         """
         self._sync.period = (year, month)
         self._sync.load_from_cache()
-        if (year, month) not in self._synced_months:
+        # Paused, a month never synced stays empty: stepping the picker is not the user
+        # asking for the session back, and fetching would take it off their browser.
+        if (year, month) not in self._synced_months and not self._paused:
             self._sync.sync_scope(Scope.ATTENDANCE)
 
     def _change_week(self, week_start: date) -> None:
@@ -1396,10 +1497,16 @@ class MainWindow(QMainWindow):
         """Fetch the salary pages, through the coordinator so an expired session is replayed."""
         if not self._context.pay.enabled:
             return
+        self._asked_for_the_portal()
+
+        def shown(snapshot: object) -> None:
+            self.pay.banner.clear_message("pay")
+            self.pay.show_snapshot(snapshot)  # type: ignore[arg-type]
+
         self._runner.submit(
             "pay",
             lambda: self._context.sync.run(lambda: self._context.pay.refresh(self._employee_code)),
-            on_success=self.pay.show_snapshot,
+            on_success=shown,
             on_error=lambda exc: self._on_degraded("pay", exc),
         )
 
@@ -1521,10 +1628,21 @@ class MainWindow(QMainWindow):
                 Severity.WARNING,
                 key="sync",
             )
-        else:
-            # Only its own message. Clearing the whole strip meant a successful sync
-            # silently swallowed the sign-in error sitting above it.
-            self.today.banner.clear_message("sync")
+            return
+        # A clean sync settles every problem a fetch reported before it. These messages
+        # used to be cleared by nothing, so after one network blip "Could not load day:
+        # Network unavailable" sat on Today, Week and Attendance until the app was
+        # restarted — which is most of why it looked as if it needed one. Only fetch
+        # problems: the session notice and anything the user must act on stay.
+        for banner in (
+            self.today.banner,
+            self.week.banner,
+            self.attendance.banner,
+            self.records.banner,
+            self.insights.banner,
+        ):
+            for key in _FETCH_PROBLEMS:
+                banner.clear_message(key)
 
     def _on_busy_changed(self, busy: bool) -> None:
         self.today.set_loading(busy)
@@ -1590,6 +1708,18 @@ class MainWindow(QMainWindow):
             # left the user to find out where those are.
             offer_logs=not isinstance(exc, CerePulseError),
         )
+
+
+#: Banner keys that report a fetch going wrong, which a later clean sync puts right.
+_FETCH_PROBLEMS = (
+    "sync",
+    "error",
+    "day",
+    "insights",
+    "leave ledger",
+    "swipe requests",
+    "applications",
+)
 
 
 def _message_for(exc: BaseException) -> str:

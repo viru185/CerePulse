@@ -78,6 +78,12 @@ class SyncController(QObject):
         self.period = (date.today().year, date.today().month)
         self._history_cancelled = False
         self._detail_cancelled = False
+        #: Set by the window while the portal session is someone else's. Reads that would
+        #: fetch when the cache is stale serve the cache instead; only the user asking for
+        #: the session back ends it.
+        self.paused = False
+        #: A full sync is queued or running. See :meth:`refresh`.
+        self._syncing = False
 
     # --- months -----------------------------------------------------------------------
 
@@ -92,8 +98,11 @@ class SyncController(QObject):
         year, month = self.period
         self._runner.submit(
             "load-cache",
+            # Never the network: this runs before signing in, and a stale month fetched
+            # with no session came back as a login redirect that was reported as an
+            # eviction and swallowed, so the cached month never drew at launch.
             lambda: self._context.attendance.load_month(
-                self.employee_code, year, month, force_refresh=False, today=date.today()
+                self.employee_code, year, month, today=date.today(), fetch=False
             ),
             on_success=self.month_ready.emit,
             on_error=lambda exc: logger.debug("No cached month yet: {}", exc),
@@ -123,17 +132,30 @@ class SyncController(QObject):
         ``force`` reaches the services now. It used to stop at this method, so pressing
         Refresh respected every cache TTL and could legitimately fetch nothing at all.
         """
+        if self._syncing:
+            # The runner serialises rather than drops, so a wake from sleep — the overdue
+            # tick, the resume check and the network coming back all at once — queued
+            # three full syncs, each answering what the one before it had just answered.
+            logger.debug("A sync is already queued; not queueing another")
+            return
+        self._syncing = True
         year, month = self.period
+
+        def failed(exc: BaseException) -> None:
+            self._syncing = False
+            self.failed.emit(exc)
+
         self._runner.submit(
             "sync",
             lambda: self._context.sync.sync_all(
                 self.employee_code, year=year, month=month, today=date.today(), force=force
             ),
             on_success=self._after_sync,
-            on_error=self.failed.emit,
+            on_error=failed,
         )
 
     def _after_sync(self, report: object) -> None:
+        self._syncing = False
         self.sync_finished.emit(list(getattr(report, "failures", [])))
         self.reload_month()
         self.refresh_leave()
@@ -203,11 +225,12 @@ class SyncController(QObject):
 
     def reload_month(self) -> None:
         year, month = self.period
+        paused = self.paused
         self._runner.submit(
             "reload",
             lambda: self._context.sync.run(
                 lambda: self._context.attendance.load_month(
-                    self.employee_code, year, month, force_refresh=False, today=date.today()
+                    self.employee_code, year, month, today=date.today(), fetch=not paused
                 )
             ),
             on_success=self.month_ready.emit,
@@ -241,11 +264,12 @@ class SyncController(QObject):
 
     def load_day(self, day: date) -> None:
         today = date.today()
+        paused = self.paused
         self._runner.submit(
             "analyze-day",
             lambda: self._context.sync.run(
                 lambda: self._context.attendance.load_day(
-                    self.employee_code, day, now=datetime.now()
+                    self.employee_code, day, now=datetime.now(), fetch=not paused
                 )
             ),
             on_success=lambda analysis: self.day_ready.emit(analysis, day == today),
@@ -380,13 +404,13 @@ class SyncController(QObject):
 
     # --- account and cache ------------------------------------------------------------
 
-    def sign_in_silently(self, on_success: Success, on_failure: Callable[[], None]) -> None:
-        """Try the saved password first; only prompt when that is missing or rejected."""
+    def sign_in_silently(self, on_success: Success, on_failure: Failure) -> None:
+        """Try the saved password first; the caller decides whether a failure needs a prompt."""
         self._runner.submit(
             "sign-in",
             self._context.sign_in_with_saved_credentials,
             on_success=on_success,
-            on_error=lambda _exc: on_failure(),
+            on_error=on_failure,
         )
 
     def sign_in(
