@@ -46,6 +46,7 @@ from cerepulse.ui.widgets import (
     StatusChip,
     TargetBar,
     card_row,
+    empty_layout,
     shared_domain,
 )
 
@@ -520,8 +521,4 @@ def _monday_of(day: date) -> date:
 
 
 def _clear(layout: QVBoxLayout) -> None:
-    while layout.count():
-        item = layout.takeAt(0)
-        widget = item.widget() if item is not None else None
-        if widget is not None:
-            widget.deleteLater()
+    empty_layout(layout)

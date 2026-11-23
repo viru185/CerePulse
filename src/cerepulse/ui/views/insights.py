@@ -42,7 +42,15 @@ from cerepulse.models.values import Duration
 from cerepulse.services.attendance import TrendsView
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette
-from cerepulse.ui.widgets import Banner, BarChart, Card, SectionTitle, card_row, data_table
+from cerepulse.ui.widgets import (
+    Banner,
+    BarChart,
+    Card,
+    SectionTitle,
+    card_row,
+    data_table,
+    empty_layout,
+)
 
 #: The trailing blank is a spacer. Every real column here is a short number, so without one
 #: to absorb the leftover width either the last column is stranded against the far edge of
@@ -206,12 +214,7 @@ class InsightsView(QWidget):
         """One line per day of this week, measured against that weekday's own baseline."""
         from cerepulse.intelligence.week_vs_usual import WeekComparison, describe
 
-        while self._week.count():
-            item = self._week.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        empty_layout(self._week)
 
         if not isinstance(week, WeekComparison) or not week.has_baseline:
             self._week_note.setText(
@@ -375,11 +378,7 @@ class InsightsView(QWidget):
         )
 
     def _render_weekdays(self, habits: Habits) -> None:
-        while self._weekdays.count():
-            item = self._weekdays.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.deleteLater()
+        empty_layout(self._weekdays)
 
         if not habits.has_enough:
             return

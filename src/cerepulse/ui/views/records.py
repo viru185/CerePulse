@@ -53,6 +53,7 @@ from cerepulse.ui.widgets import (
     SectionTitle,
     StatusChip,
     data_table,
+    empty_layout,
 )
 
 BREAK_COLUMNS = ("When", "Days off", "Leave used", "Value", "Book these days")
@@ -336,12 +337,7 @@ class RecordsView(QWidget):
         self.total.set_caption("  ·  ".join(parts))
 
     def _render_cards(self, outlooks: list[LeaveOutlook]) -> None:
-        while self._cards.count():
-            item = self._cards.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        empty_layout(self._cards)
 
         ordered = sorted(outlooks, key=lambda outlook: CARD_ORDER.index(outlook.balance.category))
         for index, outlook in enumerate(ordered):
@@ -458,7 +454,7 @@ class RecordsView(QWidget):
         self._breaks_note.setText(note)
 
     def _render_timeline(self) -> None:
-        _empty(self._timeline)
+        empty_layout(self._timeline)
 
         _kind_label, by_kind = KIND_FILTERS[max(0, self._kind.currentIndex())]
         _state_label, by_state = STATE_FILTERS[max(0, self._state.currentIndex())]
@@ -482,24 +478,6 @@ class RecordsView(QWidget):
                 "or the filters to reach the rest."
             )
         self._overflow.setVisible(len(shown) > MAX_ROWS)
-
-
-def _empty(layout: QVBoxLayout | QHBoxLayout) -> None:
-    """Remove every widget from a layout, and stop it painting *now*.
-
-    ``takeAt`` only detaches the layout item — the widget stays a child of the container and
-    keeps drawing at its last geometry until ``deleteLater`` is serviced, which happens when
-    the event loop next drains and not before. That is normally invisible, but the records
-    timeline is rebuilt four times per sync as the month, the requests, the ledger and the
-    applications each land, so a sync could paint four stacked copies of every row.
-    Reparenting first is what makes the removal immediate rather than eventual.
-    """
-    while layout.count():
-        item = layout.takeAt(0)
-        widget = item.widget() if item is not None else None
-        if widget is not None:
-            widget.setParent(None)
-            widget.deleteLater()
 
 
 class _DayHeader(QLabel):

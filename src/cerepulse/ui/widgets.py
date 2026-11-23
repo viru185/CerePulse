@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLayout,
     QLineEdit,
     QPushButton,
     QSizePolicy,
@@ -55,6 +56,23 @@ if TYPE_CHECKING:  # Imported for the annotation only; widgets must not depend o
 
 #: What a card shows when it has no number yet.
 EMPTY_VALUE = "—"
+
+
+def empty_layout(layout: QLayout) -> None:
+    """Remove every widget from a layout, and stop it painting *now*.
+
+    ``takeAt`` only detaches the layout item — the widget stays a child of the container and
+    keeps drawing at its last geometry until ``deleteLater`` is serviced, which happens when
+    the event loop next drains and not before. The records timeline painted four stacked
+    copies of every row that way, and the attendance heatmap a stale block of cells over its
+    own headings after every re-render. Reparenting first makes the removal immediate.
+    """
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget() if item is not None else None
+        if widget is not None:
+            widget.setParent(None)
+            widget.deleteLater()
 
 
 def add_reveal_toggle(field: QLineEdit, *, colour: str = "#8A8F98") -> QAction:
@@ -409,11 +427,7 @@ class InsightStrip(QWidget):
         self._layout.setSpacing(8)
 
     def set_insights(self, insights: list[Insight]) -> None:
-        while self._layout.count():
-            item = self._layout.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.deleteLater()
+        empty_layout(self._layout)
 
         for insight in insights:
             chip = InsightChip(insight, self._palette)
@@ -1043,11 +1057,7 @@ class DayJourney(QWidget):
         Offered only where it can mean something — a real gap on a day the app can store a
         flag against — because a button that silently does nothing is worse than no button.
         """
-        while self._layout.count():
-            item = self._layout.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.deleteLater()
+        empty_layout(self._layout)
 
         self.setVisible(bool(segments))
         rows: list[_JourneyRow] = []
@@ -1625,11 +1635,7 @@ class MonthHeatmap(QWidget):
         return [date(year, month, number) for number in range(1, last + 1)]
 
     def _clear(self) -> None:
-        while self._grid.count():
-            item = self._grid.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.deleteLater()
+        empty_layout(self._grid)
 
 
 class _HeatCell(QLabel):

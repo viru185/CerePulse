@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from cerepulse.services.scopes import Scope, ScopeStatus
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.theme import Palette, Space
+from cerepulse.ui.widgets import empty_layout
 
 
 class SyncPanel(QDialog):
@@ -70,11 +71,7 @@ class SyncPanel(QDialog):
         layout.addLayout(buttons)
 
     def show_statuses(self, statuses: list[ScopeStatus], *, busy: Scope | None = None) -> None:
-        while self._rows.count():
-            item = self._rows.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.deleteLater()
+        empty_layout(self._rows)
 
         for status in statuses:
             row = _ScopeRow(status, self._palette, busy=busy is status.scope)
