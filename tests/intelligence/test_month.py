@@ -38,12 +38,15 @@ def time_on(when: date, hour: int) -> datetime:
 # --- estimation -----------------------------------------------------------------------
 
 
-def test_grid_only_days_are_estimated_by_removing_the_break_allowance() -> None:
-    """Tot. Hrs. is a gross span, so it is not directly comparable to a work target."""
+def test_a_grid_only_day_is_measured_exactly_by_its_span() -> None:
+    """Tot. Hrs. is the span, and the span is what a day is judged by — so a day with no
+    punch log needs nothing estimated. The old net-work rule could only guess at it as the
+    span less the break allowance."""
     analysis = analyze_month([day(date(2026, 7, 1), gross="9.00")], year=2026, month=7)
 
-    assert analysis.total_worked.as_clock() == "8:00"
-    assert analysis.estimated_days == 1
+    assert analysis.total_worked.as_clock() == "9:00"
+    assert analysis.estimated_days == 0
+    assert analysis.bank_delta.minutes == 0
 
 
 def test_punch_detail_overrides_the_estimate() -> None:
@@ -51,7 +54,7 @@ def test_punch_detail_overrides_the_estimate() -> None:
     detail = analyze_day(punches(("09:00", "in"), ("18:30", "out")), day=when)
     analysis = analyze_month([day(when, gross="9.30")], year=2026, month=7, analyses={when: detail})
 
-    assert analysis.total_worked.as_clock() == "9:30"  # exact, not 9:30 - 1:00
+    assert analysis.total_worked.as_clock() == "9:30"  # the span, from the punch log
     assert analysis.estimated_days == 0
 
 
@@ -63,7 +66,7 @@ def test_weekly_offs_do_not_count_toward_the_target() -> None:
     analysis = analyze_month(days, year=2026, month=7)
 
     assert analysis.working_days_elapsed == 1
-    assert analysis.total_worked.as_clock() == "8:00"
+    assert analysis.total_worked.as_clock() == "9:00"
 
 
 # --- hours bank -----------------------------------------------------------------------
@@ -79,15 +82,16 @@ def test_bank_is_flat_when_every_day_hits_target() -> None:
 
 
 def test_a_deficit_produces_a_required_daily_average() -> None:
-    """Two days an hour short, with two working days left to make it up."""
+    """Two days an hour short of the nine-hour shift, one working day left to make it up."""
     days = [day(date(2026, 7, 29), gross="8.00"), day(date(2026, 7, 30), gross="8.00")]
-    analysis = analyze_month(days, year=2026, month=7, today=date(2026, 7, 30))
+    # The morning of the 31st: both short days are over, and the 31st has no row yet.
+    analysis = analyze_month(days, year=2026, month=7, today=date(2026, 7, 31))
 
     assert analysis.bank_delta.as_clock() == "-2:00"
     assert not analysis.is_ahead
-    # One working day left (31 Jul, a Friday): 8h target + 2h owed.
+    # One working day left (31 Jul, a Friday): a 9h shift + 2h owed.
     assert analysis.working_days_remaining == 1
-    assert analysis.required_daily_average.as_clock() == "10:00"
+    assert analysis.required_daily_average.as_clock() == "11:00"
 
 
 def test_being_ahead_asks_for_nothing() -> None:
@@ -100,10 +104,23 @@ def test_being_ahead_asks_for_nothing() -> None:
 
 def test_no_remaining_days_means_no_average_to_ask_for() -> None:
     days = [day(date(2026, 7, 31), gross="7.00")]
-    analysis = analyze_month(days, year=2026, month=7, today=date(2026, 7, 31))
+    analysis = analyze_month(days, year=2026, month=7, today=date(2026, 8, 1))
 
     assert analysis.working_days_remaining == 0
     assert analysis.required_daily_average is None
+
+
+def test_a_short_today_on_the_grid_is_still_in_progress() -> None:
+    """With no punch log, today's grid row cannot tell a lunch break from going home — its
+    last-out is the latest swipe so far. Counting it as a finished, short day made the week
+    read hours behind at lunchtime."""
+    today = date(2026, 7, 30)
+    days = [day(date(2026, 7, 29), gross="9.00"), day(today, gross="4.00")]
+    analysis = analyze_month(days, year=2026, month=7, today=today)
+
+    assert analysis.working_days_elapsed == 1
+    assert analysis.bank_delta.minutes == 0
+    assert analysis.short_days == 0
 
 
 # --- working-day counting -------------------------------------------------------------
@@ -170,8 +187,8 @@ def test_week_totals_and_delta() -> None:
     week = analyze_week(days, week_start=monday)
 
     assert week.working_days == 3
-    assert week.total_worked.as_clock() == "24:00"
-    assert week.target.as_clock() == "24:00"
+    assert week.total_worked.as_clock() == "27:00"
+    assert week.target.as_clock() == "27:00"
     assert week.delta.minutes == 0
 
 
@@ -202,8 +219,8 @@ def test_todays_partial_hours_are_not_scored_against_a_full_day() -> None:
     ]
     week = analyze_week(days, week_start=monday, today=date(2026, 7, 28))
 
-    assert week.total_worked.as_clock() == "8:00"
-    assert week.target.as_clock() == "8:00"
+    assert week.total_worked.as_clock() == "9:00"
+    assert week.target.as_clock() == "9:00"
     assert week.delta.minutes == 0
 
 
@@ -220,8 +237,8 @@ def test_the_projection_counts_the_days_the_grid_has_no_rows_for() -> None:
 
     # Wed, Thu, Fri ahead; Sat and Sun are inferred off from the weekend rows above.
     assert week.days_ahead == 3
-    assert week.full_target.as_clock() == "40:00"
-    assert week.projected_total.as_clock() == "40:00"
+    assert week.full_target.as_clock() == "45:00"
+    assert week.projected_total.as_clock() == "45:00"
 
 
 def test_a_holiday_is_not_a_day_you_have_to_make_up() -> None:
@@ -333,7 +350,8 @@ def test_a_custom_policy_changes_the_target() -> None:
     week = analyze_week(
         [day(date(2026, 7, 27), gross="7.30")], week_start=date(2026, 7, 27), policy=policy
     )
-    assert week.total_worked.as_clock() == "7:00"
+    assert week.total_worked.as_clock() == "7:30"
+    assert week.target.as_clock() == "7:30", "a 7h30 shift span is the day"
     assert week.delta.minutes == 0
 
 

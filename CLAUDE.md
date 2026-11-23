@@ -201,19 +201,33 @@ the most expensive data in the cache on every sync. `save_month` preserves it an
 **Injected time, never `datetime.now()` inside the intelligence layer.** Every entry point
 takes `now` or `today`, which is what makes in-progress days testable.
 
-**Today is never "complete" while it still owes work.** A day whose last punch is an Out
-means "at lunch" at one o'clock and "went home early" at seven, and the punches cannot tell
-the two apart. Treating them the same made the app declare an early exit and demand a swipe
-request in the middle of the working day. `analyze_day` therefore holds today at
-`INCOMPLETE` while `work_remaining` is non-zero — and `clocked_in` is the separate flag for
-"the last punch was an In", which is what `Presence` uses to tell working from on-break.
-`find_attention` skips today for the same reason, so the two agree.
+**A day is measured by its span.** Nine hours from the first In to the last Out is a complete
+shift, breaks included — the company's rule as the user states it, and what the portal's own
+`Tot. Hrs.` measures. So `leave_at` is `expected_out` (in + shift span) and leads on Today;
+`expected_out_break_adjusted` (in + 8h + the break taken) is the muted aside, "if the extra
+break is counted". `owed_for` scales the span for half days, and every judge of a day reads
+`gross_span`/`span_remaining`/`extra_span`: the day's state, `early_exit`, ON_TRACK, the week
+and month bank, short days, attention, trends, the heatmap and the tray. A rollup's `worked`
+*is* the span, which makes a grid-only day exact rather than estimated. Net work
+(`DayAnalysis.worked`) is still shown, as detail, and decides nothing. Until 0.17 the two were
+the other way round, and the rules disagreed both ways: a short lunch "completed" the day at
+17:15 while the hero counted down to 18:00, and a long one left a full nine-hour day short.
+
+**Today is never "complete" while its span is short.** A day whose last punch is an Out means
+"at lunch" at one o'clock and "went home early" at seven, and the punches cannot tell the two
+apart. Treating them the same made the app declare an early exit and demand a swipe request
+in the middle of the working day. `analyze_day` therefore holds today at `INCOMPLETE` while
+`span_remaining` is non-zero — and `clocked_in` is the separate flag for "the last punch was
+an In", which is what `Presence` uses to tell working from on-break. `find_attention` skips
+today for the same reason, so the two agree, and with no punch log a short today on the grid
+is in progress too: its last-out is the latest swipe so far, not a clock-off.
 
 **Week and month totals compare completed days only.** Today's four hours against a full
-eight-hour target reports a deficit that exists solely because it is lunchtime and shrinks
-by itself as the afternoon passes. `WeekAnalysis.in_progress` carries today separately;
-`progress` includes it, because "how far through the week am I" is a different question
-from "am I behind".
+nine-hour shift reports a deficit that exists solely because it is lunchtime and shrinks by
+itself as the afternoon passes. `WeekAnalysis.in_progress` carries today separately;
+`progress` includes it, because "how far through the week am I" is a different question from
+"am I behind". The Week screen must hand `analyze_week` the punch-level analyses: without
+them today fell back to its grid row and counted as a finished, short day.
 
 **An empty punch log is "loaded", not "unfetched".** Those two states drive different
 decisions and the sync backlog depends on telling them apart.
@@ -307,9 +321,10 @@ grid has no break column to derive one from. Days the portal marks worked but ho
 for are dropped, not scored zero — the same reasoning as `unmeasured_days`.
 
 **Today's cards share one grammar.** The value is what has been *done*; the caption names the
-target and then the verdict — left, over, or met. Worked and Break used to be framed in
-opposite directions, which made two figures side by side impossible to read as a pair, and
-an overrun break reported the word "None" while never stating by how much.
+target and then the verdict — left, over, or complete. Shift (the span, with net work in its
+caption) and Break (against the allowance) used to be framed in opposite directions, which
+made two figures side by side impossible to read as a pair, and an overrun break reported the
+word "None" while never stating by how much.
 
 **The browser handover must post at the top level.** Submitting the login form into a hidden
 iframe lets the page survive and navigate onward, and silently stops signing anyone in: the
@@ -441,9 +456,9 @@ NASA's picture of the day was rejected because it needs `DEMO_KEY` in the build.
 is forced INCOMPLETE precisely when work is owed, so the condition was unsatisfiable for
 today, and today is the only day the notification policy is ever asked about. Two Settings
 switches sat there enabled, doing nothing, for months. `early_exit` now has its own
-condition — clocked out, short, and past the break-adjusted finish — so lunchtime is still not
-an early exit and five o'clock with an hour owed is. No test caught it because none *could*:
-none asserted `early_exit` with `now` on the same day.
+condition — clocked out, span short, and past the finish (in + shift span) — so lunchtime is
+still not an early exit and seven o'clock after leaving at five is. No test caught it because
+none *could*: none asserted `early_exit` with `now` on the same day.
 
 **Cleanup must not delete what a feature depends on.** `clear_spent_installers` shipped in
 0.14 deleting every staged installer at or below the running version — which is exactly the

@@ -51,13 +51,13 @@ def month(*days: AttendanceDay):  # type: ignore[no-untyped-def]
 
 
 def test_a_half_day_is_measured_against_half_a_target() -> None:
-    """Four hours on a half day is the whole of what was owed, not four hours short. It had
-    been booking a four-hour deficit into the bank, the week, the short-day count and the
-    required daily average — an invented debt on every screen that adds days up."""
-    half = day(date(2026, 7, 1), status=DayStatus.HALF_DAY, gross="5.00", portion=0.5)
+    """Half the span on a half day is the whole of what was owed, not half a day short. It
+    had been booking a deficit into the bank, the week, the short-day count and the required
+    daily average — an invented debt on every screen that adds days up."""
+    half = day(date(2026, 7, 1), status=DayStatus.HALF_DAY, gross="4.30", portion=0.5)
     analysis = month(half)
 
-    assert analysis.elapsed_target == Duration(240)
+    assert analysis.elapsed_target == Duration(270)
     assert analysis.bank_delta == Duration(0)
     assert analysis.short_days == 0
 
@@ -65,16 +65,16 @@ def test_a_half_day_is_measured_against_half_a_target() -> None:
 def test_the_week_target_is_the_sum_of_what_each_day_owed() -> None:
     days = [
         day(date(2026, 7, 6)),  # Monday, whole
-        day(date(2026, 7, 7), status=DayStatus.HALF_DAY, gross="5.00", portion=0.5),
+        day(date(2026, 7, 7), status=DayStatus.HALF_DAY, gross="4.30", portion=0.5),
     ]
     week = analyze_week(days, week_start=date(2026, 7, 6), policy=POLICY, today=END_OF_JULY)
-    assert week.target == Duration(480 + 240)
+    assert week.target == Duration(540 + 270)
 
 
 def test_the_policy_names_the_rule() -> None:
-    assert POLICY.owed_for(0.5) == Duration(240)
-    assert POLICY.owed_for(1.0) == Duration(480)
-    assert POLICY.owed_for(0.0) == Duration(480), "no portion means a whole day"
+    assert POLICY.owed_for(0.5) == Duration(270)
+    assert POLICY.owed_for(1.0) == Duration(540)
+    assert POLICY.owed_for(0.0) == Duration(540), "no portion means a whole day"
 
 
 # --- H4: the highlight bar ----------------------------------------------------------------
@@ -112,7 +112,7 @@ def test_a_worked_weekly_off_is_reported_beside_the_bank_not_inside_it() -> None
     analysis = month(saturday)
     assert analysis.elapsed_target == Duration(0)
     assert analysis.bank_delta == Duration(0)
-    assert analysis.off_day_worked == Duration(480)
+    assert analysis.off_day_worked == Duration(540), "the span the portal reports"
 
 
 def test_an_ordinary_weekend_has_nothing_to_report() -> None:

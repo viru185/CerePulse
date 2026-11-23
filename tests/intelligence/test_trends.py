@@ -74,12 +74,13 @@ MONDAY = date(2026, 6, 1)
 # --- facts ------------------------------------------------------------------------------
 
 
-def test_grid_only_days_are_estimated_from_the_span() -> None:
-    """Tot. Hrs. is gross, so the break allowance comes off to make it comparable."""
+def test_grid_only_days_are_measured_by_their_span() -> None:
+    """Tot. Hrs. is the span, which is what a day is judged by. Only the break is unknown
+    without a punch log, so the fact is still marked estimated for that."""
     facts = build_facts([workday(MONDAY, total="9.00")], policy=POLICY)
 
     assert len(facts) == 1
-    assert facts[0].worked.as_clock() == "8:00"
+    assert facts[0].worked.as_clock() == "9:00"
     assert facts[0].estimated
     assert facts[0].break_taken is None
 
@@ -98,7 +99,7 @@ def test_a_day_with_punches_is_exact_and_carries_its_break() -> None:
     facts = build_facts([day], policy=POLICY, analyses=analyses)
 
     assert not facts[0].estimated
-    assert facts[0].worked.as_clock() == "8:00"
+    assert facts[0].worked.as_clock() == "9:30", "the span, 09:00 to 18:30"
     assert facts[0].break_taken is not None
     assert facts[0].break_taken.as_clock() == "1:30"
 
@@ -309,15 +310,15 @@ def test_the_projection_assumes_the_recent_pace_and_says_so() -> None:
     )
     assert result is not None
     assert result.assumed_daily is not None
-    assert result.assumed_daily.as_clock() == "9:00"  # 10:00 span minus the break allowance
-    # Ten days at +1:00, plus five more projected at +1:00.
+    assert result.assumed_daily.as_clock() == "10:00"  # the span itself
+    # Ten days at +1:00 against a 9h shift, plus five more projected at +1:00.
     assert result.projected_delta is not None
     assert result.projected_delta.as_clock() == "15:00"
 
 
 def test_a_deficit_says_what_each_remaining_day_must_be() -> None:
     today = date(2026, 6, 15)
-    days = [workday(d, total="8.00") for d in weekdays_from(MONDAY, 10)]  # 7h worked each
+    days = [workday(d, total="8.00") for d in weekdays_from(MONDAY, 10)]  # an hour short
 
     result = forecast(
         build_facts(days, policy=POLICY), policy=POLICY, today=today, working_days_remaining=5
@@ -325,7 +326,7 @@ def test_a_deficit_says_what_each_remaining_day_must_be() -> None:
     assert result is not None
     assert result.headroom.minutes == -600  # ten hours down
     assert result.required_daily is not None
-    assert result.required_daily.as_clock() == "10:00"
+    assert result.required_daily.as_clock() == "11:00"  # a 9h shift plus two hours
 
 
 def test_a_short_day_is_only_affordable_once_it_is_actually_paid_for() -> None:

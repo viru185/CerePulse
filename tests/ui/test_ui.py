@@ -322,7 +322,7 @@ def test_both_cards_lead_with_what_has_been_done(qapp: QApplication) -> None:
     view = TodayView(DARK)
     view.show_analysis(analysis, is_today=True)
 
-    assert view.worked._value.text() == fmt.duration(analysis.worked)
+    assert view.worked._value.text() == fmt.duration(analysis.gross_span)
     assert view.break_taken._value.text() == fmt.duration(analysis.break_taken)
 
 
@@ -337,9 +337,11 @@ def test_both_captions_name_their_target_and_then_the_verdict(qapp: QApplication
     view = TodayView(DARK)
     view.show_analysis(analysis, is_today=True)
 
-    for caption in (view.worked._caption.text(), view.break_taken._caption.text()):
-        assert "target" in caption
-        assert "left" in caption or "over" in caption or "met" in caption
+    shift, allowance = view.worked._caption.text(), view.break_taken._caption.text()
+    assert "of 9h shift" in shift
+    assert "of 1h allowance" in allowance
+    for caption in (shift, allowance):
+        assert "left" in caption or "over" in caption or "extra" in caption
 
 
 def test_an_overrun_break_says_by_how_much(qapp: QApplication) -> None:
@@ -376,14 +378,15 @@ def test_worked_carries_its_own_consequence(qapp: QApplication) -> None:
     view = TodayView(DARK)
     view.show_analysis(ongoing, is_today=True)
 
-    assert view.worked._value.text() == fmt.duration(ongoing.worked)
+    assert view.worked._value.text() == fmt.duration(ongoing.gross_span)
     assert "left" in view.worked._caption.text()
+    assert "net" in view.worked._caption.text(), "net work stays visible, as detail"
 
     over = analyze_day(
         punches(("09:00", "in"), ("13:00", "out"), ("14:00", "in"), ("19:30", "out")), day=DAY
     )
     view.show_analysis(over, is_today=False)
-    assert "overtime" in view.worked._caption.text()
+    assert "1h 30m extra" in view.worked._caption.text()
 
 
 def test_the_progress_bar_says_what_leaving_now_would_cost(qapp: QApplication) -> None:
@@ -415,8 +418,10 @@ def test_the_timeline_places_the_day_on_a_clock(qapp: QApplication) -> None:
     timeline = DayTimeline(DARK)
     timeline.set_day(analysis.segments, leave_at=analysis.leave_at)
 
-    # The axis starts at the hour containing the first punch, not at the punch itself.
-    assert timeline._start == datetime(2026, 7, 28, 9, 0)
+    # Half an hour of lead before the first punch, then the hour: 9:21 starts the axis at 8.
+    # It used to start on the hour of the punch, which put a 9:03 arrival four pixels from
+    # the edge.
+    assert timeline._start == datetime(2026, 7, 28, 8, 0)
     assert "9:21a" in timeline.toolTip()
 
 
@@ -996,9 +1001,9 @@ def test_every_timeline_gets_told_about_an_adjustment(qapp: QApplication) -> Non
         assert "worked_spans=" in source, f"{module.__name__} drops the adjustment"
 
 
-def test_the_legend_names_the_flat_finish_when_a_break_moved_it(qapp: QApplication) -> None:
-    """Both times, not one: the adjusted figure is the answer, and the flat one is what the
-    extra break cost — a number the user asked to see rather than have silently absorbed."""
+def test_the_legend_names_both_finishes_when_a_break_ran_over(qapp: QApplication) -> None:
+    """Both times, not one. Nine hours from arrival is the answer; the break-counted time is
+    the muted aside — the other way round from before 0.17, at the user's request."""
     from cerepulse.intelligence.day import analyze_day
     from cerepulse.ui.views.today import TodayView
 
@@ -1008,10 +1013,10 @@ def test_the_legend_names_the_flat_finish_when_a_break_moved_it(qapp: QApplicati
     view.show_analysis(analysis, is_today=False)
 
     legend = view._legend.text()
-    assert "free at 6:30 PM" in legend
-    assert "6:00 PM without the extra break" in legend
+    assert "free at 6:00 PM" in legend
+    assert "6:30 PM with the extra break counted" in legend
     assert view._timeline._flat_at is not None
-    assert view._timeline._flat_at.time() == time(18, 0)
+    assert view._timeline._flat_at.time() == time(18, 30)
 
 
 def test_the_legend_stays_quiet_when_the_break_was_within_the_allowance(
@@ -1181,3 +1186,18 @@ def test_a_fault_that_repeats_shows_one_crash_dialog(qapp, monkeypatch) -> None:
         ui_app._report_crash(RuntimeError, RuntimeError("paint failed"), None)
 
     assert shown == ["dialog"]
+
+
+def test_the_hero_leads_with_nine_hours_from_arrival(qapp: QApplication) -> None:
+    """What the user asked for: the big time is in + 9h, and the time that counts the extra
+    break is the muted note beside it — they used to be the other way round."""
+    from cerepulse.intelligence.day import analyze_day
+    from cerepulse.ui.views.today import TodayView
+
+    long_lunch = (("09:00", "in"), ("12:00", "out"), ("13:45", "in"))
+    analysis = analyze_day(punches(*long_lunch), day=DAY, now=datetime(2026, 7, 28, 15, 0))
+    view = TodayView(DARK)
+    view.show_analysis(analysis, is_today=True)
+
+    assert view._hero_value.text() == "6:00 PM"
+    assert "6:45 PM if the extra break is counted" in view._hero_caption.text()

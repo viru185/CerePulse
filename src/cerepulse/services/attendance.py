@@ -104,8 +104,8 @@ class TrendsView:
     months_available: int
     #: The day the report was built for, so the view can mark the month still in progress.
     today: date
-    #: The daily work target every figure here was measured against, so a chart can scale
-    #: itself against the same number the text beside it used.
+    #: The daily target every figure here was measured against — the shift span — so a
+    #: chart can scale itself against the same number the text beside it used.
     work_target: Duration = Duration(0)
     #: This week against the baseline — the part of the screen that changes every day.
     week: WeekComparison | None = None
@@ -407,7 +407,7 @@ class AttendanceService:
             months_cached=len({(day.day.year, day.day.month) for day in days}),
             months_available=len(self.synced_months()),
             today=now,
-            work_target=self.policy.work_target,
+            work_target=self.policy.day_target,
             week=compare_week(
                 build_facts(days, policy=self.policy, analyses=analyses),
                 report.habits,

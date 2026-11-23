@@ -93,7 +93,7 @@ FILTERS: tuple[tuple[str, Callable[[_Row, MonthAnalysis], bool]], ...] = (
             row.rollup is not None
             and row.rollup.is_working_day
             and not row.rollup.in_progress
-            and row.rollup.worked < month.policy.work_target
+            and row.rollup.worked < row.rollup.owed
         ),
     ),
     ("Overtime days", lambda row, month: row.day.total_hours > month.policy.shift_span),
@@ -355,7 +355,7 @@ class AttendanceView(QWidget):
         self._render_bank(analysis)
         self.heatmap.set_days(
             list(analysis.days),
-            target=analysis.policy.work_target,
+            target=analysis.policy.day_target,
             attention=set(view.attention),
             year=analysis.year,
             month=analysis.month,
@@ -623,7 +623,11 @@ class _DayDrawer(QWidget):
         self._timeline.set_day(
             segments,
             leave_at=analysis.leave_at if analysis else None,
-            flat_at=analysis.expected_out if analysis and analysis.finish_times_differ else None,
+            flat_at=(
+                analysis.expected_out_break_adjusted
+                if analysis and analysis.finish_times_differ
+                else None
+            ),
             # Without this an adjusted day drew here as an ordinary unbroken block, with no
             # mark at all — the flag was visible on Today and invisible everywhere else.
             worked_spans=analysis.worked_spans if analysis is not None else (),

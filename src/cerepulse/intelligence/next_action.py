@@ -128,14 +128,13 @@ def _not_started(analysis: DayAnalysis, *, is_today: bool) -> NextAction:
 
 
 def _working(analysis: DayAnalysis) -> NextAction:
-    if analysis.work_remaining:
+    if analysis.span_remaining:
         return NextAction(
             NextActionKind.KEEP_WORKING,
             f"Keep going until {_clock(analysis.leave_at)}",
-            f"{analysis.work_remaining} left to work"
+            f"{analysis.span_remaining} left in the shift"
             + (
-                f", and {analysis.break_remaining} of break you can still take without "
-                f"moving that time."
+                f", and {analysis.break_remaining} of break allowance still to take."
                 if analysis.break_remaining
                 else "."
             ),
@@ -144,33 +143,33 @@ def _working(analysis: DayAnalysis) -> NextAction:
     return NextAction(
         NextActionKind.FREE_TO_GO,
         "You can leave now",
-        f"{analysis.worked} worked. Everything from here is overtime.",
+        f"{analysis.gross_span} since you arrived. Everything from here is extra.",
         severity=Severity.SUCCESS,
     )
 
 
 def _on_break(analysis: DayAnalysis) -> NextAction:
-    """A break in progress: the only question is when it stops being free.
+    """A break in progress. It does not move the finish; it does come out of net work.
 
-    Up to the allowance a break costs nothing — the shift span already prices it in. Past
-    that, the finish time moves out minute for minute, which is the one fact worth knowing
-    before ordering another coffee.
+    Under the span rule nine hours from arrival completes the shift whatever happens inside
+    them, so the old warning — every minute past the allowance pushes the finish out — would
+    now be false. What a long break still costs is net work, which is worth saying once,
+    calmly.
     """
     if analysis.break_remaining and analysis.last_out is not None:
         back_by = analysis.last_out + timedelta(minutes=analysis.break_remaining.minutes)
         return NextAction(
             NextActionKind.RETURN_FROM_BREAK,
             f"Back by {_clock(back_by)}",
-            f"{analysis.break_remaining} of break allowance is left. Returning by then "
-            f"still leaves you free at {_clock(analysis.leave_at)}.",
+            f"{analysis.break_remaining} of break allowance is left. "
+            f"You can leave at {_clock(analysis.leave_at)} either way.",
             at=back_by,
         )
     return NextAction(
         NextActionKind.RETURN_FROM_BREAK,
         "Back when you can",
-        f"The break allowance is used up, so each further minute pushes "
-        f"{_clock(analysis.leave_at)} out by one.",
-        severity=Severity.WARNING,
+        f"The break allowance is used up. It does not move {_clock(analysis.leave_at)}, "
+        f"but it comes out of today's net work.",
         at=analysis.leave_at,
     )
 
@@ -188,20 +187,20 @@ def _finished(analysis: DayAnalysis) -> NextAction:
 
     if analysis.swipe_request_needed:
         return _swipe_request(
-            analysis, f"The day is {analysis.work_remaining} short and nothing has been filed."
+            analysis, f"The day is {analysis.span_remaining} short and nothing has been filed."
         )
 
-    if analysis.extra_worked:
+    if analysis.extra_span:
         return NextAction(
             NextActionKind.NOTHING_TO_DO,
             "Nothing to do",
-            f"{analysis.worked} worked, {analysis.extra_worked} beyond the target.",
+            f"{analysis.gross_span} in, {analysis.extra_span} beyond the shift.",
             severity=Severity.SUCCESS,
         )
     return NextAction(
         NextActionKind.NOTHING_TO_DO,
         "Nothing to do",
-        f"{analysis.worked} worked. The day is settled.",
+        f"{analysis.gross_span} in. The day is settled.",
         severity=Severity.SUCCESS,
     )
 

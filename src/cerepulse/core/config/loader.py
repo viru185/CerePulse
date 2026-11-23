@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import tomllib
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,7 @@ import tomli_w
 from loguru import logger
 
 from cerepulse.core import paths
-from cerepulse.core.config.models import THEMES, AppConfig
+from cerepulse.core.config.models import THEMES, AppConfig, ShiftConfig
 from cerepulse.core.errors import ConfigError
 
 ENV_PREFIX = "CEREPULSE__"
@@ -39,7 +40,7 @@ def load_config(
 
     config = AppConfig.from_dict(merged)
     _validate(config)
-    return config
+    return _sound_shift(config)
 
 
 def save_config(config: AppConfig, *, config_path: Path | None = None) -> Path:
@@ -86,22 +87,35 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     return base
 
 
+def _sound_shift(config: AppConfig) -> AppConfig:
+    """The shift as configured, or the defaults when it cannot describe a working day.
+
+    These used to raise, from the loader, before any window existed: a span shorter than
+    work plus break — which Settings once let anyone save — and the app simply did not
+    start, with nothing on screen to say why. Settings now refuses to save it; a file that
+    already holds it is read with the default shift and a warning instead.
+    """
+    shift = config.shift
+    sound = (
+        shift.work_target_hours > 0
+        and shift.break_target_hours >= 0
+        and shift.shift_span_hours >= shift.work_target_hours + shift.break_target_hours
+    )
+    if sound:
+        return config
+    logger.warning(
+        "Shift settings cannot describe a day (work {}h, break {}h, span {}h); using the defaults",
+        shift.work_target_hours,
+        shift.break_target_hours,
+        shift.shift_span_hours,
+    )
+    return replace(config, shift=ShiftConfig())
+
+
 def _validate(config: AppConfig) -> None:
     """Reject settings that would make the app misbehave rather than merely look odd."""
     if not config.portal.base_url.startswith("https://"):
         raise ConfigError("portal.base_url must be an https:// URL")
-    if config.shift.work_target_hours <= 0:
-        raise ConfigError("shift.work_target_hours must be greater than zero")
-    if (
-        config.shift.shift_span_hours
-        < config.shift.work_target_hours + config.shift.break_target_hours
-    ):
-        # The span already prices the break in: a span shorter than work plus break makes the
-        # flat finish time earlier than the break-adjusted one, and every "this break is free"
-        # sentence on Today false.
-        raise ConfigError(
-            "shift.shift_span_hours cannot be less than work_target_hours plus break_target_hours"
-        )
     if config.sync.refresh_interval_minutes < 1:
         raise ConfigError("sync.refresh_interval_minutes must be at least 1")
     if config.ui.background_mode not in {"tray", "foreground"}:

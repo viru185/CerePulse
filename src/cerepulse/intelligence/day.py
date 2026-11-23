@@ -4,14 +4,16 @@ Pure: no network, no database, no Qt. Takes punches, a policy and an injected ``
 returns everything the Today screen shows. ``now`` is a parameter rather than a clock read
 so every in-progress case is deterministically testable.
 
-Two deliberate upgrades over ninetofive's flat ``first_in + 9h``:
+The day is judged by its span. :attr:`DayAnalysis.expected_out` — first in plus the shift
+span — is when the day is complete, and is the time Today leads with: nine hours between
+arriving and leaving is a complete shift, however the time inside it was spent (see
+:mod:`cerepulse.intelligence.policy`). :attr:`DayAnalysis.expected_out_break_adjusted` —
+first in plus eight hours of work plus the break actually taken — is still worked out and
+shown beside it, muted, as the time that would make up an over-long break. Until 0.17 the two
+were the other way round.
 
-* :attr:`DayAnalysis.expected_out_break_adjusted` accounts for an over-long break
-  (``first_in + work_target + max(break_target, break_taken)``). The flat span under-reports
-  when someone takes a ninety-minute lunch, telling them to leave before they have actually
-  worked eight hours.
-* Every metric carries an :class:`Explanation` so the UI can answer "why this number?",
-  including which punches were inferred or discarded.
+Every metric carries an :class:`Explanation` so the UI can answer "why this number?",
+including which punches were inferred or discarded.
 """
 
 from __future__ import annotations
@@ -93,6 +95,10 @@ class DayAnalysis:
     policy: ShiftPolicy = ShiftPolicy()
     #: The single thing worth doing about this day.
     next_action: NextAction | None = None
+    #: How much of the shift span is still to run. Zero once the day is complete.
+    span_remaining: Duration = Duration(0)
+    #: Time beyond the shift span — the day's overtime under the span rule.
+    extra_span: Duration = Duration(0)
     #: Gaps the user reclassified as work: (start of the gap, what they said it was).
     #: Carried rather than merely applied so every screen can say the figures were adjusted
     #: — a corrected day must never be presented with the confidence of a measured one — and
@@ -139,14 +145,14 @@ class DayAnalysis:
 
     @property
     def completion(self) -> float:
-        """Fraction of the work target met. Exceeds 1.0 on an overtime day, deliberately."""
-        if self.policy.work_target.minutes <= 0:
+        """Fraction of the shift span done. Exceeds 1.0 on an overtime day, deliberately."""
+        if self.policy.day_target.minutes <= 0:
             return 0.0
-        return self.worked.minutes / self.policy.work_target.minutes
+        return self.gross_span.minutes / self.policy.day_target.minutes
 
     @property
     def target_met(self) -> bool:
-        return self.work_remaining.minutes == 0 and self.state is not DayState.EMPTY
+        return self.span_remaining.minutes == 0 and self.state is not DayState.EMPTY
 
     @property
     def break_over(self) -> Duration:
@@ -169,8 +175,13 @@ class DayAnalysis:
 
     @property
     def leave_at(self) -> datetime | None:
-        """When the work target is satisfied — the single most useful number on Today."""
-        return self.expected_out_break_adjusted
+        """When the shift is complete — the single most useful number on Today."""
+        return self.expected_out
+
+    @property
+    def net_at_leave(self) -> Duration:
+        """Net work the day comes to if it ends at :attr:`leave_at` with no further break."""
+        return _clamp(self.policy.day_target - self.break_taken)
 
 
 def analyze_day(
@@ -239,10 +250,14 @@ def analyze_day(
     work_remaining = _clamp(policy.work_target - worked)
     break_remaining = _clamp(policy.break_target - break_taken)
     extra_worked = _clamp(worked - policy.work_target)
+    span = pairing.gross_span
+    span_remaining = _clamp(policy.day_target - span)
+    extra_span = _clamp(span - policy.day_target)
 
-    expected_out = first_in + _to_delta(policy.shift_span)
-    # An over-long break pushes the finish line out; a short one never pulls it in, because
-    # the shift span already assumes the full break allowance.
+    expected_out = first_in + _to_delta(policy.day_target)
+    # What it would take to make up an over-long break as well: shown beside the finish,
+    # never instead of it. A short break never pulls it in, because the shift span already
+    # assumes the full break allowance.
     effective_break = max(policy.break_target, break_taken)
     expected_out_break_adjusted = first_in + _to_delta(policy.work_target + effective_break)
 
@@ -250,14 +265,14 @@ def analyze_day(
     if state is DayState.COMPLETE and is_today:
         # Today, clocked out. Two reasons that is not a finished day.
         #
-        # With work still owed it is far more likely a lunch break than a departure, and
-        # the punches cannot tell the two apart until the day is over. Calling it complete
-        # declared an early exit at one o'clock and asked the user to file a swipe request
-        # for a day they were still in the middle of working.
+        # With the span still short it is far more likely a lunch break than a departure,
+        # and the punches cannot tell the two apart until the day is over. Calling it
+        # complete declared an early exit at one o'clock and asked the user to file a swipe
+        # request for a day they were still in the middle of working.
         #
         # And on a grid-only day the last-out is merely the latest swipe so far rather than
         # a clock-off, so it is never evidence the day has ended.
-        if grid_only or work_remaining:
+        if grid_only or span_remaining:
             state = DayState.INCOMPLETE
 
     # An early exit is: clocked out, short of the target, and the day has run out of time to
@@ -268,8 +283,8 @@ def analyze_day(
     # wired to a condition that could not occur, which is why only two kinds ever fired.
     # Lunchtime is still not an early exit. Five o'clock with an hour owed is.
     left_for_the_day = not pairing.ongoing and not (is_today and grid_only)
-    day_is_spent = not is_today or (now is not None and now >= expected_out_break_adjusted)
-    early_exit = left_for_the_day and day_is_spent and worked < policy.work_target
+    day_is_spent = not is_today or (now is not None and now >= expected_out)
+    early_exit = left_for_the_day and day_is_spent and span < policy.day_target
 
     filed = _matching_request(swipe_requests, day)
     swipe_request_needed = early_exit and filed is None
@@ -291,6 +306,8 @@ def analyze_day(
         gross_span=pairing.gross_span,
         early_exit=early_exit,
         swipe_request_needed=swipe_request_needed,
+        span_remaining=span_remaining,
+        extra_span=extra_span,
         segments=pairing.segments,
         issues=pairing.issues,
         explanations=_explain(pairing, policy, worked, break_taken, first_in),
@@ -360,13 +377,14 @@ def _with_insights(
     # incomplete so the screen keeps offering the shortfall, but telling someone who has gone
     # home how long they have left to work is answering a question they stopped asking.
     if analysis.state is DayState.INCOMPLETE and not analysis.early_exit:
-        if analysis.work_remaining:
+        if analysis.span_remaining:
             insights.append(
                 Insight(
                     InsightKind.STILL_WORKING,
                     Severity.INFO,
-                    f"{analysis.work_remaining} left to work",
-                    f"You can leave at {_clock(analysis.leave_at)}.",
+                    f"{analysis.span_remaining} left in the shift",
+                    f"You can leave at {_clock(analysis.leave_at)}, "
+                    f"{policy.day_target} after you arrived.",
                 )
             )
         else:
@@ -374,8 +392,9 @@ def _with_insights(
                 Insight(
                     InsightKind.ON_TRACK,
                     Severity.SUCCESS,
-                    "Target met — you're free to go",
-                    f"{analysis.worked} worked against {_article(policy.work_target)} target.",
+                    "Shift complete — you're free to go",
+                    f"{analysis.gross_span} since you arrived, against "
+                    f"{_article(policy.day_target)} shift.",
                 )
             )
 
@@ -384,8 +403,9 @@ def _with_insights(
             Insight(
                 InsightKind.EARLY_EXIT,
                 Severity.WARNING,
-                f"Short by {policy.work_target - analysis.worked}",
-                f"You worked {analysis.worked} against {_article(policy.work_target)} target.",
+                f"Short by {policy.day_target - analysis.gross_span}",
+                f"In at {_clock(analysis.first_in)}, out at {_clock(analysis.last_out)}: "
+                f"{analysis.gross_span} against {_article(policy.day_target)} shift.",
             )
         )
 
@@ -410,47 +430,32 @@ def _with_insights(
             )
         )
 
-    if analysis.extra_worked and analysis.state is DayState.COMPLETE:
+    if analysis.extra_span and analysis.state is DayState.COMPLETE:
         insights.append(
             Insight(
                 InsightKind.OVERTIME,
                 Severity.SUCCESS,
-                f"{analysis.extra_worked} extra worked",
-                f"Beyond the {policy.work_target} target.",
+                f"{analysis.extra_span} extra",
+                f"Beyond the {policy.day_target} shift.",
             )
         )
 
+    # Information, not a warning: under the span rule a long break does not move the finish
+    # and does not make the day short. What it changes is net work, and the time that would
+    # make that up — both worth knowing, neither a problem. BREAK_HEADROOM ("taking it will
+    # not move 6:14 PM") is gone with it: no break moves the finish any more.
     if analysis.break_taken > policy.break_target:
         over = analysis.break_taken - policy.break_target
-        insights.append(
-            Insight(
-                InsightKind.LONG_BREAK,
-                Severity.INFO,
-                f"Break ran {over} over",
-                f"Leave at {_clock(analysis.expected_out_break_adjusted)} to still make "
-                f"{policy.work_target}.",
+        if analysis.state is DayState.COMPLETE:
+            detail = f"Net work came to {analysis.worked}."
+        else:
+            detail = (
+                f"Your finish stays {_clock(analysis.leave_at)}. Net work will come to "
+                f"{analysis.net_at_leave} then; staying until "
+                f"{_clock(analysis.expected_out_break_adjusted)} makes up the break."
             )
-        )
-    elif (
-        analysis.state is DayState.INCOMPLETE
-        and analysis.break_remaining
-        and analysis.work_remaining
-    ):
-        # The shift span already prices in the full break allowance, so break taken up to
-        # that point is free — it does not move the finish line. Past it, every minute does,
-        # which is the part worth knowing before deciding on a second coffee.
-        #
-        # Only while there is work left. Once the target is met the finish line is behind
-        # you, and "taking it will not move 6:14 PM" is advice about a decision that no
-        # longer exists.
         insights.append(
-            Insight(
-                InsightKind.BREAK_HEADROOM,
-                Severity.INFO,
-                f"{analysis.break_remaining} of break still free",
-                f"Taking it will not move {_clock(analysis.leave_at)}. Anything beyond "
-                f"pushes that later minute for minute.",
-            )
+            Insight(InsightKind.LONG_BREAK, Severity.INFO, f"Break ran {over} over", detail)
         )
 
     return replace(analysis, insights=tuple(sorted(insights, key=_display_order)))
@@ -484,8 +489,9 @@ def _explain(
         ),
         "expected_out": Explanation(
             metric="expected_out",
-            value=_clock(first_in + _to_delta(policy.shift_span)),
-            formula=f"first in {_clock(first_in)} + shift span {policy.shift_span}",
+            value=_clock(first_in + _to_delta(policy.day_target)),
+            formula=f"first in {_clock(first_in)} + shift span {policy.day_target}",
+            notes=("Nine hours from your first punch completes the shift, breaks included.",),
         ),
         "expected_out_break_adjusted": Explanation(
             metric="expected_out_break_adjusted",
@@ -497,7 +503,10 @@ def _explain(
                 f"+ break {max(policy.break_target, break_taken)}"
             ),
             notes=(
-                ("Break exceeded the allowance, so the finish time moved out.",)
+                (
+                    "The break ran over its allowance; this is when the extra would be made "
+                    "up. It does not move the finish.",
+                )
                 if break_taken > policy.break_target
                 else ()
             ),

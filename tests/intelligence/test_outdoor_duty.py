@@ -134,7 +134,7 @@ def test_the_elapsed_target_grows_with_the_days_actually_worked() -> None:
     )
 
     assert analysis.working_days_elapsed == 3
-    assert analysis.elapsed_target == Duration(3 * 8 * 60)
+    assert analysis.elapsed_target == Duration(3 * 9 * 60)
 
 
 def test_future_grid_rows_do_not_zero_the_projection() -> None:

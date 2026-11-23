@@ -203,12 +203,12 @@ def test_tooltip_counts_down_while_still_clocked_in() -> None:
 
     assert "Leave at 6:00 PM" in text
     assert "5h to go" in text
-    assert "Worked 4h" in text
+    assert "4h in" in text
 
 
-def test_tooltip_says_you_can_go_once_the_target_is_met() -> None:
+def test_tooltip_says_you_can_go_once_the_shift_is_complete() -> None:
     analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=datetime(2026, 7, 28, 18, 30))
-    assert "Target met" in Tray.tooltip_text(analysis, now=datetime(2026, 7, 28, 18, 30))
+    assert "Shift complete" in Tray.tooltip_text(analysis, now=datetime(2026, 7, 28, 18, 30))
 
 
 def test_tooltip_for_a_finished_day() -> None:
@@ -223,7 +223,7 @@ def test_tooltip_for_a_finished_day() -> None:
 
 def test_tooltip_flags_a_short_day() -> None:
     analysis = analyze_day(punches(("09:00", "in"), ("15:00", "out")), day=DAY)
-    assert "short of target" in Tray.tooltip_text(analysis, now=MIDDAY)
+    assert "short of the shift" in Tray.tooltip_text(analysis, now=MIDDAY)
 
 
 def test_tooltip_for_a_day_with_no_punches() -> None:

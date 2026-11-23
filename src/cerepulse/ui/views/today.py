@@ -282,7 +282,7 @@ class TodayView(QWidget):
         self._hero_value = _HeroValue(fmt.EMPTY)
         self._hero_value.setObjectName("HeroValue")
         self._hero_value.setAccessibleName("The time you can leave, or left")
-        self._hero_value.clicked.connect(lambda: self._explain("expected_out_break_adjusted"))
+        self._hero_value.clicked.connect(lambda: self._explain("expected_out"))
         value_row.addWidget(self._hero_value)
         self._presence = StatusChip("", self._palette.text_muted)
         self._presence.setVisible(False)
@@ -312,10 +312,12 @@ class TodayView(QWidget):
         # and Break showed remaining, each relegating the other half to its caption — which
         # made two numbers sitting side by side impossible to read as a pair. Whether that
         # is enough is the caption's job, and it says so for both in the same words.
-        self.worked = Card("Worked", clickable=True)
+        # The shift card measures the span, which is what decides the day; net work is its
+        # caption. See intelligence.policy for why the span rules.
+        self.worked = Card("Shift", clickable=True)
         self.break_taken = Card("Break", clickable=True)
 
-        self.worked.clicked.connect(lambda: self._explain("worked"))
+        self.worked.clicked.connect(lambda: self._explain("gross_span"))
         self.break_taken.clicked.connect(lambda: self._explain("break_taken"))
 
         return card_row(self.worked, self.break_taken)
@@ -452,8 +454,9 @@ class TodayView(QWidget):
         self._timeline.set_day(
             analysis.segments,
             leave_at=analysis.leave_at if analysis.segments else None,
+            # The muted marker is the break-counted time now: shown, never the target.
             flat_at=(
-                analysis.expected_out
+                analysis.expected_out_break_adjusted
                 if analysis.segments and analysis.finish_times_differ
                 else None
             ),
@@ -479,16 +482,18 @@ class TodayView(QWidget):
         # target and then says where that leaves you. Remaining and overtime were once
         # separate cards, but they are the same fact read from either side and only one of
         # them is ever non-zero — so they are the verdict, not a figure of their own.
-        self.worked.set_value(fmt.duration(analysis.worked), accent=palette.work)
+        self.worked.set_value(fmt.duration(analysis.gross_span), accent=palette.work)
         self.worked.set_caption(
             "nothing logged"
             if empty
             else _verdict(
-                analysis.policy.work_target,
-                left=analysis.work_remaining,
-                over=analysis.extra_worked,
-                over_word="overtime",
+                analysis.policy.day_target,
+                left=analysis.span_remaining,
+                over=analysis.extra_span,
+                over_word="extra",
+                noun="shift",
             )
+            + f"  ·  {fmt.duration(analysis.worked)} net"
         )
 
         if empty:
@@ -509,6 +514,7 @@ class TodayView(QWidget):
                     left=analysis.break_remaining,
                     over=over,
                     over_word="over",
+                    noun="allowance",
                 )
             )
 
@@ -534,15 +540,15 @@ class TodayView(QWidget):
             return
 
         percent = round(analysis.completion * 100)
-        caption = f"{percent}% of the {analysis.policy.work_target} target"
+        caption = f"{percent}% of the {analysis.policy.day_target} shift"
 
         # The counterfactual the hero cannot state: it says when you *can* leave, and this
         # says what walking out this minute would actually cost.
         if is_today and analysis.is_ongoing:
-            if analysis.work_remaining:
-                caption += f"  ·  leave now and the day is {analysis.work_remaining} short"
+            if analysis.span_remaining:
+                caption += f"  ·  leave now and the day is {analysis.span_remaining} short"
             else:
-                caption += f"  ·  leave now and the day is {analysis.extra_worked} over"
+                caption += f"  ·  leave now and the day is {analysis.extra_span} over"
         self._progress.set_progress(analysis.completion, caption)
 
     def _render_hero(self, analysis: DayAnalysis, *, is_today: bool) -> None:
@@ -562,15 +568,20 @@ class TodayView(QWidget):
         self._hero_value.setText(fmt.clock(analysis.last_out))
         self._hero_caption.setText(
             f"{fmt.long_day_label(analysis.day)} · in at {fmt.clock(analysis.first_in)} · "
-            f"{fmt.duration_words(analysis.worked)} worked"
+            f"{fmt.duration_words(analysis.gross_span)} shift"
         )
 
     @staticmethod
-    def _flat_note(analysis: DayAnalysis) -> str:
-        """The finish time the extra break moved, when it moved it. Empty otherwise."""
+    def _break_note(analysis: DayAnalysis) -> str:
+        """The time that would make up an over-long break, muted beside the finish.
+
+        The two used to be the other way round: the big time absorbed the extra break and
+        this note gave the nine-hour time. Nine hours from arrival is the rule, so it leads,
+        and the break-counted time is the aside.
+        """
         if not analysis.finish_times_differ:
             return ""
-        return f" · {fmt.clock(analysis.expected_out)} if the extra break were not counted"
+        return f" · {fmt.clock(analysis.expected_out_break_adjusted)} if the extra break is counted"
 
     def _tick(self) -> None:
         """Update only the caption. Re-analyzing every second would make numbers flicker."""
@@ -578,11 +589,13 @@ class TodayView(QWidget):
             return
         remaining = fmt.countdown(self._analysis.leave_at, now=datetime.now())
         if remaining == "now":
-            self._hero_caption.setText("Target met — you're free to go.")
+            self._hero_caption.setText(
+                "Shift complete — you're free to go." + self._break_note(self._analysis)
+            )
         else:
             self._hero_caption.setText(
                 f"{remaining} to go · in at {fmt.clock(self._analysis.first_in)}"
-                + self._flat_note(self._analysis)
+                + self._break_note(self._analysis)
             )
 
     def _strip_insights(self, analysis: DayAnalysis, *, is_today: bool) -> list[Insight]:
@@ -609,7 +622,8 @@ class TodayView(QWidget):
             parts.append(f"dashed = free at {fmt.clock(analysis.leave_at)}")
             if analysis.finish_times_differ:
                 parts.append(
-                    f"faint dashed = {fmt.clock(analysis.expected_out)} without the extra break"
+                    f"faint dashed = {fmt.clock(analysis.expected_out_break_adjusted)} "
+                    "with the extra break counted"
                 )
         if any(segment.end_inferred or segment.start_inferred for segment in analysis.segments):
             parts.append("hatched = inferred from a missing punch")
@@ -681,19 +695,21 @@ def _dress_calendar(picker: QDateEdit) -> None:
     calendar.setMinimumWidth(CALENDAR_WIDTH)
 
 
-def _verdict(target: Duration, *, left: Duration, over: Duration, over_word: str) -> str:
-    """ "of 8h target · 45m left", or "· 12m over", or "· target met".
+def _verdict(
+    target: Duration, *, left: Duration, over: Duration, over_word: str, noun: str = "target"
+) -> str:
+    """ "of 9h shift · 45m left", or "· 12m extra", or "· complete".
 
-    One sentence shape for work and for break, because the whole complaint about these two
-    cards was that they described the same relationship in two different grammars. Only one
-    of ``left`` and ``over`` is ever non-zero; both being zero is the target landed exactly.
+    One sentence shape for the shift and for the break, because the whole complaint about
+    these two cards was that they described the same relationship in two different grammars.
+    Only one of ``left`` and ``over`` is ever non-zero; both zero is the target landed exactly.
     """
-    stem = f"of {target} target  ·  "
+    stem = f"of {target} {noun}  ·  "
     if left:
         return f"{stem}{fmt.duration(left)} left"
     if over:
         return f"{stem}{fmt.duration(over)} {over_word}"
-    return f"{stem}target met"
+    return f"{stem}{'complete' if noun == 'shift' else 'target met'}"
 
 
 def summary_text(analysis: DayAnalysis) -> str:
@@ -701,13 +717,14 @@ def summary_text(analysis: DayAnalysis) -> str:
     lines = [
         f"{fmt.long_day_label(analysis.day)}",
         f"In {fmt.clock(analysis.first_in)} · Out {fmt.clock(analysis.last_out)}",
-        f"Worked {fmt.duration_words(analysis.worked)} "
+        f"Shift {fmt.duration_words(analysis.gross_span)} "
+        f"· Worked {fmt.duration_words(analysis.worked)} "
         f"· Break {fmt.duration_words(analysis.break_taken)}",
     ]
-    if analysis.extra_worked:
-        lines.append(f"Extra {fmt.duration_words(analysis.extra_worked)}")
-    if analysis.work_remaining:
-        lines.append(f"Short by {fmt.duration_words(analysis.work_remaining)}")
+    if analysis.extra_span:
+        lines.append(f"Extra {fmt.duration_words(analysis.extra_span)}")
+    if analysis.span_remaining:
+        lines.append(f"Short by {fmt.duration_words(analysis.span_remaining)}")
     for issue in analysis.issues:
         lines.append(f"Note: {issue.message}")
     return "\n".join(lines)

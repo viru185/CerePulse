@@ -136,12 +136,11 @@ def _covered(requests: list[SwipeRequest]) -> bool:
 
 
 def _worked(day: AttendanceDay, policy: ShiftPolicy, analysis: DayAnalysis | None) -> Duration:
+    """The day's span, which is what it is measured by (see ``intelligence.policy``)."""
     if analysis is not None and analysis.state is DayState.COMPLETE:
-        return analysis.worked
-    # Grid-only: Tot. Hrs. is the gross span, so the break allowance comes off to make it
-    # comparable with the target.
-    span = day.total_hours - policy.break_target
-    return span if span.minutes > 0 else Duration(0)
+        return analysis.gross_span
+    # Grid-only: Tot. Hrs. is the span itself.
+    return day.total_hours
 
 
 def _is_unmeasured(day: AttendanceDay, analysis: DayAnalysis | None) -> bool:

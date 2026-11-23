@@ -63,7 +63,7 @@ class DayFact:
     owed: Duration | None = None
 
     def target(self, policy: ShiftPolicy) -> Duration:
-        return self.owed if self.owed is not None else policy.work_target
+        return self.owed if self.owed is not None else policy.day_target
 
     def met(self, policy: ShiftPolicy) -> bool:
         return self.worked >= self.target(policy)
@@ -261,12 +261,13 @@ def build_facts(
             continue
 
         analysis = analyses.get(day.day)
+        # The span, as everywhere a day is judged. Only the break needs the punch log.
         exact = analysis is not None and analysis.state is DayState.COMPLETE
         if exact:
             assert analysis is not None
-            worked, break_taken = analysis.worked, analysis.break_taken
+            worked, break_taken = analysis.gross_span, analysis.break_taken
         else:
-            worked, break_taken = _clamp(day.total_hours - policy.break_target), None
+            worked, break_taken = day.total_hours, None
 
         if worked.minutes <= 0:
             continue
@@ -452,23 +453,23 @@ def forecast(
         return None
 
     worked = _sum(fact.worked for fact in this_month)
-    elapsed_target = Duration(len(this_month) * policy.work_target.minutes)
+    elapsed_target = Duration(len(this_month) * policy.day_target.minutes)
     banked = worked - elapsed_target
 
     assumed = _median_duration(fact.worked for fact in facts[-RECENT_WINDOW:])
     projected = None
     if assumed is not None:
-        future = (assumed.minutes - policy.work_target.minutes) * working_days_remaining
+        future = (assumed.minutes - policy.day_target.minutes) * working_days_remaining
         projected = Duration(banked.minutes + future)
 
     required = None
     if banked.minutes < 0 and working_days_remaining > 0:
-        needed = policy.work_target.minutes * working_days_remaining - banked.minutes
+        needed = policy.day_target.minutes * working_days_remaining - banked.minutes
         required = Duration(-(-needed // working_days_remaining))  # ceil
 
     # "Affordable" means a day of half the target could be taken and the month would still
     # finish level — not merely that some surplus exists.
-    cost = policy.work_target.minutes // 2
+    cost = policy.day_target.minutes // 2
     return Forecast(
         projected_delta=projected,
         required_daily=required,

@@ -831,12 +831,16 @@ class MainWindow(QMainWindow):
             policy=self._context.attendance.policy,
             today=date.today(),
             holidays=view.holidays,
+            # The punch-level analyses, not just the grid. Without them today fell back to
+            # its grid row, whose last-out is merely the latest swipe, so a half-worked
+            # today counted as a completed day and the week read hours behind at lunchtime.
+            analyses=view.analyses,
         )
         # The outstanding items come from the month view rather than being recomputed, so
         # the week cannot disagree with the Attendance highlight about what needs doing.
         self.week.show_week(
             week,
-            self._context.attendance.policy.work_target,
+            self._context.attendance.policy.day_target,
             attention=view.attention,
             # Already computed for the month rollup, so the week's timelines cost nothing
             # beyond passing them along.

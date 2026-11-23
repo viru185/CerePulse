@@ -67,8 +67,6 @@ def test_unknown_keys_are_ignored(tmp_path: Path) -> None:
     "data",
     [
         {"portal": {"base_url": "http://insecure.example.com"}},
-        {"shift": {"work_target_hours": 0}},
-        {"shift": {"work_target_hours": 9.0, "shift_span_hours": 8.0}},
         {"sync": {"refresh_interval_minutes": 0}},
         {"ui": {"background_mode": "always-on"}},
         {"ui": {"theme": "sepia"}},
@@ -78,6 +76,23 @@ def test_validation_rejects_unusable_settings(tmp_path: Path, data: dict) -> Non
     path = _write(tmp_path / "cerepulse.toml", data)
     with pytest.raises(ConfigError):
         load_config(config_path=path)
+
+
+@pytest.mark.parametrize(
+    "shift",
+    [
+        {"work_target_hours": 0},
+        {"work_target_hours": 9.0, "shift_span_hours": 8.0},
+    ],
+)
+def test_an_unusable_shift_falls_back_instead_of_stopping_the_app(
+    tmp_path: Path, shift: dict
+) -> None:
+    """These raised from the loader, before any window existed, so the app simply did not
+    start. Settings no longer saves them; a file that holds one is read with the defaults."""
+    path = _write(tmp_path / "cerepulse.toml", {"shift": shift})
+    loaded = load_config(config_path=path).shift
+    assert (loaded.work_target_hours, loaded.shift_span_hours) == (8.0, 9.0)
 
 
 def test_save_then_load_round_trips(tmp_path: Path) -> None:

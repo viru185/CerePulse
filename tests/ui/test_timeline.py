@@ -8,9 +8,10 @@ them — the thing anyone reads a punch log for — were not rows at all.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import NamedTuple
 
+import pytest
 from PySide6.QtWidgets import QApplication
 
 from cerepulse.intelligence.day import analyze_day
@@ -49,6 +50,10 @@ def segment(start: str, end: str, *, inferred: bool = False) -> WorkSegment:
         return datetime(2026, 7, 24, hour, minute)
 
     return WorkSegment(at(start), at(end), end_inferred=inferred)
+
+
+def segment_between(start: datetime, end: datetime) -> WorkSegment:
+    return WorkSegment(start, end)
 
 
 # --- breaks are a quantity ----------------------------------------------------------------
@@ -287,3 +292,50 @@ def test_every_row_names_what_it_is(qapp: QApplication) -> None:
     assert wording.count("Break") == 3
     # And the durations read as durations, not as clock times.
     assert "8m" in wording
+
+
+# --- room at the edges -------------------------------------------------------------------
+#
+# "The start of the timeline is very close to the border." The axis began on the hour of the
+# first punch and the bar ran from x=0, so a 9:03 arrival sat four pixels from the edge with
+# its time label half off it.
+
+
+@pytest.mark.parametrize("arrival", ["09:00", "09:03", "09:59", "08:31"])
+def test_every_label_stays_inside_the_widget(qapp, arrival: str) -> None:  # type: ignore[no-untyped-def]
+    timeline = DayTimeline(DARK)
+    timeline.resize(870, DayTimeline.HEIGHT_FULL)
+    hour, minute = (int(part) for part in arrival.split(":"))
+    start = datetime(2026, 7, 28, hour, minute)
+    timeline.set_day(
+        (
+            segment_between(start, start + timedelta(hours=4)),
+            segment_between(start + timedelta(hours=5), start + timedelta(hours=9)),
+        ),
+        leave_at=start + timedelta(hours=9),
+        flat_at=start + timedelta(hours=10),
+    )
+
+    for label in _drawn(timeline):
+        assert label.left >= 0, f"{label.text!r} starts off the left edge"
+        assert label.right <= 870 + 1, f"{label.text!r} runs off the right edge"
+
+
+def test_the_first_punch_has_room_before_it(qapp) -> None:  # type: ignore[no-untyped-def]
+    timeline = DayTimeline(DARK)
+    timeline.resize(870, DayTimeline.HEIGHT_FULL)
+    start = datetime(2026, 7, 28, 9, 3)
+    timeline.set_day((segment_between(start, start + timedelta(hours=3)),))
+
+    assert timeline._start is not None
+    assert start - timeline._start >= timedelta(minutes=30)
+    assert timeline._x_for(start) > 40, "well clear of the border"
+
+
+def test_the_axis_reaches_the_muted_finish_too(qapp) -> None:  # type: ignore[no-untyped-def]
+    timeline = DayTimeline(DARK)
+    start = datetime(2026, 7, 28, 9, 0)
+    later = start + timedelta(hours=10)
+    timeline.set_day((segment_between(start, start + timedelta(hours=3)),), flat_at=later)
+
+    assert timeline._end is not None and timeline._end > later

@@ -19,6 +19,7 @@ from PySide6.QtGui import (
     QAction,
     QColor,
     QFont,
+    QFontMetricsF,
     QIcon,
     QMouseEvent,
     QPainter,
@@ -550,6 +551,8 @@ class DayTimeline(QWidget):
     MIN_HOURS = 5
     #: Narrower than this and a label written inside a block would be clipped.
     LABEL_FITS = 48
+    #: Clock time kept clear before the first punch and after the last moment drawn.
+    LEAD = timedelta(minutes=30)
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -613,11 +616,14 @@ class DayTimeline(QWidget):
             self._start = midnight + timedelta(hours=domain[0])
             self._end = midnight + timedelta(hours=domain[1])
         else:
-            latest = max(
-                [segments[-1].end] + [moment for moment in (leave_at, now) if moment is not None]
-            )
-            start = segments[0].start.replace(minute=0, second=0, microsecond=0)
-            end = (latest + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+            # Room on both sides. The axis used to start on the hour of the first punch, so
+            # a 9:03 arrival was drawn three minutes — four pixels — from the left edge while
+            # the right had up to an hour of air. Half an hour of lead, then the hour; the
+            # same at the end, which also has to reach the muted break-counted finish.
+            moments = (leave_at, flat_at, now)
+            latest = max([segments[-1].end] + [m for m in moments if m is not None])
+            start = _floor_hour(segments[0].start - self.LEAD)
+            end = _ceil_hour(latest + self.LEAD)
             if (end - start) < timedelta(hours=self.MIN_HOURS):
                 end = start + timedelta(hours=self.MIN_HOURS)
             self._start, self._end = start, end
@@ -697,10 +703,16 @@ class DayTimeline(QWidget):
         super().resizeEvent(event)  # type: ignore[arg-type]
 
     @property
+    def _inset(self) -> float:
+        """Side margin: room for half a time label, so the first and last fit inside."""
+        return 4.0 if self._compact else timeline_inset(self.font())
+
+    @property
     def _bar(self) -> QRectF:
         top = 8.0 if self._compact else 34.0
         height = 22.0 if self._compact else 28.0
-        return QRectF(0, top, float(self.width()), height)
+        inset = self._inset
+        return QRectF(inset, top, max(0.0, self.width() - 2 * inset), height)
 
     # --- painting ---------------------------------------------------------------------
 
@@ -742,11 +754,12 @@ class DayTimeline(QWidget):
         assert self._start is not None and self._end is not None
         total = (self._end - self._start).total_seconds()
         fraction = (moment - self._start).total_seconds() / total
-        return min(max(fraction, 0.0), 1.0) * self.width()
+        bar = self._bar
+        return bar.left() + min(max(fraction, 0.0), 1.0) * bar.width()
 
     def _paint_track(self, painter: QPainter, bar: QRectF) -> None:
         """A thin rule for the whole span. What a break looks like where no block covers it."""
-        line = QRectF(0, bar.center().y() - 1.5, bar.width(), 3)
+        line = QRectF(bar.left(), bar.center().y() - 1.5, bar.width(), 3)
         path = QPainterPath()
         path.addRoundedRect(line, 1.5, 1.5)
         painter.fillPath(path, QColor(self._palette.border))
@@ -808,7 +821,7 @@ class DayTimeline(QWidget):
         if self._flat_at is not None and self._flat_at != self._leave_at:
             # Where the day would have ended without the extra break — the figure the
             # adjusted line silently absorbed. Muted, so "leave" stays the answer.
-            markers.append((self._flat_at, self._palette.text_muted, "flat", True))
+            markers.append((self._flat_at, self._palette.text_muted, "+break", True))
         if self._now is not None:
             markers.append((self._now, self._palette.text, "now", False))
 
@@ -827,7 +840,7 @@ class DayTimeline(QWidget):
                 continue
 
             width = painter.fontMetrics().horizontalAdvance(label)
-            left = max(x - width / 2, occupied + LABEL_GAP)
+            left = self._inside(max(x - width / 2, occupied + LABEL_GAP), width)
             painter.setPen(QColor(colour))
             painter.drawText(QRectF(left, 0, width + 2, 12), Qt.AlignmentFlag.AlignLeft, label)
             occupied = left + width
@@ -882,13 +895,17 @@ class DayTimeline(QWidget):
         occupied = -1e9
         for x, text in sorted(labels):
             width = metrics.horizontalAdvance(text)
-            left = max(x - width / 2, occupied + LABEL_GAP)
-            if left - (x - width / 2) > LABEL_DRIFT:
+            left = self._inside(max(x - width / 2, occupied + LABEL_GAP), width)
+            if abs(left - (x - width / 2)) > LABEL_DRIFT:
                 # Sliding this far would park the time above a different punch, which is
                 # worse than not writing it: the dot still says exactly when it happened.
                 continue
             painter.drawText(QRectF(left, top, width + 2, 13), Qt.AlignmentFlag.AlignLeft, text)
             occupied = left + width
+
+    def _inside(self, left: float, width: float) -> float:
+        """A label's left edge, moved just enough to keep the whole label on the widget."""
+        return min(max(0.0, left), self.width() - width - 2)
 
     def _paint_adjustments(self, painter: QPainter, bar: QRectF) -> None:
         """Draw each stretch the user reclaimed from a break, over the work block it joined.
@@ -958,6 +975,25 @@ LABEL_GAP = 6.0
 LABEL_DRIFT = 18.0
 
 
+def timeline_inset(font: QFont) -> float:
+    """The side margin every clock-axis widget keeps: half a time label, plus air.
+
+    Shared because a column of timelines and the ruler under them must agree to the pixel.
+    """
+    sized = QFont(font)
+    sized.setPointSize(8)
+    return QFontMetricsF(sized).horizontalAdvance("12:59p") / 2 + 4
+
+
+def _floor_hour(moment: datetime) -> datetime:
+    return moment.replace(minute=0, second=0, microsecond=0)
+
+
+def _ceil_hour(moment: datetime) -> datetime:
+    floor = _floor_hour(moment)
+    return floor if floor == moment else floor + timedelta(hours=1)
+
+
 def shared_domain(spans: Sequence[tuple[datetime, datetime]]) -> tuple[int, int]:
     """One clock-hour range covering every day given, for stacking timelines.
 
@@ -1010,10 +1046,16 @@ class HourAxis(QWidget):
         painter.setFont(font)
         painter.setPen(QColor(self._palette.text_faint))
 
+        # The same inset as the bars above, or the ruler would not line up with what it
+        # measures; and every label kept on the widget — the first and last used to hang
+        # half off either end, reading "m" and "7p".
+        inset = timeline_inset(self.font())
+        usable = max(0.0, self.width() - 2 * inset)
         for hour in range(first, last + 1, step):
-            x = (hour - first) / span * self.width()
+            x = inset + (hour - first) / span * usable
             label = f"{(hour - 1) % 12 + 1}{'am' if hour < 12 else 'pm'}"
-            box = QRectF(x - 20, 2, 40, self.HEIGHT - 4)
+            left = min(max(0.0, x - 20), self.width() - 40.0)
+            box = QRectF(left, 2, 40, self.HEIGHT - 4)
             painter.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
         painter.end()
 

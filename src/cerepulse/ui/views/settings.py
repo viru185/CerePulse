@@ -311,15 +311,16 @@ class SettingsView(QWidget):
     def _build_shift(self) -> Card:
         card = Card(
             "Shift policy",
-            "Company policy, not something the portal reports. Defaults assume an "
-            "eight-hour day with a one-hour break inside a nine-hour span.",
+            "A shift is complete once the span from your first In to your last Out reaches "
+            "the shift span, breaks included. The work target and break allowance are shown "
+            "beside it, and decide nothing.",
         )
         self._work = _hours()
         self._break = _hours()
         self._span = _hours()
+        card.add("Shift span", self._span)
         card.add("Work target", self._work)
         card.add("Break allowance", self._break)
-        card.add("Shift span", self._span)
         return card.finish()
 
     def _build_sync(self) -> Card:
@@ -757,6 +758,15 @@ class SettingsView(QWidget):
         self._buffer.setValue(commute.buffer_minutes)
 
     def _save(self) -> None:
+        # Checked here, before anything is written: the loader refuses these at launch, and
+        # a config it refuses is an app that does not start, with no window to say why.
+        if self._span.value() < self._work.value() + self._break.value():
+            self.show_save_result(
+                "Not saved: the shift span has to be at least the work target plus the "
+                "break allowance.",
+                failed=True,
+            )
+            return
         config = self._config
         updated = replace(
             config,

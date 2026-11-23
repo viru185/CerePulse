@@ -134,16 +134,16 @@ class Tray(QObject):
         if analysis.state is DayState.EMPTY:
             return f"{about.NAME}\nNo punches recorded today"
 
-        worked = f"Worked {fmt.duration(analysis.worked)}"
+        worked = f"{fmt.duration(analysis.gross_span)} in · {fmt.duration(analysis.worked)} worked"
 
         if analysis.state is DayState.INCOMPLETE:
-            if analysis.work_remaining:
+            if analysis.span_remaining:
                 remaining = fmt.countdown(analysis.leave_at, now=now)
                 return f"Leave at {fmt.clock(analysis.leave_at)} — {remaining} to go\n{worked}"
-            return f"Target met — you can leave\n{worked}"
+            return f"Shift complete — you can leave\n{worked}"
 
         if analysis.early_exit:
-            return f"Left at {fmt.clock(analysis.last_out)}\n{worked} — short of target"
+            return f"Left at {fmt.clock(analysis.last_out)}\n{worked} — short of the shift"
         return f"Left at {fmt.clock(analysis.last_out)}\n{worked}"
 
     # --- notifications --------------------------------------------------------------

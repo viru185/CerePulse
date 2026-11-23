@@ -6,7 +6,7 @@ from datetime import date, datetime, time, timedelta
 
 import pytest
 
-from cerepulse.intelligence.day import DayState, analyze_day
+from cerepulse.intelligence.day import DayAnalysis, DayState, analyze_day
 from cerepulse.intelligence.insights import ActionKind, InsightKind, Severity
 from cerepulse.intelligence.policy import ShiftPolicy
 from cerepulse.intelligence.segments import DayEnvelope, IssueKind
@@ -43,15 +43,19 @@ def test_expected_out_is_first_in_plus_shift_span() -> None:
     assert analysis.expected_out.time() == time(18, 0)
 
 
-def test_break_adjusted_out_moves_when_the_break_overruns() -> None:
-    """A ninety-minute lunch means leaving at +9h would be half an hour short of eight."""
+def test_the_finish_is_nine_hours_from_arrival_whatever_the_break() -> None:
+    """The rule as the company states it: nine hours between in and out completes the
+    shift. A ninety-minute lunch is shown — as the time that would make it up — and no
+    longer moves the finish, which is the other way round from before 0.17."""
     long_break = (("09:00", "in"), ("13:00", "out"), ("14:30", "in"), ("18:00", "out"))
     analysis = analyze_day(punches(*long_break), day=DAY)
 
     assert analysis.break_taken.as_clock() == "1:30"
-    assert analysis.expected_out.time() == time(18, 0)  # the flat, under-reporting figure
-    assert analysis.expected_out_break_adjusted.time() == time(18, 30)
-    assert analysis.leave_at == analysis.expected_out_break_adjusted
+    assert analysis.leave_at == analysis.expected_out
+    assert analysis.expected_out.time() == time(18, 0)
+    assert analysis.expected_out_break_adjusted.time() == time(18, 30)  # the aside
+    assert analysis.state is DayState.COMPLETE
+    assert not analysis.early_exit, "nine hours in, so the shift is complete"
 
 
 def test_a_short_break_never_pulls_the_finish_time_in() -> None:
@@ -168,11 +172,20 @@ def test_ongoing_day_reports_time_left() -> None:
     assert InsightKind.OVERTIME not in kinds(analysis)
 
 
-def test_ongoing_day_past_target_says_you_can_go() -> None:
+def test_ongoing_day_past_the_span_says_you_can_go() -> None:
+    analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=at("18:05"))
+
+    assert analysis.span_remaining.minutes == 0
+    assert InsightKind.ON_TRACK in kinds(analysis)
+
+
+def test_eight_hours_of_work_is_not_yet_a_complete_shift() -> None:
+    """Net work used to decide it: at 17:30 with no break the old rule had already said
+    "free to go" while the screen counted down to 18:00."""
     analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=at("17:30"))
 
-    assert analysis.work_remaining.minutes == 0
-    assert InsightKind.ON_TRACK in kinds(analysis)
+    assert analysis.span_remaining.minutes == 30
+    assert InsightKind.ON_TRACK not in kinds(analysis)
 
 
 def test_long_break_produces_an_advisory() -> None:
@@ -276,29 +289,28 @@ def test_break_adjusted_explanation_says_why_it_moved() -> None:
         punches(("09:00", "in"), ("13:00", "out"), ("14:30", "in"), ("18:30", "out")), day=DAY
     )
     notes = analysis.explanations["expected_out_break_adjusted"].notes
-    assert any("exceeded the allowance" in note for note in notes)
+    assert any("does not move the finish" in note for note in notes)
 
 
 # --- policy ---------------------------------------------------------------------------
 
 
-def test_the_target_gets_the_right_article() -> None:
-    """Writing "a 8:00 target" is the sort of thing that makes an app feel unfinished."""
-    eight = analyze_day(punches(("09:00", "in"), ("16:00", "out")), day=DAY)
-    seven = analyze_day(
-        punches(("09:00", "in"), ("14:00", "out")),
+def test_the_shift_gets_the_right_article() -> None:
+    """Writing "a 8:00 shift" is the sort of thing that makes an app feel unfinished."""
+    eight = analyze_day(
+        punches(("09:00", "in"), ("16:00", "out")),
         day=DAY,
         policy=ShiftPolicy(
             work_target=Duration(7 * 60), break_target=Duration(60), shift_span=Duration(480)
         ),
     )
+    nine = analyze_day(punches(("09:00", "in"), ("16:00", "out")), day=DAY)
 
-    assert (
-        "an 8h target" in next(i for i in eight.insights if i.kind is InsightKind.EARLY_EXIT).detail
-    )
-    assert (
-        "a 7h target" in next(i for i in seven.insights if i.kind is InsightKind.EARLY_EXIT).detail
-    )
+    def detail(analysis: DayAnalysis) -> str:
+        return next(i for i in analysis.insights if i.kind is InsightKind.EARLY_EXIT).detail
+
+    assert "an 8h shift" in detail(eight)
+    assert "a 9h shift" in detail(nine)
 
 
 def test_a_custom_policy_is_honoured() -> None:
@@ -328,17 +340,29 @@ def test_nonsensical_policies_are_rejected(kwargs: dict[str, Duration]) -> None:
 # --- break headroom -------------------------------------------------------------------
 
 
-def test_an_in_progress_day_reports_free_break_headroom() -> None:
-    """The shift span already prices in the full allowance, so break up to it is free."""
+def test_break_headroom_is_no_longer_reported() -> None:
+    """ "Taking it will not move 6:00 PM" was true of every break once the span rules, so it
+    said nothing — and anything past the allowance no longer moves it either."""
     analysis = analyze_day(
         punches(("09:00", "in"), ("12:00", "out"), ("12:20", "in")),
         day=DAY,
         now=at("14:00"),
     )
-    headroom = next(i for i in analysis.insights if i.kind is InsightKind.BREAK_HEADROOM)
+    assert InsightKind.BREAK_HEADROOM not in kinds(analysis)
 
-    assert "40m" in headroom.title
-    assert "6:00 PM" in headroom.detail
+
+def test_a_long_break_says_what_it_costs_without_moving_the_finish() -> None:
+    analysis = analyze_day(
+        punches(("09:00", "in"), ("12:00", "out"), ("13:45", "in")),
+        day=DAY,
+        now=at("15:00"),
+    )
+    long_break = next(i for i in analysis.insights if i.kind is InsightKind.LONG_BREAK)
+
+    assert long_break.title == "Break ran 45m over"
+    assert "Your finish stays 6:00 PM" in long_break.detail
+    assert "7h 15m" in long_break.detail, "net work if you leave at the finish"
+    assert "6:45 PM" in long_break.detail, "and when the break would be made up"
 
 
 def test_headroom_is_replaced_by_the_overrun_message_once_exceeded() -> None:
@@ -381,11 +405,13 @@ def test_insights_lead_with_what_needs_attention() -> None:
 
 
 def test_the_answer_outranks_the_footnote_within_a_severity() -> None:
-    """Sorting the tie by kind name alphabetically put break headroom above time left."""
-    analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=at("14:00"))
+    """Sorting the tie by kind name alphabetically put a footnote above time left."""
+    analysis = analyze_day(
+        punches(("09:00", "in"), ("12:00", "out"), ("13:45", "in")), day=DAY, now=at("15:00")
+    )
     order = [i.kind for i in analysis.insights]
 
-    assert order.index(InsightKind.STILL_WORKING) < order.index(InsightKind.BREAK_HEADROOM)
+    assert order.index(InsightKind.STILL_WORKING) < order.index(InsightKind.LONG_BREAK)
 
 
 # --- a past day whose Out never got punched ------------------------------------------------
@@ -787,13 +813,13 @@ def test_an_early_exit_is_not_also_told_how_long_it_has_left() -> None:
     assert InsightKind.STILL_WORKING not in kinds(analysis)
 
 
-def test_a_long_lunch_pushes_back_when_leaving_counts_as_early() -> None:
-    """The threshold is the break-adjusted finish, not the flat one — an over-long lunch
-    moves the end of the day, so it moves the point where going home is leaving early."""
+def test_leaving_counts_as_early_once_nine_hours_from_arrival_have_passed() -> None:
+    """Before 18:00 a clocked-out afternoon may still be a long lunch; after it, a day that
+    ended at 17:30 is short. A long lunch no longer moves that point."""
     log = punches(("09:00", "in"), ("12:00", "out"), ("14:00", "in"), ("17:30", "out"))
 
-    assert not analyze_day(log, day=DAY, now=at("18:15")).early_exit
-    assert analyze_day(log, day=DAY, now=at("19:15")).early_exit
+    assert not analyze_day(log, day=DAY, now=at("17:45")).early_exit
+    assert analyze_day(log, day=DAY, now=at("18:15")).early_exit
 
 
 def test_a_grid_only_today_is_never_an_early_exit() -> None:

@@ -105,14 +105,17 @@ def test_a_break_names_the_time_it_stops_being_free() -> None:
     assert action.at == analysis.last_out + timedelta(minutes=analysis.break_remaining.minutes)
 
 
-def test_a_break_past_the_allowance_warns_that_every_minute_costs() -> None:
-    """Ninety minutes of breaks against a one-hour allowance: the finish time is moving."""
+def test_a_break_past_the_allowance_is_information_not_a_warning() -> None:
+    """Ninety minutes of breaks against a one-hour allowance. Under the span rule the finish
+    stays nine hours from arrival, so "every minute pushes it out" would now be false; what
+    the break costs is net work, said once and calmly."""
     action = today(
         ("09:00", "in"), ("11:00", "out"), ("12:30", "in"), ("13:00", "out"), now="14:30"
     ).next_action
 
     assert action.kind is NextActionKind.RETURN_FROM_BREAK
-    assert action.severity is Severity.WARNING
+    assert action.severity is Severity.INFO
+    assert "does not move 6:00 PM" in action.detail
 
 
 def test_a_short_finished_day_offers_the_swipe_request() -> None:
@@ -162,9 +165,9 @@ def test_a_full_day_asks_for_nothing() -> None:
 
 @pytest.mark.parametrize(
     ("out", "expected"),
-    [("12:00", 0.5), ("16:00", 1.0), ("20:00", 1.5)],
+    [("12:30", 0.5), ("17:00", 1.0), ("21:30", 1.5)],
 )
-def test_completion_is_worked_over_target_and_is_not_clamped(out: str, expected: float) -> None:
+def test_completion_is_span_over_the_shift_and_is_not_clamped(out: str, expected: float) -> None:
     """A bar pinned at 100% cannot tell a day that finished on time from one three hours over."""
     analysis = analyze_day(punches(("08:00", "in"), (out, "out")), day=PAST, now=at("23:00"))
     assert analysis.completion == pytest.approx(expected, abs=0.02)

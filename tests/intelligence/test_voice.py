@@ -162,13 +162,13 @@ def test_a_day_with_no_break_at_all_is_not_praised_for_discipline() -> None:
     assert not any(line in voiced.detail for line in _QUIPS[(InsightKind.ON_TRACK, "disciplined")])
 
 
-def test_break_headroom_never_gets_a_quip() -> None:
-    """It sits on screen all morning; a daily joke there is the first thing to be muted."""
+def test_break_headroom_is_gone_so_cannot_get_a_quip() -> None:
+    """It used to sit on screen all morning; no break moves the finish any more, so it is no
+    longer raised at all."""
     analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=at("11:00"))
-    plain = find(analysis, InsightKind.BREAK_HEADROOM)
-    voiced = find(voice_day(analysis, tone=Tone.PLAYFUL), InsightKind.BREAK_HEADROOM)
+    voiced = voice_day(analysis, tone=Tone.PLAYFUL)
 
-    assert voiced.detail == plain.detail
+    assert InsightKind.BREAK_HEADROOM not in {i.kind for i in voiced.insights}
 
 
 def test_the_middle_of_a_long_day_gets_no_commentary() -> None:
@@ -181,7 +181,7 @@ def test_the_middle_of_a_long_day_gets_no_commentary() -> None:
 
 
 def test_the_home_stretch_does() -> None:
-    analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=at("17:30"))
+    analysis = analyze_day(punches(("09:00", "in")), day=DAY, now=at("18:10"))
     voiced = find(voice_day(analysis, tone=Tone.PLAYFUL), InsightKind.ON_TRACK)
     assert len(voiced.detail) > len(find(analysis, InsightKind.ON_TRACK).detail)
 

@@ -1,13 +1,10 @@
 """Week and month rollups, including the hours bank.
 
-One subtlety drives the design. The monthly grid gives ``Tot. Hrs.`` per day, but that is
-the **gross span** from first in to last out — breaks included. True worked time only comes
-from a day's punch log, and fetching all of those costs one postback per day.
-
-So a month is normally a mix: a few days with real punch detail, the rest grid-only. Rather
-than silently comparing incompatible numbers, grid-only days are estimated as
-``gross span - break allowance`` and counted in :attr:`MonthAnalysis.estimated_days`, so the
-UI can say how much of the total is exact.
+A day counts its **span** — first In to last Out, breaks inside it — against the shift span
+(see :mod:`cerepulse.intelligence.policy`). ``worked`` on a rollup means exactly that: time
+at work, the figure the portal's own ``Tot. Hrs.`` reports. That makes the grid exact on its
+own: a day with no punch log is measured from ``Tot. Hrs.`` with nothing estimated, which
+the old net-work rule could only approximate as span minus the break allowance.
 
 Working days are derived from the portal's own weekly-off markings rather than assuming
 Saturday and Sunday, so the numbers stay right for shift workers.
@@ -105,7 +102,7 @@ class WeekAnalysis:
     @property
     def full_target(self) -> Duration:
         """The whole week's target, including the days still to come."""
-        return self.target + Duration(self.days_ahead * self.policy.work_target.minutes)
+        return self.target + Duration(self.days_ahead * self.policy.day_target.minutes)
 
     @property
     def progress(self) -> float:
@@ -121,7 +118,7 @@ class WeekAnalysis:
     @property
     def projected_total(self) -> Duration:
         """Where the week lands if every remaining day makes its target exactly."""
-        return self.total_worked + Duration(self.days_ahead * self.policy.work_target.minutes)
+        return self.total_worked + Duration(self.days_ahead * self.policy.day_target.minutes)
 
     @property
     def required_daily_average(self) -> Duration | None:
@@ -133,14 +130,14 @@ class WeekAnalysis:
         """
         if self.days_ahead <= 0 or self.delta.minutes >= 0:
             return None
-        needed = self.policy.work_target.minutes * self.days_ahead - self.delta.minutes
+        needed = self.policy.day_target.minutes * self.days_ahead - self.delta.minutes
         return Duration(-(-needed // self.days_ahead))  # ceil
 
     @property
     def on_track(self) -> bool:
         """Whether finishing level still only asks for ordinary days."""
         required = self.required_daily_average
-        return required is None or required <= self.policy.shift_span
+        return required is None or required <= self.policy.stretch_day
 
     @property
     def measured(self) -> tuple[DayRollup, ...]:
@@ -253,12 +250,12 @@ def analyze_month(
 
     elapsed_target = _sum(r.owed for r in worked_days)
     # Days still to come are assumed whole; nothing says otherwise until they are on the grid.
-    month_target = elapsed_target + Duration(working_days_remaining * policy.work_target.minutes)
+    month_target = elapsed_target + Duration(working_days_remaining * policy.day_target.minutes)
     bank_delta = total_worked - elapsed_target
 
     required = None
     if bank_delta.minutes < 0 and working_days_remaining > 0:
-        needed = policy.work_target.minutes * working_days_remaining - bank_delta.minutes
+        needed = policy.day_target.minutes * working_days_remaining - bank_delta.minutes
         required = Duration(-(-needed // working_days_remaining))  # ceil
 
     return MonthAnalysis(
@@ -376,12 +373,12 @@ def _rollup(
 ) -> DayRollup:
     analysis = analyses.get(day.day)
     if analysis is not None and analysis.state is not DayState.EMPTY:
-        worked, estimated = analysis.worked, False
+        # The punch log's span, repaired against the grid row, or first in to now today.
+        worked = analysis.gross_span
     else:
-        # Grid-only: Tot. Hrs. is the gross span, so subtract the break allowance to get a
-        # comparable worked figure. Marked estimated so the UI can qualify the total.
-        worked = _clamp(day.total_hours - policy.break_target)
-        estimated = day.total_hours.minutes > 0
+        # Tot. Hrs. *is* the span, so a grid-only day is measured, not estimated.
+        worked = day.total_hours
+    estimated = False
 
     # The portal marks some days present with no punches and no hours at all — swipe data
     # that simply does not exist. Scoring those as a full day short invents a deficit the
@@ -397,7 +394,7 @@ def _rollup(
         estimated=estimated and not unmeasured,
         is_working_day=is_working_day,
         unmeasured=unmeasured,
-        in_progress=_is_in_progress(day, analysis, today),
+        in_progress=_is_in_progress(day, analysis, today, policy),
         on_duty=day.has_outdoor_duty,
         note=day.remarks.strip() if day.remarks.strip() != _ROUTINE_REMARK else "",
         owed=policy.owed_for(day.portion) if is_working_day else Duration(0),
@@ -405,17 +402,23 @@ def _rollup(
     )
 
 
-def _is_in_progress(day: AttendanceDay, analysis: DayAnalysis | None, today: date | None) -> bool:
+def _is_in_progress(
+    day: AttendanceDay, analysis: DayAnalysis | None, today: date | None, policy: ShiftPolicy
+) -> bool:
     """Whether this is today and the working day has not finished yet.
 
-    Clocked in with no out-punch. The grid reports no total for such a day, so without this
-    it looks identical to a day someone worked zero hours.
+    With no punch log to go on, today's grid row cannot say: its last-out is the latest swipe
+    so far, not a clock-off. So today is unfinished while its span is still short of what
+    it owes — the same rule the day analysis applies, and the reason a half-worked today
+    no longer counts as a finished, short day.
     """
     if today is None or day.day != today:
         return False
     if analysis is not None:
         return analysis.state is DayState.INCOMPLETE
-    return day.first_in is not None and day.last_out is None
+    if day.first_in is None:
+        return False
+    return day.last_out is None or day.total_hours < policy.owed_for(day.portion)
 
 
 def _is_unmeasured(day: AttendanceDay, analysis: DayAnalysis | None) -> bool:

@@ -107,7 +107,7 @@ def _bucket(insight: Insight, analysis: DayAnalysis) -> str | None:
         return None
 
     if insight.kind is InsightKind.OVERTIME:
-        return _band(analysis.extra_worked, (0, "token"), (20, "solid"), (120, "long"))
+        return _band(analysis.extra_span, (0, "token"), (20, "solid"), (120, "long"))
 
     if insight.kind is InsightKind.LONG_BREAK:
         # The insight has already established the break overran, so the bank turns on the
@@ -154,9 +154,11 @@ def _bucket(insight: Insight, analysis: DayAnalysis) -> str | None:
         # Only the two ends of the day are worth a remark. At half past two with three
         # hours left there is nothing to say, and saying it anyway is how an app becomes
         # something people want to turn off.
-        if analysis.work_remaining.minutes <= 45:
+        if analysis.span_remaining.minutes <= 45:
             return "closing"
-        if analysis.work_remaining.minutes >= 300:
+        # Six hours of a nine-hour span still to run: the first third of the day, as five of
+        # eight hours of work was before the span became the measure.
+        if analysis.span_remaining.minutes >= 360:
             return "early"
         return None
 
