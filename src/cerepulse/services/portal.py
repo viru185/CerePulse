@@ -14,15 +14,17 @@ already on screen is the one asked for.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterator
 from datetime import date
 from typing import TypeVar
 
+import httpx
 from loguru import logger
 from lxml import html as lxml_html
 
 from cerepulse.auth.manager import AuthManager
-from cerepulse.core.errors import ParserError, PrivilegeError
+from cerepulse.core.errors import ParserError, PrivilegeError, ProtocolError
 from cerepulse.models.application import Application, ApplicationKind
 from cerepulse.models.attendance import AttendanceMonth, Punch
 from cerepulse.models.leave import Holiday, LeaveBalance, LeaveTransaction
@@ -51,6 +53,8 @@ from cerepulse.transport.webforms import (
     async_postback_payload,
     find_script_manager,
     find_update_panels,
+    is_delta_response,
+    parse_delta,
 )
 
 # Menu entries, as (label, section).
@@ -136,12 +140,64 @@ class PortalGateway:
         """Drop the cached menu. Called after re-authentication invalidates its tokens."""
         self._menu = None
 
+    def _page(self, response: httpx.Response) -> str:
+        """The HTML of a real portal page, or the error that says what came back instead.
+
+        A page fetched for a dead session does not always look like the login page. After a
+        laptop woke up the portal answered 200 with something else entirely, and each parser
+        reported its own missing table — "Expected table GridView1", "no holiday grid", "neither
+        its grid nor its status filter" — down the "the portal changed" path, when the session
+        was simply gone. Every page a live session is served carries the master menu (98 of 98
+        in the November survey, postback re-renders included), so a 200 without it is a
+        session problem, said once, here, before any parser sees it.
+        """
+        response = self._auth.check_response(response)
+        url = _url_of(response)
+        path = url.split("?")[0] or "the page"
+        for hop in response.history:
+            if _LOGIN_PATH in hop.headers.get("location", "").lower():
+                raise self._auth.session_lost(f"{path} redirected to the login page")
+        if _LOGIN_PATH in url.lower():
+            raise self._auth.session_lost(f"{path} landed on the login page")
+        if response.status_code >= 400:
+            raise ProtocolError(
+                f"{path} answered {response.status_code} ({_title(response.text) or 'no title'})"
+            )
+        body = response.text
+        if _MENU_MARKER not in body:
+            raise self._auth.session_lost(
+                f"{path} came back without the portal's menu ({_title(body) or 'no title'})"
+            )
+        return body
+
+    def _delta(self, response: httpx.Response) -> str:
+        """A partial-page answer, or the error that says what came back instead.
+
+        Matters more here than anywhere: the punch parser reads a missing grid as "no
+        punches", which is a legitimate answer for a day nobody worked, so a dead session's
+        reply would be saved as an empty log and the day marked settled. ASP.NET answers an
+        async postback for a session it no longer has with a ``pageRedirect`` record rather
+        than a 302, and a server fault with an ``error`` record.
+        """
+        body = response.text
+        if not is_delta_response(body):
+            if _MENU_MARKER in body:
+                return body  # a full page; the parser reads either
+            raise self._auth.session_lost(
+                f"Day detail came back as neither a partial page nor a portal page "
+                f"({_title(body) or 'no title'})"
+            )
+        for record in parse_delta(body):
+            if record.type == "pageRedirect":
+                raise self._auth.session_lost(f"Day detail redirected to {record.content[:80]}")
+            if record.type == "error":
+                raise ProtocolError(f"Day detail failed on the server: {record.content[:120]}")
+        return body
+
     def _fetch(self, label: str, section: str) -> str:
         def get() -> str:
             entry = self.menu().require(label, section=section)
-            return self._auth.check_response(
-                self._client.get(entry.url, follow_redirects=True)
-            ).text
+            return self._page(self._client.get(entry.url, follow_redirects=True))
 
         return self._retrying_stale_menu(get)
 
@@ -192,7 +248,7 @@ class PortalGateway:
 
         def get() -> tuple[AttendanceMonth, list[ParsedDay], str]:
             url = self._url(*MENU_ATTENDANCE)
-            html = self._auth.check_response(self._client.get(url, follow_redirects=True)).text
+            html = self._page(self._client.get(url, follow_redirects=True))
 
             if not self._shows_period(html, year, month):
                 html = self._select_period(url, html, year, month)
@@ -234,7 +290,7 @@ class PortalGateway:
             url = self._url(*MENU_ATTENDANCE)
             html = page
             if html is None or not self._shows_period(html, when.year, when.month):
-                html = self._auth.check_response(self._client.get(url, follow_redirects=True)).text
+                html = self._page(self._client.get(url, follow_redirects=True))
                 if not self._shows_period(html, when.year, when.month):
                     html = self._select_period(url, html, when.year, when.month)
 
@@ -254,7 +310,7 @@ class PortalGateway:
                     url, data=payload, headers=async_postback_headers(self._client.url_for(url))
                 )
             )
-            return parse_punches(response.text)
+            return parse_punches(self._delta(response))
 
         return self._retrying_stale_menu(get)
 
@@ -283,9 +339,7 @@ class PortalGateway:
             **{MONTH_SELECT: f"{month:02d}", YEAR_SELECT: str(year)},
         )
         logger.debug("Selecting attendance period {:04d}-{:02d}", year, month)
-        return self._auth.check_response(
-            self._client.post(url, data=payload, follow_redirects=True)
-        ).text
+        return self._page(self._client.post(url, data=payload, follow_redirects=True))
 
     def available_periods(self, html: str | None = None) -> list[tuple[int, int]]:
         """Every year/month the portal will actually serve, newest first.
@@ -310,7 +364,7 @@ class PortalGateway:
 
     def _attendance_page(self) -> str:
         url = self._url(*MENU_ATTENDANCE)
-        return self._auth.check_response(self._client.get(url, follow_redirects=True)).text
+        return self._page(self._client.get(url, follow_redirects=True))
 
     # --- leave, swipe, holidays -----------------------------------------------------
 
@@ -321,12 +375,12 @@ class PortalGateway:
         the page alone would report that the employee has no leave at all.
         """
         url = self._url(*MENU_LEAVE_REGISTER)
-        page = self._auth.check_response(self._client.get(url, follow_redirects=True)).text
+        page = self._page(self._client.get(url, follow_redirects=True))
 
         state = WebFormsState.from_html(page)
-        html = self._auth.check_response(
+        html = self._page(
             self._client.post(url, data=state.submit(LEAVE_VIEW_BUTTON), follow_redirects=True)
-        ).text
+        )
 
         transactions = parse_leave_register(html)
         return current_balances(transactions), transactions
@@ -385,7 +439,7 @@ class PortalGateway:
         no postback because it is the one the page already rendered.
         """
         url = self._url(*menu)
-        page = self._auth.check_response(self._client.get(url, follow_redirects=True)).text
+        page = self._page(self._client.get(url, follow_redirects=True))
         yield page
 
         # The plain GET is assumed to render the first status. Verified rather than trusted:
@@ -406,9 +460,7 @@ class PortalGateway:
             state = WebFormsState.from_html(page)
             payload = state.postback(STATUS_SELECT, **{STATUS_SELECT: status})
             logger.debug("Fetching {!r} from {}", status, menu[1])
-            yield self._auth.check_response(
-                self._client.post(url, data=payload, follow_redirects=True)
-            ).text
+            yield self._page(self._client.post(url, data=payload, follow_redirects=True))
 
     def fetch_holidays(self) -> list[Holiday]:
         return parse_holidays(self._fetch(*MENU_HOLIDAYS))
@@ -428,7 +480,7 @@ class PortalGateway:
 
         def get() -> MonthlyStatement:
             url = self._url(*MENU_MONTHLY_PAY)
-            page = self._auth.check_response(self._client.get(url, follow_redirects=True)).text
+            page = self._page(self._client.get(url, follow_redirects=True))
             state = WebFormsState.from_html(page)
             label = next(
                 (
@@ -438,9 +490,9 @@ class PortalGateway:
                 ),
                 "",
             )
-            rendered = self._auth.check_response(
+            rendered = self._page(
                 self._client.post(url, data=state.submit(PAY_REFRESH), follow_redirects=True)
-            ).text
+            )
             return parse_monthly(rendered, period_label=label)
 
         return self._retrying_stale_menu(get)
@@ -459,7 +511,8 @@ class PortalGateway:
 
         def get() -> Payslip:
             entry_url = self._url(*MENU_PAYSLIP)
-            response = self._auth.check_response(self._client.get(entry_url, follow_redirects=True))
+            response = self._client.get(entry_url, follow_redirects=True)
+            self._page(response)
             base = str(response.url).split("?")[0]
             headers = {
                 "Content-Type": "application/json; charset=utf-8",
@@ -527,6 +580,26 @@ def _absorb(
         existing = collected.get(request.identity)
         if existing is None or (request.status.is_decided and not existing.status.is_decided):
             collected[request.identity] = request
+
+
+#: Every page a live session is served links its menu with this privilege-token parameter.
+_MENU_MARKER = "mnusr="
+_LOGIN_PATH = pages.LOGIN.lstrip("/").lower()
+_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+
+
+def _url_of(response: httpx.Response) -> str:
+    """Where a response came from, or "" for one built without a request (as tests do)."""
+    try:
+        return str(response.url)
+    except RuntimeError:
+        return ""
+
+
+def _title(html: str) -> str:
+    """A page's title, for saying *what* came back when it was not what was asked for."""
+    match = _TITLE.search(html[:4000])
+    return " ".join(match.group(1).split())[:80] if match else ""
 
 
 def _employee_code(html: str) -> str:

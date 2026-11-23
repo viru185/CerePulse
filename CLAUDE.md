@@ -235,13 +235,43 @@ set too high.
 authentication storm against the employer's HR system. A second expiry is surfaced.
 
 **Standing down has to have a way back.** The truce measures a theft by how long since the
-app's own last request — but a paused app makes none, so that clock ends up timing the
-user's trip to the browser, and coming back promptly read as a *second* eviction. The app
-paused again and Refresh looked broken; leaving it longer than the idle timeout always
-worked, which made it look random rather than wrong. `expect_reclaim` authorises exactly one
-sign-in, spent by the next expiry. Every Refresh control must route through
-`MainWindow.refresh`: the ones wired straight to a service could not end a pause, and one of
-them sat on the screen the portal is opened from.
+portal last answered the app — but a paused app makes no requests, so that clock ends up
+timing the user's trip to the browser, and coming back promptly read as a *second* eviction.
+The app paused again and Refresh looked broken; leaving it longer than the idle timeout
+always worked, which made it look random rather than wrong. `expect_reclaim` authorises
+exactly one sign-in, spent by the next expiry. Every control that fetches — Refresh, Pay,
+Fetch punch detail, the sync panel, Sync history, Test connection — must call
+`MainWindow._asked_for_the_portal` first: the ones wired straight to a service could not end
+a pause, and Pay's made three requests with no session and left the app paused until it was
+restarted. Quiet paths (the tick, stepping months, opening a day) serve the cache while
+paused; `SyncController.paused` is how the reads know.
+
+**Eviction is judged between answers, never between attempts.** The clock was stamped before
+each attempt was sent, failed ones included, so it always read the current request's own few
+milliseconds and *every* login redirect looked like a theft. After a laptop woke, a few
+`getaddrinfo` failures made a session idle for six hours read as stolen a moment ago, and
+the app paused itself — the restart bug of October and November 2026. `HttpClient.continuity`
+records the gap between the portal's last two answers on both clocks (the larger wins, so
+sleep always counts) and whether any request failed at the network level in between. A
+session can only read as taken if it was live, the portal had answered before, nothing
+failed in between, and the gap was inside the idle timeout. Every doubt reads as a timeout,
+and `tests/auth/test_session_continuity.py` drives the real request path for that reason —
+the older tests set the clock by hand and so could not see it.
+
+**A page without the menu is a lost session, not a missing table.** A dead session is not
+always the login page: after a wake the portal answered 200 with something else, and each
+parser reported its own missing grid down the "the portal changed" path. Every page a live
+session is served carries the master menu (98 of 98 in the November survey, postback
+re-renders included), so `PortalGateway._page` checks the redirect chain, the status and the
+`mnusr=` marker before any parser runs, and `_delta` does the same for day detail, where a
+missing grid would otherwise be saved as an empty punch log. A 5xx is a `ProtocolError` that
+says so, never a parser failure.
+
+**A loop over items stops on `ENDS_THE_RUN`.** A lost session, a rejected password and an
+unreachable portal are every remaining item's answer. Recorded per item they made a history
+backfill keep requesting against a session it no longer held, Pay report three thefts per
+click, and a sync after waking spend four retries per step. History, detail backfill, Pay and
+`sync_all` re-raise them; a sync that finds the portal unreachable stops early and says so.
 
 **A taken session is nobody's to swallow.** `SessionTakenError` subclasses
 `SessionExpiredError` so existing handlers keep working, and that is exactly how the 0.9

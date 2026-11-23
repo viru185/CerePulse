@@ -15,7 +15,7 @@ import pytest
 from cerepulse.auth.manager import IDLE_TIMEOUT_SECONDS, AuthManager, SessionState
 from cerepulse.core.config import AppConfig
 from cerepulse.core.errors import SessionExpiredError, SessionTakenError, TransportError
-from cerepulse.transport.client import HttpClient
+from cerepulse.transport.client import Continuity, HttpClient
 
 LOGIN_REDIRECT = httpx.Response(302, headers={"location": "/login.aspx"})
 
@@ -26,11 +26,10 @@ def auth() -> AuthManager:
     return AuthManager(HttpClient(config), config)
 
 
-def _active(auth: AuthManager, *, seconds_ago: float) -> None:
-    """Pretend the client last spoke to the portal that long ago."""
-    import time
-
-    auth._client._last_request_at = time.monotonic() - seconds_ago
+def _active(auth: AuthManager, *, seconds_ago: float, network_failed: bool = False) -> None:
+    """A live session whose latest answer came `seconds_ago` after the one before it."""
+    auth._state = SessionState.AUTHENTICATED
+    auth._client._continuity = Continuity(idle_seconds=seconds_ago, network_failed=network_failed)
 
 
 def test_a_session_that_dies_while_we_are_active_was_taken(auth: AuthManager) -> None:
@@ -97,6 +96,7 @@ def test_reclaiming_is_spent_after_one_use(auth: AuthManager) -> None:
 
     with pytest.raises(SessionExpiredError):
         auth.check_response(LOGIN_REDIRECT)
+    _active(auth, seconds_ago=30)  # signed back in, and in use again
     with pytest.raises(SessionTakenError):
         auth.check_response(LOGIN_REDIRECT)
 

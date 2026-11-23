@@ -24,6 +24,18 @@ class TransportError(CerePulseError):
     user_message = "Network unavailable. Showing cached data."
 
 
+class NetworkUnreachableError(TransportError):
+    """The portal could not be reached at all: no route, no DNS, connection refused.
+
+    Separate from a slow or failing *response* because it says something about every request
+    that follows, not just this one. A laptop waking up has no network for a few seconds, and
+    a sync that pressed on would spend four retries on each of its remaining steps finding
+    that out again.
+    """
+
+    user_message = "You appear to be offline. Showing cached data."
+
+
 class ServerUnavailableError(TransportError):
     """Portal returned 5xx after exhausting retries."""
 
@@ -59,6 +71,19 @@ class SessionTakenError(SessionExpiredError):
         "SpineHR is signed in somewhere else, so CerePulse has paused. "
         "The portal allows one session at a time."
     )
+
+
+#: Failures that say something about every request still to come, not just the one that
+#: failed. A loop that fetches item after item — days, months, pay documents — must stop on
+#: these rather than record them per item and carry on: a lost session means more requests
+#: against a session the app no longer holds (or, re-authenticating each time, an
+#: authentication storm), a rejected password stays rejected, and an offline laptop is
+#: offline for the next item too.
+ENDS_THE_RUN: tuple[type[CerePulseError], ...] = (
+    SessionExpiredError,
+    AuthenticationError,
+    NetworkUnreachableError,
+)
 
 
 # --- Protocol / parsing ------------------------------------------------------------

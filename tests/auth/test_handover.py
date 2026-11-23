@@ -174,10 +174,10 @@ def test_the_scrape_does_not_reset_the_eviction_clock(monkeypatch: pytest.Monkey
     )
 
     client = HttpClient(AppConfig())
-    assert client.seconds_since_last_request is None
+    assert client.continuity.idle_seconds is None
 
     prepared = handover.prepare(client, "someone", "secret")
     prepared.stop()
 
-    assert client.seconds_since_last_request is None, "the app's client never spoke"
+    assert client.continuity.idle_seconds is None, "the app's client never spoke"
     client.close()

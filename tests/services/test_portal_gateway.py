@@ -30,8 +30,11 @@ PRIVILEGE_PAGE = """
 </body></html>
 """
 
-PERIOD_PAGE = """
-<html><body><form id="form1">
+#: Every page a live session gets carries the portal's menu, whose links hold this token.
+MENU = '<a href="/Atten/MyAttendanceReport.aspx?mnusr=menu__10101">My Attendance</a>'
+
+PERIOD_PAGE = f"""
+<html><body>{MENU}<form id="form1">
   <input type="hidden" name="__VIEWSTATE" value="STATE" />
   <select name="ctl00$BodyContentPlaceHolder$drpFromMonth">
     <option value="01">January</option>
@@ -169,7 +172,7 @@ def _swipe_page(status: str, rows: str = "") -> str:
         else ""
     )
     return (
-        '<html><body><form id="form1">'
+        f'<html><body>{MENU}<form id="form1">'
         '<input type="hidden" name="__VIEWSTATE" value="STATE" />'
         f'<select name="ctl00$BodyContentPlaceHolder$cboReports" '
         f'id="ctl00_BodyContentPlaceHolder_cboReports">{options}</select>'
@@ -288,3 +291,87 @@ def test_missing_dropdowns_raise_rather_than_returning_nothing() -> None:
 
     with pytest.raises(ParserError, match="period dropdowns"):
         gateway().available_periods("<html><body>nothing here</body></html>")
+
+
+# --- what came back instead of the page ---------------------------------------------------
+#
+# After a laptop woke up the portal answered 200 with pages that were not the ones asked
+# for, and each parser reported its own missing table. The gateway now says what it was.
+
+
+def _response(
+    status: int,
+    text: str,
+    *,
+    url: str = "https://portal.example/Atten/x.aspx",
+    history: list[httpx.Response] | None = None,
+) -> httpx.Response:  # noqa: E501
+    request = httpx.Request("GET", url)
+    return httpx.Response(status, text=text, request=request, history=history or [])
+
+
+def test_a_page_without_the_menu_is_a_lost_session_not_a_missing_table() -> None:
+    from cerepulse.core.errors import SessionExpiredError
+
+    portal = gateway()
+    with pytest.raises(SessionExpiredError, match="without the portal's menu"):
+        portal._page(_response(200, "<html><title>Spine HR</title><body>Bye</body></html>"))
+
+
+def test_a_redirect_chain_through_the_login_page_is_a_lost_session() -> None:
+    from cerepulse.core.errors import SessionExpiredError
+
+    hop = httpx.Response(
+        302,
+        headers={"location": "/login.aspx?ReturnUrl=x"},
+        request=httpx.Request("GET", "https://portal.example/x"),
+    )
+    with pytest.raises(SessionExpiredError, match="login"):
+        gateway()._page(_response(200, f"<html>{MENU}</html>", history=[hop]))
+
+
+def test_a_server_error_is_reported_as_one_not_as_a_layout_change() -> None:
+    from cerepulse.core.errors import ParserError, ProtocolError, SessionExpiredError
+
+    with pytest.raises(ProtocolError, match="500") as raised:
+        gateway()._page(_response(500, "<html><title>Runtime Error</title></html>"))
+    assert not isinstance(raised.value, (ParserError, SessionExpiredError))
+
+
+def test_a_real_page_passes_through_untouched() -> None:
+    body = f"<html><title>Spine HR</title>{MENU}<table></table></html>"
+    assert gateway()._page(_response(200, body)) == body
+
+
+def test_a_day_detail_redirect_is_a_lost_session_not_an_empty_punch_log() -> None:
+    """The punch parser reads a missing grid as "no punches" — a real answer for a day off —
+    so a dead session's reply used to be saved as an empty log and the day marked settled."""
+    from cerepulse.core.errors import SessionExpiredError
+
+    target = "%2flogin.aspx%3fReturnUrl%3dx"
+    redirect = f"1|#||4|{len(target)}|pageRedirect||{target}|"
+    with pytest.raises(SessionExpiredError, match="redirected"):
+        gateway()._delta(_response(200, redirect))
+
+
+def test_a_day_detail_server_fault_is_a_protocol_error() -> None:
+    from cerepulse.core.errors import ProtocolError, SessionExpiredError
+
+    message = "Server fault"
+    fault = f"1|#||4|{len(message)}|error|500|{message}|"
+    with pytest.raises(ProtocolError) as raised:
+        gateway()._delta(_response(200, fault))
+    assert not isinstance(raised.value, SessionExpiredError)
+
+
+def test_a_day_detail_answered_with_neither_shape_is_a_lost_session() -> None:
+    from cerepulse.core.errors import SessionExpiredError
+
+    with pytest.raises(SessionExpiredError):
+        gateway()._delta(_response(200, "<html><title>Signed out</title></html>"))
+
+
+def test_an_ordinary_day_detail_delta_passes_through() -> None:
+    panel = "<table id='x'></table>"
+    delta = f"1|#||4|{len(panel)}|updatePanel|ctl00_up|{panel}|"
+    assert gateway()._delta(_response(200, delta)) == delta

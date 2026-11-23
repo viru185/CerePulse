@@ -181,10 +181,21 @@ class AuthManager:
 
         Erring towards "timed out" on the boundary is deliberate: treating an ordinary
         timeout as an eviction would pause the app for no reason, while the reverse merely
-        costs one silent sign-in.
+        costs one silent sign-in. So every doubt reads as a timeout:
+
+        - the session was not live to begin with (never signed in, already lost, or a
+          sign-in that failed) — there was nothing to take;
+        - the portal had not answered before, so there is no gap to measure;
+        - the network failed in between — the laptop slept, woke, or changed networks, and
+          whatever the portal did meanwhile is unknowable;
+        - the gap, sleep included, was long enough for the portal to time the session out.
         """
-        idle = self._client.seconds_since_last_request
-        return idle is not None and idle < IDLE_TIMEOUT_SECONDS
+        if self._state is not SessionState.AUTHENTICATED:
+            return False
+        continuity = self._client.continuity
+        if continuity.network_failed or continuity.idle_seconds is None:
+            return False
+        return continuity.idle_seconds < IDLE_TIMEOUT_SECONDS
 
     def validate_session(self) -> bool:
         """Cheap liveness check, run before critical workflows rather than every action."""
@@ -204,8 +215,8 @@ class AuthManager:
         """Authorise exactly one sign-in over the top of whatever holds the session.
 
         The truce is right by default and wrong the moment the user asks for the session
-        back. :meth:`looks_evicted` decides by measuring how long since the app's own last
-        request — but while paused the app makes no requests at all, so that clock ends up
+        back. :meth:`looks_evicted` decides by measuring how long since the portal last
+        answered — but while paused the app makes no requests at all, so that clock ends up
         timing the user's trip to the browser rather than anything about the session. Come
         back inside :data:`IDLE_TIMEOUT_SECONDS` and the deliberate refusal to re-authenticate
         fires again, the app pauses a second time, and Refresh looks broken. Take longer and
@@ -225,12 +236,17 @@ class AuthManager:
         (``raise auth.session_lost(...) from exc``). Callers outside :meth:`check_response`
         exist because the portal has more than one way of saying "you are signed out", and
         only some of them look like the login page.
+
+        Judged *before* the state changes: once one request has found the session gone, the
+        next few find the same thing moments later, and those must not read as a second,
+        fresh eviction — the Pay screen's three requests did exactly that.
         """
+        evicted = self.looks_evicted()
         self._transition(SessionState.EXPIRED)
         if self._reclaiming:
             self._reclaiming = False
             return SessionExpiredError(f"{detail}; signing back in at the user's request")
-        if self.looks_evicted():
+        if evicted:
             return SessionTakenError(
                 f"{detail}; the session ended while the app was still using it, "
                 "so SpineHR is signed in somewhere else"
@@ -260,9 +276,10 @@ class AuthManager:
         if self.credential_provider is None:
             raise SessionExpiredError("Session expired and no credentials are available")
 
+        # Credentials first: a missing password should fail without discarding anything.
+        username, password = self.credential_provider()
         self._transition(SessionState.REFRESHING)
         self._client.clear_cookies()
-        username, password = self.credential_provider()
         self.login(username, password)
 
     def logout(self) -> None:

@@ -14,7 +14,7 @@ from datetime import date, datetime
 from loguru import logger
 
 from cerepulse.core.config import AppConfig
-from cerepulse.core.errors import CerePulseError
+from cerepulse.core.errors import ENDS_THE_RUN, CerePulseError
 from cerepulse.models.pay import (
     CtcLine,
     CtcStatement,
@@ -98,6 +98,8 @@ class PayService:
             self._repo.save(
                 employee_code, KIND_CTC, "", asdict(self._gateway.fetch_ctc()), synced_at=stamp
             )
+        except ENDS_THE_RUN:
+            raise
         except CerePulseError as exc:
             failures.append(f"CTC: {exc}")
         try:
@@ -108,11 +110,15 @@ class PayService:
                 asdict(self._gateway.fetch_monthly_pay()),
                 synced_at=stamp,
             )
+        except ENDS_THE_RUN:
+            raise
         except CerePulseError as exc:
             failures.append(f"monthly report: {exc}")
 
         try:
             periods = self._gateway.fetch_payslip_periods()
+        except ENDS_THE_RUN:
+            raise
         except CerePulseError as exc:
             periods = []
             failures.append(f"payslips: {exc}")
@@ -125,6 +131,8 @@ class PayService:
         for period in wanted:
             try:
                 slip = self._gateway.fetch_payslip(period)
+            except ENDS_THE_RUN:
+                raise
             except CerePulseError as exc:
                 failures.append(f"payslip {period}: {exc}")
                 continue

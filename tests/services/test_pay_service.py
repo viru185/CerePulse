@@ -128,3 +128,22 @@ def test_forget_empties_the_cache(service: tuple[PayService, FakePayGateway]) ->
     pay.refresh(EMPLOYEE)
     pay.forget(EMPLOYEE)
     assert pay.load(EMPLOYEE).is_empty
+
+
+def test_a_lost_session_reaches_the_caller_instead_of_three_warnings(
+    service: tuple[PayService, FakePayGateway], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each of the three documents used to swallow it, so `SyncCoordinator.run` never saw an
+    expired session to recover from, and a taken one never reached the truce."""
+    from cerepulse.core.errors import SessionExpiredError
+
+    pay, gateway = service
+
+    def gone() -> CtcStatement:
+        gateway.fetched.append("ctc")
+        raise SessionExpiredError("The portal redirected to the login page")
+
+    monkeypatch.setattr(gateway, "fetch_ctc", gone)
+    with pytest.raises(SessionExpiredError):
+        pay.refresh(EMPLOYEE)
+    assert gateway.fetched == ["ctc"], "nothing after the first refusal"

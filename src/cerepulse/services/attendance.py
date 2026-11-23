@@ -19,7 +19,7 @@ from datetime import date, datetime, time, timedelta
 from loguru import logger
 
 from cerepulse.core.config import AppConfig
-from cerepulse.core.errors import CerePulseError, TransportError
+from cerepulse.core.errors import ENDS_THE_RUN, CerePulseError, TransportError
 from cerepulse.intelligence.anomalies import Anomaly, detect_anomalies
 from cerepulse.intelligence.attention import Attention, find_attention, swipe_index
 from cerepulse.intelligence.day import DayAnalysis, analyze_day
@@ -199,18 +199,22 @@ class AttendanceService:
         *,
         force_refresh: bool = False,
         today: date | None = None,
+        fetch: bool = True,
     ) -> MonthView:
         """Return a month, refreshing from the portal only when stale or forced.
 
         A transport failure after a cached copy exists is not an error: the cached month is
         returned and the caller can tell it is stale from ``last_synced``.
+
+        ``fetch=False`` reads the cache and nothing else, stale or not: for painting before
+        sign-in, and while the session is someone else's.
         """
         scope = attendance_scope(year, month)
         stale = self._sync_meta.is_stale(scope, max_age_minutes=self._config.sync.cache_ttl_minutes)
         cached = self._attendance.find_month(employee_code, year, month)
 
         from_cache = True
-        if force_refresh or stale or cached is None:
+        if fetch and (force_refresh or stale or cached is None):
             try:
                 self.refresh_month(employee_code, year, month)
                 cached = self._attendance.find_month(employee_code, year, month)
@@ -228,7 +232,12 @@ class AttendanceService:
         return replace(view, known_months=frozenset(known))
 
     def load_day(
-        self, employee_code: str, day: date, *, now: datetime | None = None
+        self,
+        employee_code: str,
+        day: date,
+        *,
+        now: datetime | None = None,
+        fetch: bool = True,
     ) -> DayAnalysis:
         """Analyze one day, fetching its punch log when the cache cannot be trusted.
 
@@ -250,7 +259,7 @@ class AttendanceService:
             due = fetched is None or moment - fetched > TODAY_DETAIL_FLOOR
         else:
             due = not self._attendance.detail_is_settled(employee_code, day)
-        if cached is None or due:
+        if fetch and (cached is None or due):
             self.refresh_day_detail(employee_code, day, fetched_at=moment)
             cached = self._attendance.find_day(employee_code, day)
 
@@ -533,7 +542,9 @@ class AttendanceService:
 
         ``on_progress`` receives ``(done, total, period)`` and returns False to stop, which
         is how the UI offers a cancel. One month failing does not abandon the rest: a gap
-        in the middle of the year should not cost the user everything after it.
+        in the middle of the year should not cost the user everything after it — but a lost
+        session, a rejected password or a missing network is every remaining month's answer
+        too, and those end the run (:data:`ENDS_THE_RUN`).
         """
         plan = self.history_plan(employee_code, months=months, today=today, include_cached=force)
         report = HistoryReport(planned=len(plan))
@@ -546,6 +557,8 @@ class AttendanceService:
             try:
                 self.refresh_month(employee_code, year, month)
                 report.fetched += 1
+            except ENDS_THE_RUN:
+                raise
             except CerePulseError as exc:
                 logger.warning("Could not fetch {:04d}-{:02d}: {}", year, month, exc)
                 report.failures.append(f"{year:04d}-{month:02d}: {exc}")
@@ -631,6 +644,17 @@ class AttendanceService:
         *,
         batch_size: int = DEFAULT_DETAIL_BATCH,
     ) -> int:
+        return len(self._backfill_days(employee_code, year, month, batch_size=batch_size))
+
+    def _backfill_days(
+        self,
+        employee_code: str,
+        year: int,
+        month: int,
+        *,
+        batch_size: int = DEFAULT_DETAIL_BATCH,
+        skip: frozenset[date] = frozenset(),
+    ) -> list[date]:
         """Fetch detail for up to ``batch_size`` days still missing it, newest first.
 
         Returns how many days were fetched. Bounded on purpose: a fresh month needs roughly
@@ -641,9 +665,13 @@ class AttendanceService:
         it at the head of the batch — so the day anyone is actually looking at is the one that
         gets refreshed first, even when a month of history is still filling in behind it.
         """
-        pending = self._attendance.days_missing_detail(employee_code, year, month)
+        pending = [
+            day
+            for day in self._attendance.days_missing_detail(employee_code, year, month)
+            if day not in skip
+        ]
         if not pending:
-            return 0
+            return []
 
         batch = sorted(pending, reverse=True)[:batch_size]
         # One grid for the whole batch, and the same page reused for every postback in it.
@@ -652,21 +680,23 @@ class AttendanceService:
         _month, parsed, page = self._gateway.fetch_month_page(year, month)
         by_date = {item.day.day: item for item in parsed}
 
-        fetched = 0
+        fetched: list[date] = []
         for day in batch:
             target = by_date.get(day)
             if target is None:
                 continue
             try:
                 punches = self._gateway.fetch_day_detail(target, page=page)
+            except ENDS_THE_RUN:
+                raise
             except CerePulseError as exc:
                 # One bad day must not abandon the batch; it stays in the backlog.
                 logger.warning("Could not fetch detail for {}: {}", day, exc)
                 continue
             self._attendance.save_day_detail(employee_code, day, punches)
-            fetched += 1
+            fetched.append(day)
 
-        logger.info("Backfilled detail for {} of {} pending days", fetched, len(pending))
+        logger.info("Backfilled detail for {} of {} pending days", len(fetched), len(pending))
         return fetched
 
     def drain_detail(
@@ -690,16 +720,19 @@ class AttendanceService:
         if not total:
             return 0
 
-        fetched = 0
+        # Each day once per drain. Today is always "missing" detail while it is still today
+        # — that is what keeps it fresh — so without this the drain fetched today again in
+        # every batch and never ended on the current month.
+        done: set[date] = set()
         while True:
-            batch = self.backfill_detail(employee_code, year, month)
+            batch = self._backfill_days(employee_code, year, month, skip=frozenset(done))
             if not batch:
                 break
-            fetched += batch
-            if on_progress is not None and not on_progress(fetched, total):
-                logger.info("Detail drain cancelled after {} of {} days", fetched, total)
+            done.update(batch)
+            if on_progress is not None and not on_progress(len(done), total):
+                logger.info("Detail drain cancelled after {} of {} days", len(done), total)
                 break
-        return fetched
+        return len(done)
 
     # --- assembly -------------------------------------------------------------------
 

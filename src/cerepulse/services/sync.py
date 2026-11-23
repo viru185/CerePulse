@@ -21,7 +21,9 @@ from loguru import logger
 
 from cerepulse.auth.manager import AuthManager
 from cerepulse.core.errors import (
+    AuthenticationError,
     CerePulseError,
+    NetworkUnreachableError,
     SessionExpiredError,
     SessionTakenError,
     TransportError,
@@ -52,6 +54,8 @@ class SyncReport:
     #: Whether cache TTLs were bypassed. Reported so the UI can say "fetched" rather than
     #: "checked" when the user explicitly asked for fresh data.
     forced: bool = False
+    #: The portal could not be reached at all, so the run stopped early.
+    offline: bool = False
     failures: list[str] = field(default_factory=list)
 
     @property
@@ -143,35 +147,16 @@ class SyncCoordinator:
         period_month = month or now.month
         report = SyncReport(started_at=datetime.now())
         state_before = self._auth.state
-
-        report.holidays_refreshed = self._step(
-            report, "holidays", lambda: self._leave.load_holidays(force_refresh=force)
-        )
-        report.month_refreshed = self._step(
-            report,
-            "attendance",
-            lambda: self._attendance.refresh_month(employee_code, period_year, period_month),
-        )
-        report.swipes_refreshed = self._step(
-            report,
-            "swipe requests",
-            lambda: self._leave.refresh_swipe_requests(employee_code),
-        )
-        report.leave_refreshed = self._step(
-            report, "leave", lambda: self._leave.refresh_leave(employee_code)
-        )
-        report.applications_refreshed = self._step(
-            report, "applications", lambda: self._leave.refresh_applications(employee_code)
-        )
         report.forced = force
 
-        if backfill and report.month_refreshed:
-            fetched = self._step_value(
-                report,
-                "day detail",
-                lambda: self._attendance.backfill_detail(employee_code, period_year, period_month),
-            )
-            report.detail_days_fetched = fetched or 0
+        try:
+            self._sync_steps(report, employee_code, period_year, period_month, force, backfill)
+        except NetworkUnreachableError as exc:
+            # One unreachable portal is every step's answer. Pressing on cost four retries
+            # per remaining step on each wake from sleep, and filled the log with them.
+            logger.warning("The portal is unreachable; the rest of this sync is skipped: {}", exc)
+            report.failures.append(f"network: {exc}")
+            report.offline = True
 
         # Last, and never allowed to fail the sync: the cache otherwise grows for the life
         # of the install, and the far end of it holds months no screen can even reach —
@@ -191,6 +176,42 @@ class SyncCoordinator:
             len(report.failures),
         )
         return report
+
+    def _sync_steps(
+        self,
+        report: SyncReport,
+        employee_code: str,
+        year: int,
+        month: int,
+        force: bool,
+        backfill: bool,
+    ) -> None:
+        report.holidays_refreshed = self._step(
+            report, "holidays", lambda: self._leave.load_holidays(force_refresh=force)
+        )
+        report.month_refreshed = self._step(
+            report,
+            "attendance",
+            lambda: self._attendance.refresh_month(employee_code, year, month),
+        )
+        report.swipes_refreshed = self._step(
+            report,
+            "swipe requests",
+            lambda: self._leave.refresh_swipe_requests(employee_code),
+        )
+        report.leave_refreshed = self._step(
+            report, "leave", lambda: self._leave.refresh_leave(employee_code)
+        )
+        report.applications_refreshed = self._step(
+            report, "applications", lambda: self._leave.refresh_applications(employee_code)
+        )
+        if backfill and report.month_refreshed:
+            fetched = self._step_value(
+                report,
+                "day detail",
+                lambda: self._attendance.backfill_detail(employee_code, year, month),
+            )
+            report.detail_days_fetched = fetched or 0
 
     def sync_scope(
         self,
@@ -261,10 +282,15 @@ class SyncCoordinator:
         that way in 0.9 precisely because :class:`SessionTakenError` subclasses
         :class:`SessionExpiredError` to keep older handlers working, and this handler was
         older than the truce.
+
+        Two more end the run rather than being recorded against one step. A password the
+        portal rejected stays rejected, and each later step would sign in again and be
+        refused again — the authentication storm the replay rule exists to prevent. And an
+        unreachable portal is every remaining step's answer too.
         """
         try:
             return self.run(operation)
-        except SessionTakenError:
+        except (SessionTakenError, AuthenticationError, NetworkUnreachableError):
             raise
         except (TransportError, SessionExpiredError) as exc:
             logger.warning("Sync step {!r} failed: {}", name, exc)

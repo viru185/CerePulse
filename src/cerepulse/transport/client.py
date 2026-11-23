@@ -9,6 +9,7 @@ re-rendering the login page, and letting httpx follow it would erase that signal
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from types import TracebackType
 from typing import Any, Self
 from urllib.parse import urljoin
@@ -17,10 +18,23 @@ import httpx
 from loguru import logger
 
 from cerepulse.core.config import AppConfig
-from cerepulse.core.errors import ServerUnavailableError, TransportError
+from cerepulse.core.errors import NetworkUnreachableError, ServerUnavailableError, TransportError
 
 #: Status codes worth retrying. Auth and client errors are never retried (section 8).
 RETRYABLE_STATUS = frozenset({502, 503, 504})
+
+
+@dataclass(frozen=True, slots=True)
+class Continuity:
+    """What happened between the portal's last two answers."""
+
+    #: Seconds between them, counting any time asleep. ``None`` for the first answer.
+    idle_seconds: float | None
+    #: Whether a request failed at the network level in between: the laptop was offline,
+    #: asleep, or between networks. Nothing the portal said after that can be read as
+    #: evidence of who else was using the session.
+    network_failed: bool
+
 
 #: How long an idle connection is kept for reuse. Longer than any pause between two things
 #: a person does, which is the point: the default of five seconds meant every interaction
@@ -40,8 +54,12 @@ class HttpClient:
         self.config = config
         network = config.network
         self.base_url = config.portal.base_url.rstrip("/")
-        #: Monotonic stamp of the last request, for telling an idle timeout from an eviction.
-        self._last_request_at: float | None = None
+        #: When the portal last *answered*, on both clocks. See :attr:`continuity`.
+        self._answered_at: tuple[float, float] | None = None
+        #: Whether a request has failed at the network level since that answer.
+        self._unreachable_since_answer = False
+        #: What was true just before the most recent answer arrived.
+        self._continuity = Continuity(idle_seconds=None, network_failed=False)
 
         self._client = httpx.Client(
             timeout=httpx.Timeout(
@@ -91,17 +109,36 @@ class HttpClient:
     # --- activity -------------------------------------------------------------------
 
     @property
-    def seconds_since_last_request(self) -> float | None:
-        """How long since this client last spoke to the portal. ``None`` before the first.
+    def continuity(self) -> Continuity:
+        """How the most recent answer followed the one before it.
 
         The portal ends a session after twenty minutes of inactivity, so this is what
         separates "our session timed out, as expected" from "our session was taken while we
         were still using it". The two look identical over HTTP — both are a redirect to the
         login page — and they call for opposite responses.
+
+        It is measured between *answers*, not attempts. The clock used to be stamped before
+        each attempt was sent, failed ones included, so it always read the current request's
+        own few milliseconds: every login redirect looked like an eviction. After a laptop
+        woke up, a handful of ``getaddrinfo`` failures were enough to make a session that had
+        been idle for six hours read as stolen a moment ago, and the app paused itself until
+        it was restarted.
         """
-        if self._last_request_at is None:
-            return None
-        return time.monotonic() - self._last_request_at
+        return self._continuity
+
+    def _answered(self) -> None:
+        """Record an answer, and what preceded it, for :attr:`continuity`."""
+        now = (time.monotonic(), time.time())
+        idle = None
+        if self._answered_at is not None:
+            # The larger of the two: the monotonic clock is immune to the wall clock being
+            # reset, and the wall clock is certain to include time spent asleep.
+            idle = max(now[0] - self._answered_at[0], now[1] - self._answered_at[1])
+        self._continuity = Continuity(
+            idle_seconds=idle, network_failed=self._unreachable_since_answer
+        )
+        self._answered_at = now
+        self._unreachable_since_answer = False
 
     # --- cookies --------------------------------------------------------------------
 
@@ -137,11 +174,11 @@ class HttpClient:
 
         for attempt in range(attempts):
             started = time.monotonic()
-            self._last_request_at = started
             try:
                 response = self._client.request(method, url, **kwargs)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc
+                self._unreachable_since_answer = True
                 elapsed_ms = (time.monotonic() - started) * 1000
                 logger.warning(
                     "{} {} failed after {:.0f}ms (attempt {}/{}): {}",
@@ -153,9 +190,15 @@ class HttpClient:
                     type(exc).__name__,
                 )
                 if not self._sleep_before_retry(attempt, attempts):
-                    raise TransportError(f"{method} {url} failed: {exc}") from exc
+                    error = (
+                        NetworkUnreachableError
+                        if isinstance(exc, httpx.ConnectError)
+                        else TransportError
+                    )
+                    raise error(f"{method} {url} failed: {exc}") from exc
                 continue
 
+            self._answered()
             elapsed_ms = (time.monotonic() - started) * 1000
             logger.debug(
                 "{} {} -> {} in {:.0f}ms (attempt {}/{})",
