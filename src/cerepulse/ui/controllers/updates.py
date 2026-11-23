@@ -247,12 +247,23 @@ class UpdateController(QObject):
             mode=self._mode,
             parent=self._window,
         )
-        self.download_progress.connect(dialog.set_progress)
-        self.update_staging.connect(dialog.set_staging)
-        self.update_ready.connect(dialog.set_ready)
+        # Undone when the dialog closes: left connected, every later offer added another set,
+        # and each download went on updating dialogs nobody could see any more.
+        links = (
+            (self.download_progress, dialog.set_progress),
+            (self.update_staging, dialog.set_staging),
+            (self.update_ready, dialog.set_ready),
+        )
+        for signal, slot in links:
+            signal.connect(slot)
         dialog.install_requested.connect(self.install)
         dialog.download_requested.connect(lambda: self.download(target))
-        dialog.exec()
+        try:
+            dialog.exec()
+        finally:
+            for signal, slot in links:
+                signal.disconnect(slot)
+            dialog.deleteLater()
 
     def install(self) -> None:
         """Quit and hand over to the installer.

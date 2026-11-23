@@ -11,6 +11,7 @@ is worse than a slow one.
 
 from __future__ import annotations
 
+import os
 import platform
 import sys
 from dataclasses import dataclass
@@ -75,7 +76,7 @@ def collect(*, channel: str = "stable") -> Diagnostics:
         mode="Portable" if paths.is_portable() else "Installed",
         python=platform.python_version(),
         qt=_qt_version(),
-        windows=f"{platform.system()} {platform.release()} ({platform.machine()})",
+        windows=_operating_system(),
         schema=SCHEMA_VERSION,
         database_bytes=_file_size(database),
         cache_bytes=directory_size(database.parent),
@@ -85,6 +86,28 @@ def collect(*, channel: str = "stable") -> Diagnostics:
         last_checked=last_checked(),
         last_handoff=handoff_log(downloads_dir()),
     )
+
+
+def _operating_system() -> str:
+    """ "Windows 11 (build 26300, AMD64)", without starting a process to find out.
+
+    ``platform.system``, ``release`` and ``machine`` go through ``platform.uname``, which on
+    Windows asks WMI and, when that is unavailable, falls back to running ``ver`` in a
+    shell — a console window in a windowed app. About collects this at every launch and on
+    every Settings save, so it was one of the candidates for the windows users saw open and
+    close. ``sys.getwindowsversion`` and the environment hold the same facts.
+    """
+    if sys.platform != "win32":
+        return f"{sys.platform} ({os.environ.get('PROCESSOR_ARCHITECTURE', 'unknown')})"
+    version = sys.getwindowsversion()
+    # Windows 11 still reports major version 10; the build number is what tells them apart.
+    name = (
+        "Windows 11"
+        if version.major == 10 and version.build >= 22000
+        else (f"Windows {version.major}")
+    )
+    machine = os.environ.get("PROCESSOR_ARCHITECTURE", "unknown")
+    return f"{name} (build {version.build}, {machine})"
 
 
 def handoff_log(updates: Path, *, lines: int = 8) -> str:

@@ -356,3 +356,88 @@ def test_one_kind_can_say_more_than_one_thing_in_a_day(policy: NotificationPolic
 
     # Still once each, which is what the rule was actually for.
     assert not any(policy.should_notify(alert, now=MIDDAY) for alert in expiring)
+
+
+# --- the same notification, however its wording moves on --------------------------------
+
+
+def _titled(kind: InsightKind, title: str) -> Insight:
+    return Insight(kind, Severity.INFO, title, "detail")
+
+
+def test_a_reminder_whose_title_counts_up_is_still_one_reminder(policy: NotificationPolicy) -> None:
+    """ "4h 12m in, no break yet" became "4h 13m in…" a minute later — a new title, a new
+    key, and the same reminder again on every refresh."""
+    policy.record_sent(_titled(InsightKind.NO_BREAK_YET, "4h 12m in, no break yet"), now=MIDDAY)
+    later = _titled(InsightKind.NO_BREAK_YET, "4h 51m in, no break yet")
+    assert policy.verdict(later, now=MIDDAY) is Verdict.ALREADY_SENT
+
+
+def test_a_count_changing_does_not_make_a_new_expiry_notice(policy: NotificationPolicy) -> None:
+    policy.record_sent(
+        _titled(InsightKind.LEAVE_EXPIRING, "4 days of comp-off expire on 05 Jan"), now=MIDDAY
+    )
+    fewer = _titled(InsightKind.LEAVE_EXPIRING, "3 days of comp-off expire on 05 Jan")
+    assert policy.verdict(fewer, now=MIDDAY) is Verdict.ALREADY_SENT
+
+
+def test_two_different_leave_types_are_still_two_notices(policy: NotificationPolicy) -> None:
+    policy.record_sent(
+        _titled(InsightKind.LEAVE_EXPIRING, "2.5 days of CF expire on 31 Dec"), now=MIDDAY
+    )
+    other = _titled(InsightKind.LEAVE_EXPIRING, "4 days of comp-off expire on 05 Jan")
+    assert policy.verdict(other, now=MIDDAY) is Verdict.SEND
+
+
+def test_what_was_sent_today_survives_a_restart() -> None:
+    """In memory only, every launch re-sent the day's notifications from the top."""
+    alert = insight(InsightKind.SWIPE_NEEDED)
+    NotificationPolicy(NotificationConfig(), persist=True).record_sent(alert, now=MIDDAY)
+
+    restarted = NotificationPolicy(NotificationConfig(), persist=True)
+    assert restarted.verdict(alert, now=MIDDAY) is Verdict.ALREADY_SENT
+
+
+def test_yesterdays_record_does_not_silence_today() -> None:
+    from datetime import timedelta
+
+    alert = insight(InsightKind.SWIPE_NEEDED)
+    NotificationPolicy(NotificationConfig(), persist=True).record_sent(alert, now=MIDDAY)
+
+    tomorrow = NotificationPolicy(NotificationConfig(), persist=True)
+    assert tomorrow.verdict(alert, now=MIDDAY + timedelta(days=1)) is Verdict.SEND
+
+
+def test_saving_settings_does_not_resend_the_day(toasting_tray: Tray) -> None:
+    """update_config used to forget what had been sent, and saving Settings reloads the day,
+    so every save replayed every notification of the day."""
+    alert = insight(InsightKind.SWIPE_NEEDED)
+    assert toasting_tray.notify_insights([alert], now=MIDDAY) == 1
+
+    toasting_tray.update_config(NotificationConfig())
+
+    assert toasting_tray.notify_insights([alert], now=MIDDAY) == 0
+
+
+def test_a_burst_goes_out_as_one_notification(toasting_tray: Tray) -> None:
+    """Windows replaces one toast with the next, so a run of them reads as popups opening
+    and closing too fast to read."""
+    due = [
+        insight(InsightKind.SWIPE_NEEDED),
+        insight(InsightKind.LONG_BREAK),
+        insight(InsightKind.LEAVE_EXPIRING),
+    ]
+    assert toasting_tray.notify_insights(due, now=MIDDAY) == 3
+
+    sent = toasting_tray._toasts.sent  # type: ignore[attr-defined]
+    assert len(sent) == 1
+    title, body = sent[0]
+    assert title == "3 things today"
+    assert body.count("•") == 3
+    assert toasting_tray.notify_insights(due, now=MIDDAY) == 0, "each is recorded as sent"
+
+
+def test_two_at_once_are_still_sent_separately(toasting_tray: Tray) -> None:
+    due = [insight(InsightKind.SWIPE_NEEDED), insight(InsightKind.LONG_BREAK)]
+    assert toasting_tray.notify_insights(due, now=MIDDAY) == 2
+    assert len(toasting_tray._toasts.sent) == 2  # type: ignore[attr-defined]

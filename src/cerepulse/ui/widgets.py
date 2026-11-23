@@ -231,7 +231,9 @@ class Card(QFrame):
         if accent:
             self._value.setStyleSheet(f"color: {accent};")
 
-        self._caption = QLabel(caption)
+        # Parented now, not when the layout adopts it: shown while parentless, a label is a
+        # top-level window for that moment, and five of them flashed open at every launch.
+        self._caption = QLabel(caption, self)
         self._caption.setObjectName("CardCaption")
         self._caption.setWordWrap(True)
         self._caption.setVisible(bool(caption))
@@ -1892,7 +1894,7 @@ class EmptyState(QWidget):
 
         self._headline = QLabel(headline)
         self._headline.setStyleSheet("font-weight: 600;")
-        self._detail = QLabel(detail)
+        self._detail = QLabel(detail, self)  # parented first; see Card
         self._detail.setObjectName("CardCaption")
         self._detail.setWordWrap(True)
         self._detail.setVisible(bool(detail))

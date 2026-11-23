@@ -25,6 +25,9 @@ from cerepulse.ui import formatting as fmt
 #: How often the countdown in the tooltip is recomputed.
 TICK_MS = 30_000
 
+#: More due at once than this go out as one notification. See :meth:`Tray.notify_insights`.
+BURST = 2
+
 _ICONS = {
     Severity.SUCCESS: QSystemTrayIcon.MessageIcon.Information,
     Severity.INFO: QSystemTrayIcon.MessageIcon.Information,
@@ -47,7 +50,7 @@ class Tray(QObject):
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
-        self.policy = NotificationPolicy(config)
+        self.policy = NotificationPolicy(config, persist=True)
         self._analysis: DayAnalysis | None = None
         #: Built once — creating it resolves COM interfaces. Falls back to the tray balloon
         #: on any machine where the WinRT bindings are not usable.
@@ -153,16 +156,37 @@ class Tray(QObject):
         still consumed its once-a-day slot, so one failure silenced that kind until
         midnight and the count returned here was a lie.
         """
+        due = [insight for insight in insights if self.policy.should_notify(insight, now=now)]
+        if len(due) > BURST:
+            # Windows shows toasts one after another, each replacing the last — a run of
+            # them reads as popups opening and closing too fast to read. One that lists them
+            # all can be read.
+            if self.notify_many(due):
+                for insight in due:
+                    self.policy.record_sent(insight, now=now)
+                return len(due)
+            return 0
         shown = 0
-        for insight in insights:
-            if not self.policy.should_notify(insight, now=now):
-                continue
+        for insight in due:
             if self.notify(insight):
                 self.policy.record_sent(insight, now=now)
                 shown += 1
         return shown
 
-    def notify(self, insight: Insight) -> bool:
+    def notify_many(self, insights: list[Insight]) -> bool:
+        """One notification standing for several."""
+        urgent = any(insight.severity is Severity.CRITICAL for insight in insights)
+        title = f"{'Action needed — ' if urgent else ''}{len(insights)} things today"
+        body = "\n".join(f"• {insight.title}" for insight in insights)
+        summary = Insight(
+            kind=insights[0].kind,
+            severity=Severity.CRITICAL if urgent else insights[0].severity,
+            title=title,
+            detail=body,
+        )
+        return self.notify(summary, already_titled=True)
+
+    def notify(self, insight: Insight, *, already_titled: bool = False) -> bool:
         """Show one notification, bypassing the policy. Returns whether it was delivered.
 
         Callers need the answer: an update notice that was silently dropped should fall
@@ -173,7 +197,7 @@ class Tray(QObject):
         thirty seconds was gone with nothing in the Action Center to go back to. The balloon
         remains the fallback for any machine where the toast layer will not load.
         """
-        title = notification_title(insight)
+        title = insight.title if already_titled else notification_title(insight)
         body = insight.detail or insight.title
 
         if self._toasts.send(title, body):
@@ -259,6 +283,9 @@ class Tray(QObject):
         )
 
     def update_config(self, config: NotificationConfig) -> None:
-        """Adopt changed settings and forget what was already sent."""
+        """Adopt changed settings, and remember what was already sent.
+
+        It used to forget, and saving Settings then reloads the day — so every save re-sent
+        every notification of the day, one after another.
+        """
         self.policy.config = config
-        self.policy.reset()

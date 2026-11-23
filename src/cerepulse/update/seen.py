@@ -10,18 +10,15 @@ broken state file must never stop the app opening.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from loguru import logger
-
 from cerepulse import __about__ as about
-from cerepulse.core import paths
+from cerepulse.core import app_state
 from cerepulse.update.version import is_newer
 
-FILENAME = "state.json"
+FILENAME = app_state.FILENAME
 KEY = "last_seen_version"
 LAST_CHECK_KEY = "last_update_check"
 HISTORY_KEY = "update_history"
@@ -46,28 +43,15 @@ class UpdateEvent:
 
 
 def state_file() -> Path:
-    return paths.data_root() / FILENAME
+    return app_state.state_file()
 
 
 def _read() -> dict[str, object]:
-    target = state_file()
-    if not target.exists():
-        return {}
-    try:
-        data = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        logger.debug("Could not read {}: {}", target, exc)
-        return {}
-    return data if isinstance(data, dict) else {}
+    return app_state.read()
 
 
 def _write(data: dict[str, object]) -> None:
-    target = state_file()
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    except OSError as exc:
-        logger.warning("Could not write update state: {}", exc)
+    app_state.write(data)
 
 
 # --- release notes -----------------------------------------------------------------------

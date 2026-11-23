@@ -14,12 +14,14 @@ without a tray, a clock, or a desktop.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from enum import Enum
 
 from loguru import logger
 
+from cerepulse.core import app_state
 from cerepulse.core.config import NotificationConfig
 from cerepulse.intelligence.insights import Insight, InsightKind, Severity
 
@@ -42,6 +44,18 @@ TOGGLES: dict[InsightKind, str] = {
     InsightKind.LEAVE_UNUSED: "leave_reminder",
 }
 
+#: Kinds that say one thing about the day, however their wording changes as it goes on.
+#: Their titles carry live numbers — "4h 12m in, no break yet", "Break ran 13m over" — and
+#: with the title in the once-a-day key, each new minute made a new key: the same reminder
+#: fired again on every refresh, screen change and Settings save.
+ONCE_A_DAY = {
+    InsightKind.ON_TRACK,
+    InsightKind.EARLY_EXIT,
+    InsightKind.SWIPE_NEEDED,
+    InsightKind.LONG_BREAK,
+    InsightKind.NO_BREAK_YET,
+}
+
 #: Kinds that never notify — informational only, shown in the window.
 SILENT = {
     InsightKind.STILL_WORKING,
@@ -59,6 +73,10 @@ SILENT = {
     # once-a-day rule. Listed so routing it through here is a no-op rather than a surprise.
     InsightKind.UPDATE_AVAILABLE,
 }
+
+
+#: Where today's record of sent notifications lives in ``state.json``.
+SENT_KEY = "notifications_sent"
 
 
 class Verdict(Enum):
@@ -86,13 +104,17 @@ class NotificationPolicy:
     """Decides whether an insight should be shown, and remembers what already was."""
 
     config: NotificationConfig
-    #: (kind, title, day) triples already notified. Cleared when the day rolls over.
+    #: Keep today's record in ``state.json``, so a restart does not show it all again.
+    #: Off by default, so tests and the self-test leave no file behind.
+    persist: bool = False
+    #: (kind, subject, day) triples already notified. Cleared when the day rolls over.
     #:
     #: The title is in the key because several kinds legitimately produce more than one
     #: insight a day about different things. Keyed on the kind alone, three leave types all
     #: expiring meant exactly one of them was ever mentioned and the other two were silently
     #: swallowed as duplicates — the opposite of what a once-a-day rule is for.
     _sent: set[tuple[InsightKind, str, date]] = field(default_factory=set)
+    _loaded_for: date | None = None
 
     def should_notify(self, insight: Insight, *, now: datetime | None = None) -> bool:
         """True when this insight warrants a toast right now.
@@ -121,6 +143,7 @@ class NotificationPolicy:
         if self.in_quiet_hours(moment):
             return Verdict.QUIET_HOURS
 
+        self._load(moment.date())
         if _key(insight, moment.date()) in self._sent:
             return Verdict.ALREADY_SENT
         return Verdict.SEND
@@ -128,8 +151,14 @@ class NotificationPolicy:
     def record_sent(self, insight: Insight, *, now: datetime | None = None) -> None:
         """Remember a toast that was genuinely delivered, so it is not repeated today."""
         moment = now or datetime.now()
+        self._load(moment.date())
         self._sent.add(_key(insight, moment.date()))
         self._forget_older_than(moment.date())
+        if self.persist:
+            app_state.put(
+                SENT_KEY,
+                [[kind.value, subject, day.isoformat()] for kind, subject, day in self._sent],
+            )
 
     def in_quiet_hours(self, moment: datetime) -> bool:
         """Whether ``moment`` falls inside the configured quiet window.
@@ -148,8 +177,28 @@ class NotificationPolicy:
         return current >= start or current < end
 
     def reset(self) -> None:
-        """Forget what has been sent. Used when settings change or the user signs out."""
+        """Forget what has been sent. For signing out, not for a Settings save."""
         self._sent.clear()
+        if self.persist:
+            app_state.put(SENT_KEY, [])
+
+    def _load(self, today: date) -> None:
+        """Read today's record once per day, from the file when persisting."""
+        if not self.persist or self._loaded_for == today:
+            return
+        self._loaded_for = today
+        stored = app_state.get(SENT_KEY)
+        for entry in stored if isinstance(stored, list) else []:
+            try:
+                kind, subject, day = (
+                    InsightKind(entry[0]),
+                    str(entry[1]),
+                    date.fromisoformat(entry[2]),
+                )
+            except (ValueError, TypeError, IndexError):
+                continue
+            if day == today:
+                self._sent.add((kind, subject, day))
 
     def _forget_older_than(self, today: date) -> None:
         stale = {key for key in self._sent if key[2] != today}
@@ -157,8 +206,14 @@ class NotificationPolicy:
 
 
 def _key(insight: Insight, today: date) -> tuple[InsightKind, str, date]:
-    """What makes two toasts the same toast, for the once-a-day rule."""
-    return (insight.kind, insight.title, today)
+    """What makes two toasts the same toast, for the once-a-day rule.
+
+    The subject, not the wording: a once-a-day kind is one thing whatever its title says
+    by now, and for the rest the numbers are masked, so "4 days expire" and "3 days expire"
+    of the same leave type are one notification rather than one per count.
+    """
+    subject = "" if insight.kind in ONCE_A_DAY else re.sub(r"\d+", "#", insight.title)
+    return (insight.kind, subject, today)
 
 
 def notification_title(insight: Insight) -> str:

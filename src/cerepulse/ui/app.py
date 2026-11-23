@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from types import TracebackType
 
 from loguru import logger
@@ -60,15 +61,38 @@ def _report_crash(
     logger.critical(
         "Unhandled exception:\n{}", "".join(traceback.format_exception(kind, exc, trace))
     )
-    if QApplication.instance() is not None:
-        from PySide6.QtWidgets import QMessageBox
+    if QApplication.instance() is None or not _crash_dialog_allowed():
+        return
+    from PySide6.QtWidgets import QMessageBox
 
+    _crash_state["open"] = True
+    try:
         QMessageBox.critical(
             None,
             f"{about.NAME} hit a problem",
             f"{kind.__name__}: {exc}\n\nThe details are in the log. The app will keep running, "
             "but if things look wrong, restart it.",
         )
+    finally:
+        _crash_state["open"] = False
+        _crash_state["at"] = time.monotonic()
+
+
+#: Seconds between two crash dialogs. Every failure is still logged.
+CRASH_DIALOG_GAP = 60.0
+_crash_state: dict[str, float | bool] = {"open": False, "at": float("-inf")}
+
+
+def _crash_dialog_allowed() -> bool:
+    """At most one dialog at a time, and one a minute.
+
+    An exception inside a paint or a timer fires again on every repaint or tick, and
+    ``QMessageBox.critical`` runs a nested event loop — so one fault stacked a dialog per
+    repaint, faster than they could be dismissed.
+    """
+    if _crash_state["open"]:
+        return False
+    return time.monotonic() - float(_crash_state["at"]) >= CRASH_DIALOG_GAP
 
 
 def run_app(config: AppConfig) -> int:

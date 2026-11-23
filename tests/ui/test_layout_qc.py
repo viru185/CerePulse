@@ -32,7 +32,6 @@ SCREENS_AT_SCALE = (
 #: Defects this suite found on its first run, each with the change that removes it. Strict,
 #: so the fix fails here until its entry is deleted — the list can only shrink honestly.
 KNOWN: dict[tuple[str, str], str] = {
-    ("flash", ""): "EmptyState and Card show a caption before it has a parent",
     ("minimum", "175%"): "the window's 900x600 minimum is taller than 537",
     ("settings", "175%"): "Settings' two 380px columns need more width than 1097",
     # Every screen, because the sidebar is on every screen.

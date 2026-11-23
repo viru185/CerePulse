@@ -1164,3 +1164,20 @@ def test_a_wallpaper_makes_the_plain_background_transparent_but_not_the_dialogs(
     assert "background-color: transparent;\n        color:" in sheet
     assert "QDialog, QMessageBox" in sheet
     assert "background-color: transparent" not in stylesheet(DARK)
+
+
+def test_a_fault_that_repeats_shows_one_crash_dialog(qapp, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """An exception in a paint fires on every repaint, and each dialog runs a nested loop —
+    one fault stacked dialogs faster than they could be dismissed."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from cerepulse.ui import app as ui_app
+
+    shown: list[str] = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *a, **k: shown.append("dialog"))
+    monkeypatch.setitem(ui_app._crash_state, "at", float("-inf"))
+
+    for _ in range(5):
+        ui_app._report_crash(RuntimeError, RuntimeError("paint failed"), None)
+
+    assert shown == ["dialog"]
