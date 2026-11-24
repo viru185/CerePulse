@@ -182,6 +182,25 @@ def test_each_weekday_gets_its_own_shape() -> None:
     assert by_weekday[4].typical_in == time(8, 30)
 
 
+def test_each_weekday_says_how_spread_its_arrivals_are() -> None:
+    """A median of 9:40 could be a habit or the average of chaos; the middle half says which."""
+    days = []
+    for week, arrival in enumerate(("09:00", "09:30", "09:40", "09:50", "10:30")):
+        days.append(workday(MONDAY + timedelta(days=7 * week), first_in=arrival))
+
+    habits = analyze_habits(build_facts(days, policy=POLICY))
+    (monday,) = [habit for habit in habits.weekdays if habit.weekday == 0]
+
+    assert monday.typical_in == time(9, 40)
+    assert monday.arrivals == (time(9, 30), time(9, 50))
+
+
+def test_three_arrivals_have_no_middle_half() -> None:
+    from cerepulse.intelligence.stats import middle_half
+
+    assert middle_half([time(9, 0), time(9, 30), time(10, 0)]) is None
+
+
 def test_a_single_sunday_is_not_a_normal_sunday() -> None:
     """Six months of real data turned up exactly one; it is that day, not a pattern."""
     days = [workday(d) for d in weekdays_from(MONDAY, 10)]

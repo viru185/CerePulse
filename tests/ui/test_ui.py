@@ -794,12 +794,12 @@ def test_insights_renders_a_full_history(qapp: QApplication) -> None:
     view.show_trends(_trends_view(30, today=date(2026, 7, 29)))
 
     assert view.months.rowCount() >= 1
-    assert "9:00 AM" in view.typical_in._value.text()
+    assert "9:00 AM" in view.typical_in.value.text()
     # Says what it is standing on before it says anything else.
     assert "30 working days" in view.footing.text()
     assert "estimated from the grid" in view.footing.text()
     # No punch detail cached, so the break stays blank rather than being back-solved.
-    assert view.typical_break._value.text() == fmt.EMPTY
+    assert view.typical_break.value.text() == fmt.EMPTY
 
 
 def test_insights_says_so_rather_than_inventing_a_habit_from_four_days(
@@ -812,7 +812,30 @@ def test_insights_says_so_rather_than_inventing_a_habit_from_four_days(
     view.show_trends(_trends_view(4, today=date(2026, 7, 29)))
 
     assert "too few" in view.footing.text()
-    assert view.footing.objectName() == "BannerWarning"
+    # Said in the caution tone, beside the title, before any figure.
+    assert view.footing.property("tone") == "rest"
+
+
+def test_the_arrival_chart_has_a_row_per_weekday_with_arrivals(qapp: QApplication) -> None:
+    """A dot for the median and a band for the middle half, on one clock for every row."""
+    from cerepulse.intelligence.trends import WeekdayHabit
+    from cerepulse.ui.views.insights import _ArrivalChart
+
+    chart = _ArrivalChart(DARK)
+    chart.set_weekdays(
+        (
+            WeekdayHabit(0, time(9, 40), Duration(540), 12, (time(9, 30), time(9, 55))),
+            WeekdayHabit(4, time(9, 10), Duration(540), 10, None),
+            WeekdayHabit(5, None, Duration(0), 3, None),
+        )
+    )
+    chart.resize(600, chart.sizeHint().height())
+
+    assert chart.sizeHint().height() == 2 * _ArrivalChart.ROW + _ArrivalChart.AXIS + 4
+    assert "Monday: usually 9:40 AM, most days 9:30 AM to 9:55 AM" in chart.toolTip()
+    assert not chart.grab().isNull()
+    chart.set_weekdays(())
+    assert chart.isHidden()
 
 
 # --- task runner ----------------------------------------------------------------------

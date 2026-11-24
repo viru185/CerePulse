@@ -23,6 +23,7 @@ SCREENS = ("today", "week", "attendance", "insights", "records", "pay", "setting
 #: after the first, which the screen opens on.
 VIEWS: dict[str, tuple[tuple[str, int], ...]] = {
     "attendance": (("-day", 1),),
+    "pay": (("-year", 1), ("-ctc", 2)),
     "records": (("-balances", 1), ("-calendar", 2)),
 }
 

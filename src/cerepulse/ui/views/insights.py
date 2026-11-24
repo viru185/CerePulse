@@ -1,27 +1,27 @@
 """Insights — what the history says, as opposed to what today says.
 
-Four questions, in the order someone actually asks them: where does this month land, what
-does a normal day look like for me, how does this month compare with the last, and is
-anything odd.
+Questions in the order someone actually asks them: how is this week going against my usual,
+where does this month land, what does a normal day look like for me, how do the months
+compare, and is anything odd.
 
 The screen refuses to fill itself. With too little history it says so and points at Sync
 history rather than drawing charts from four days — a habit computed from four days is not
 a habit, and presenting it as one teaches the user to distrust the whole screen.
+
+What the screen stands on is said beside its title, before any figure: the redesign moved it
+out of a banner, which is where errors go, and an honest footnote is not an error.
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time, timedelta
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QScrollArea,
-    QTableWidget,
+    QSizePolicy,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -37,20 +37,15 @@ from cerepulse.intelligence.trends import (
     Habits,
     MonthSummary,
     Records,
+    WeekdayHabit,
 )
 from cerepulse.models.values import Duration
 from cerepulse.services.attendance import TrendsView
 from cerepulse.ui import formatting as fmt
-from cerepulse.ui.theme import Palette
-from cerepulse.ui.widgets import (
-    Banner,
-    BarChart,
-    Card,
-    SectionTitle,
-    card_row,
-    data_table,
-    empty_layout,
-)
+from cerepulse.ui import kit
+from cerepulse.ui.kit.text import font_for, measure
+from cerepulse.ui.theme import Palette, Space
+from cerepulse.ui.widgets import Banner, BarChart, card_row, empty_layout
 
 #: The trailing blank is a spacer. Every real column here is a short number, so without one
 #: to absorb the leftover width either the last column is stranded against the far edge of
@@ -88,33 +83,31 @@ class InsightsView(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        outer.addWidget(scroll)
-
-        content = QWidget()
-        scroll.setWidget(content)
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(24, 20, 24, 24)
-        layout.setSpacing(16)
+        page = kit.ScrollArea(spacing=Space.GAP)
+        outer.addWidget(page)
+        layout = page.body
 
         layout.addLayout(self._build_header())
+        # What every figure below stands on, beside the title rather than in a banner.
+        self.footing = kit.Text(tone="muted", wrap=True)
+        layout.addWidget(self.footing)
 
         self.banner = Banner()
         layout.addWidget(self.banner)
 
-        self.footing = Banner()
-        layout.addWidget(self.footing)
-
         # The week leads because it is the only section that is different every day. A page
         # of long-run medians moves by minutes a month, reads identically on Tuesday and
         # Thursday, and stops being opened — which was the stated complaint.
-        layout.addWidget(SectionTitle("This week vs your usual"))
-        self._week = QVBoxLayout()
-        self._week.setSpacing(4)
-        week_host = QWidget()
+        self._week_header = kit.SectionHeader("This week against your usual")
+        layout.addWidget(self._week_header)
+        # A grid, not padded text: a proportional font makes "Monday" and "Wednesday" very
+        # different widths, so column alignment has to come from the layout.
+        self._week = QGridLayout()
+        self._week.setContentsMargins(0, 0, 0, 0)
+        self._week.setHorizontalSpacing(Space.GAP)
+        self._week.setVerticalSpacing(Space.TIGHT)
+        self._week.setColumnStretch(1, 1)
+        week_host = kit.Box()
         week_host.setLayout(self._week)
         layout.addWidget(week_host)
         self._week_note = _caption()
@@ -122,60 +115,67 @@ class InsightsView(QWidget):
 
         # Predictions next: the one part of the record anyone can still act on; the rest is
         # the record, and a record is read after the forecast, not before it.
-        layout.addWidget(SectionTitle("Predictions — how this month lands"))
-        self.projected = Card("Projected")
-        self.headroom = Card("Banked so far")
-        self.needed = Card("Needed daily")
-        self.affordable = Card("Short day")
+        layout.addWidget(kit.SectionHeader("How this month lands"))
+        self.projected = kit.StatCard("Projected")
+        self.headroom = kit.StatCard("Banked so far")
+        self.needed = kit.StatCard("Needed each day")
+        self.affordable = kit.StatCard("A short day")
         layout.addWidget(card_row(self.projected, self.headroom, self.needed, self.affordable))
         self._forecast_note = _caption()
         layout.addWidget(self._forecast_note)
 
-        layout.addWidget(SectionTitle("Habits — your normal day"))
-        self.typical_in = Card("Typical in")
-        self.typical_out = Card("Typical out")
-        self.typical_worked = Card("Typical worked")
-        self.typical_break = Card("Typical break")
+        layout.addWidget(kit.SectionHeader("Your normal day"))
+        self.typical_in = kit.StatCard("Typical arrival")
+        self.typical_out = kit.StatCard("Typical leaving")
+        self.typical_worked = kit.StatCard("Typical day")
+        self.typical_break = kit.StatCard("Typical break")
         layout.addWidget(
             card_row(self.typical_in, self.typical_out, self.typical_worked, self.typical_break)
         )
         self._habit_note = _caption()
         layout.addWidget(self._habit_note)
 
-        # A grid, not padded text: a proportional font makes "Monday" and "Wednesday" very
-        # different widths, so column alignment has to come from the layout.
-        self._weekdays = QGridLayout()
-        self._weekdays.setHorizontalSpacing(18)
-        self._weekdays.setVerticalSpacing(4)
-        self._weekdays.setColumnStretch(4, 1)
-        weekday_host = QWidget()
-        weekday_host.setLayout(self._weekdays)
-        layout.addWidget(weekday_host)
+        # When each weekday starts, as a dot for the median and a band for the middle half of
+        # those days: the spread is what says whether "9:40" is a habit or an average of chaos.
+        layout.addWidget(kit.SectionHeader("When you arrive, by weekday"))
+        self.arrivals = _ArrivalChart(palette)
+        layout.addWidget(self.arrivals)
+        self._arrivals_note = _caption(
+            "Dot: the median. Band: the middle half of your days — the wider it is, the "
+            "less that weekday has a habit."
+        )
+        layout.addWidget(self._arrivals_note)
 
-        # The same weekday figures the grid above lists, as shape. A table answers "how long
-        # is a Tuesday"; the chart answers "which day is the long one", which is the question
-        # the numbers are usually being scanned for.
+        # The same weekdays as shape. A table answers "how long is a Tuesday"; the chart
+        # answers "which day is the long one", which is what the numbers are scanned for.
+        layout.addWidget(kit.SectionHeader("How long each weekday runs"))
         self.weekday_chart = BarChart(palette)
         layout.addWidget(self.weekday_chart)
 
-        layout.addWidget(SectionTitle("Performance — streaks and records"))
-        self.streak = Card("On-target streak")
-        self.since_short = Card("Since a short day")
-        self.longest = Card("Longest day")
-        self.earliest = Card("Earliest start")
+        layout.addWidget(kit.SectionHeader("Streaks and records"))
+        self.streak = kit.StatCard("On-target streak")
+        self.since_short = kit.StatCard("Since a short day")
+        self.longest = kit.StatCard("Longest day")
+        self.earliest = kit.StatCard("Earliest start")
         layout.addWidget(card_row(self.streak, self.since_short, self.longest, self.earliest))
         self._record_note = _caption()
         layout.addWidget(self._record_note)
 
-        layout.addWidget(SectionTitle("Trends — month by month"))
+        layout.addWidget(kit.SectionHeader("Month by month"))
         self.month_chart = BarChart(palette)
         layout.addWidget(self.month_chart)
-        self.months = _table(MONTH_COLUMNS)
+        # These sit inside a page that already scrolls, so they show every row.
+        self.months = kit.TableWidget(MONTH_COLUMNS, fit_rows=True)
         layout.addWidget(self.months)
 
-        layout.addWidget(SectionTitle("Worth a look"))
-        self.anomalies = _table(ANOMALY_COLUMNS)
-        layout.addWidget(self.anomalies)
+        self._anomalies_header = kit.SectionHeader("Worth a look")
+        layout.addWidget(self._anomalies_header)
+        self._anomalies = QVBoxLayout()
+        self._anomalies.setContentsMargins(0, 0, 0, 0)
+        self._anomalies.setSpacing(2)
+        self._anomalies_host = kit.Box()
+        self._anomalies_host.setLayout(self._anomalies)
+        layout.addWidget(self._anomalies_host)
         self._anomaly_note = _caption()
         layout.addWidget(self._anomaly_note)
 
@@ -183,17 +183,13 @@ class InsightsView(QWidget):
 
     def _build_header(self) -> QHBoxLayout:
         row = QHBoxLayout()
-        title = QLabel("Insights")
-        title.setObjectName("HeroLabel")
-        row.addWidget(title)
+        row.setSpacing(Space.SNUG)
+        row.addWidget(kit.Text("Insights", role="title"))
         row.addStretch(1)
-
-        history = QPushButton("Sync history")
-        history.clicked.connect(self.sync_history_requested)
-        refresh = QPushButton("Refresh")
-        refresh.clicked.connect(self.refresh_requested)
-        row.addWidget(history)
-        row.addWidget(refresh)
+        row.addWidget(
+            kit.Button("Sync history", variant="quiet", on_click=self.sync_history_requested.emit)
+        )
+        row.addWidget(kit.Button("Refresh", on_click=self.refresh_requested.emit))
         return row
 
     # --- rendering ------------------------------------------------------------------
@@ -215,6 +211,7 @@ class InsightsView(QWidget):
         from cerepulse.intelligence.week_vs_usual import WeekComparison, describe
 
         empty_layout(self._week)
+        self._week_header.set_meta("")
 
         if not isinstance(week, WeekComparison) or not week.has_baseline:
             self._week_note.setText(
@@ -226,19 +223,15 @@ class InsightsView(QWidget):
             self._week_note.setText("Nothing measured yet this week.")
             return
 
-        for comparison in week.days:
-            row = QLabel(f"{comparison.weekday_name} —  {describe(comparison)}")
-            row.setWordWrap(True)
-            if comparison.is_notable:
-                row.setStyleSheet(f"color: {self._palette.text};")
-            else:
-                row.setObjectName("CardCaption")
-            self._week.addWidget(row)
+        for row, comparison in enumerate(week.days):
+            # The notable days in full text, the usual ones muted: the eye goes to what
+            # differs, which is the only reason to read this section.
+            tone = None if comparison.is_notable else "muted"
+            self._week.addWidget(kit.Text(comparison.weekday_name, role="body-strong"), row, 0)
+            self._week.addWidget(kit.Text(describe(comparison), tone=tone, wrap=True), row, 1)
 
-        self._week_note.setText(
-            f"Measured against {week.baseline_days} day(s) of your own history. "
-            "Deltas under 15m read as usual."
-        )
+        self._week_header.set_meta(f"from {week.baseline_days} day(s) of your history")
+        self._week_note.setText("Differences under 15m read as usual.")
 
     def _render_footing(self, view: TrendsView) -> None:
         """State what the screen is standing on before it says anything else.
@@ -249,27 +242,27 @@ class InsightsView(QWidget):
         """
         report = view.report
         if view.is_thin:
-            self.footing.show_message(
+            self.footing.setText(
                 f"Only {report.measured_days} measured day(s) cached — too few to read "
-                f"anything into. Sync history to fill this in.",
-                Severity.WARNING,
+                f"anything into. Sync history to fill this in."
             )
+            self.footing.set_tone("rest")
             return
 
         span = ""
         if report.span is not None:
-            span = f"{fmt.day_label(report.span[0])} to {fmt.day_label(report.span[1])}"
+            span = f", {fmt.day_label(report.span[0])} to {fmt.day_label(report.span[1])}"
         estimated = ""
         if report.estimated_days:
             estimated = (
                 f" · {report.estimated_days} estimated from the grid, "
                 f"{report.exact_days} exact from punch logs"
             )
-        self.footing.show_message(
-            f"{report.measured_days} working days across {view.months_cached} month(s), "
-            f"{span}{estimated}.",
-            Severity.INFO,
+        self.footing.setText(
+            f"From {report.measured_days} working days across {view.months_cached} "
+            f"month(s){span}{estimated}."
         )
+        self.footing.set_tone("muted")
 
     def _render_forecast(self, forecast: Forecast | None) -> None:
         if forecast is None:
@@ -279,31 +272,28 @@ class InsightsView(QWidget):
             self._forecast_note.setText("Nothing worked this month yet.")
             return
 
-        palette = self._palette
         ahead = forecast.projected_delta is not None and forecast.projected_delta.minutes >= 0
         self.projected.set_value(
-            fmt.duration(forecast.projected_delta, signed=True),
-            accent=palette.good if ahead else palette.bad,
+            fmt.duration(forecast.projected_delta, signed=True), tone="good" if ahead else "bad"
         )
         self.projected.set_caption("at month end")
 
         banked = forecast.headroom.minutes >= 0
         self.headroom.set_value(
-            fmt.duration(forecast.headroom, signed=True),
-            accent=palette.good if banked else palette.bad,
+            fmt.duration(forecast.headroom, signed=True), tone="good" if banked else "bad"
         )
         self.headroom.set_caption("ahead" if banked else "behind")
 
         if forecast.required_daily is None:
-            self.needed.set_value("—", accent=palette.good)
+            self.needed.set_value(fmt.EMPTY, tone="good")
             self.needed.set_caption("already level")
         else:
-            self.needed.set_value(fmt.duration(forecast.required_daily), accent=palette.rest)
+            self.needed.set_value(fmt.duration(forecast.required_daily), tone="rest")
             self.needed.set_caption(f"across {forecast.working_days_remaining} day(s) left")
 
         self.affordable.set_value(
             "Yes" if forecast.short_day_affordable else "No",
-            accent=palette.good if forecast.short_day_affordable else palette.text_muted,
+            tone="good" if forecast.short_day_affordable else "muted",
         )
         self.affordable.set_caption(
             "you could take a half day" if forecast.short_day_affordable else "nothing spare yet"
@@ -317,9 +307,13 @@ class InsightsView(QWidget):
         )
 
     def _render_habits(self, habits: Habits) -> None:
+        # The count behind them is the note under the row, said once rather than four times.
         self.typical_in.set_value(fmt.clock_time(habits.typical_in))
+        self.typical_in.set_caption("the median first in")
         self.typical_out.set_value(fmt.clock_time(habits.typical_out))
+        self.typical_out.set_caption("the median last out")
         self.typical_worked.set_value(fmt.duration(habits.typical_worked))
+        self.typical_worked.set_caption("first in to last out")
 
         if habits.typical_break is None:
             self.typical_break.set_value(fmt.EMPTY)
@@ -327,8 +321,8 @@ class InsightsView(QWidget):
             # rather than being back-solved from the span.
             self.typical_break.set_caption("needs cached punch detail")
         else:
-            self.typical_break.set_value(fmt.duration(habits.typical_break))
-            self.typical_break.set_caption(f"across {habits.break_sample} day(s)")
+            self.typical_break.set_value(fmt.duration(habits.typical_break), tone="rest")
+            self.typical_break.set_caption(f"from {habits.break_sample} day(s) with punch logs")
 
         if not habits.has_enough:
             self._habit_note.setText(
@@ -347,7 +341,8 @@ class InsightsView(QWidget):
                 f"does not move them."
             )
 
-        self._render_weekdays(habits)
+        self.arrivals.set_weekdays(habits.weekdays if habits.has_enough else ())
+        self._arrivals_note.setVisible(habits.has_enough)
         self._render_weekday_chart(habits)
 
     def _render_weekday_chart(self, habits: Habits) -> None:
@@ -377,30 +372,9 @@ class InsightsView(QWidget):
             value_labels=[fmt.duration(entry.typical_worked) for entry in with_sample],
         )
 
-    def _render_weekdays(self, habits: Habits) -> None:
-        empty_layout(self._weekdays)
-
-        if not habits.has_enough:
-            return
-
-        muted = f"color: {self._palette.text_muted};"
-        for row, habit in enumerate(habits.weekdays):
-            cells = (
-                habit.name,
-                f"in {fmt.clock_time(habit.typical_in)}",
-                f"{fmt.duration(habit.typical_worked)} worked",
-                f"across {habit.sample} day(s)",
-            )
-            for column, text in enumerate(cells):
-                label = QLabel(text)
-                label.setStyleSheet(muted)
-                self._weekdays.addWidget(label, row, column)
-
     def _render_records(self, records: Records) -> None:
-        palette = self._palette
         self.streak.set_value(
-            str(records.current_streak),
-            accent=palette.good if records.current_streak else None,
+            str(records.current_streak), tone="good" if records.current_streak else None
         )
         self.streak.set_caption(f"best {records.best_streak}")
 
@@ -426,7 +400,7 @@ class InsightsView(QWidget):
         else:
             self._record_note.setText("")
 
-    def _set_record(self, card: Card, record: DayRecord | None) -> None:
+    def _set_record(self, card: kit.StatCard, record: DayRecord | None) -> None:
         if record is None:
             card.set_value(fmt.EMPTY)
             card.set_caption("")
@@ -504,25 +478,27 @@ class InsightsView(QWidget):
                 self.months.setItem(index, column, item)
 
     def _render_anomalies(self, anomalies: list[Anomaly], today: date) -> None:
-        self.anomalies.setRowCount(len(anomalies))
-        for index, anomaly in enumerate(anomalies):
-            cells = (
-                fmt.day_label(anomaly.day),
-                anomaly.kind.value.replace("_", " ").capitalize(),
-                anomaly.detail,
+        empty_layout(self._anomalies)
+        for anomaly in anomalies:
+            warning = anomaly.severity is Severity.WARNING
+            self._anomalies.addWidget(
+                kit.ListRow(
+                    self._palette,
+                    icon="warning" if warning else "info",
+                    icon_tone="rest" if warning else "muted",
+                    title=anomaly.kind.value.replace("_", " ").capitalize(),
+                    detail=anomaly.detail,
+                    kind=fmt.day_label(anomaly.day),
+                )
             )
-            for column, text in enumerate(cells):
-                item = QTableWidgetItem(text)
-                if column == 1 and anomaly.severity is Severity.WARNING:
-                    item.setForeground(QColor(self._palette.rest))
-                self.anomalies.setItem(index, column, item)
-
-        self.anomalies.setVisible(bool(anomalies))
+        self._anomalies_host.setVisible(bool(anomalies))
+        self._anomalies_header.set_meta(f"{len(anomalies)} this month" if anomalies else "")
         # "Nothing unusual" is a finding. A bare heading over blank space reads as a
         # section that failed to load.
         self._anomaly_note.setText(
             "" if anomalies else f"Nothing unusual in {fmt.month_label(today.year, today.month)}."
         )
+        self._anomaly_note.setVisible(not anomalies)
 
     def show_error(self, message: str) -> None:
         self.banner.show_message(message, Severity.CRITICAL)
@@ -531,16 +507,151 @@ class InsightsView(QWidget):
 # --- helpers ----------------------------------------------------------------------------
 
 
-def _caption() -> QLabel:
-    label = QLabel()
-    label.setObjectName("CardCaption")
-    label.setWordWrap(True)
-    return label
+def _caption(text: str = "") -> kit.Text:
+    return kit.Text(text, role="caption", tone="muted", wrap=True)
 
 
-def _table(columns: tuple[str, ...]) -> QTableWidget:
-    # These sit inside a page that already scrolls, so they show every row.
-    return data_table(columns, fit_rows=True)
+class _ArrivalChart(QWidget):
+    """Each weekday's arrivals on one clock: a dot at the median, a band over the middle half.
+
+    Painted in one piece so the rows share a scale and a ruler. The text is drawn in the
+    kit's own role fonts, so it matches the labels around it at every display scale.
+    """
+
+    ROW = 26
+    AXIS = 20
+    #: Never narrower than an hour, so a very regular person's chart is not a smear of
+    #: ticks five minutes apart.
+    MIN_SPAN = 60
+
+    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self._rows: tuple[WeekdayHabit, ...] = ()
+        self._domain = (9 * 60, 10 * 60)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_weekdays(self, weekdays: tuple[WeekdayHabit, ...]) -> None:
+        self._rows = tuple(habit for habit in weekdays if habit.typical_in is not None)
+        moments = [
+            _minutes(moment)
+            for habit in self._rows
+            for moment in (habit.typical_in, *(habit.arrivals or ()))
+            if moment is not None
+        ]
+        if moments:
+            first = (min(moments) - 10) // 15 * 15
+            last = -(-(max(moments) + 10) // 15) * 15
+            if last - first < self.MIN_SPAN:
+                last = first + self.MIN_SPAN
+            self._domain = (first, last)
+        self.setVisible(bool(self._rows))
+        self.setToolTip(
+            "\n".join(
+                f"{habit.name}: usually {fmt.clock_time(habit.typical_in)}"
+                + (
+                    f", most days {fmt.clock_time(habit.arrivals[0])} to "
+                    f"{fmt.clock_time(habit.arrivals[1])}"
+                    if habit.arrivals
+                    else ""
+                )
+                + f" · {habit.sample} day(s)"
+                for habit in self._rows
+            )
+        )
+        self.updateGeometry()
+        self.update()
+
+    def sizeHint(self) -> QSize:  # noqa: N802 — Qt override
+        return QSize(400, len(self._rows) * self.ROW + self.AXIS + Space.TIGHT)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 — Qt override
+        return QSize(0, self.sizeHint().height())
+
+    def _columns(self) -> tuple[float, float]:
+        left = measure("Wed", role="body-strong") + Space.ROW
+        right = measure("10:30 AM · 45 days", role="caption") + Space.ROW
+        return float(left), float(right)
+
+    def _x(self, minutes: float, left: float, width: float) -> float:
+        first, last = self._domain
+        return left + (minutes - first) / (last - first) * width
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 — Qt override
+        if not self._rows:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        palette = self._palette
+        name_width, label_width = self._columns()
+        inset = 6.0
+        left = name_width + inset
+        width = max(1.0, self.width() - name_width - label_width - 2 * inset)
+        bottom = len(self._rows) * self.ROW
+
+        # The ruler's ticks, as faint lines through every row and a time under each.
+        first, last = self._domain
+        step = 15 if last - first <= 90 else (30 if last - first <= 240 else 60)
+        caption = font_for("caption")
+        painter.setFont(caption)
+        metrics = QFontMetrics(caption)
+        tick = -(-first // step) * step
+        while tick <= last:
+            x = round(self._x(tick, left, width)) + 0.5
+            painter.setPen(QPen(QColor(palette.border), 1))
+            painter.drawLine(QPointF(x, 0), QPointF(x, bottom))
+            text = _clock_short(tick)
+            half = metrics.horizontalAdvance(text) / 2
+            painter.setPen(QColor(palette.text_muted))
+            painter.drawText(
+                QRectF(x - half - 1, bottom + 2, 2 * half + 2, self.AXIS - 2),
+                Qt.AlignmentFlag.AlignCenter,
+                text,
+            )
+            tick += step
+
+        work = QColor(palette.work)
+        band = QColor(palette.work)
+        band.setAlphaF(0.28)
+        for index, habit in enumerate(self._rows):
+            top = index * self.ROW
+            middle = top + self.ROW / 2
+            painter.setFont(font_for("body-strong"))
+            painter.setPen(QColor(palette.text))
+            painter.drawText(
+                QRectF(0, top, name_width, self.ROW),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                habit.name[:3],
+            )
+            if habit.arrivals is not None:
+                low, high = (_minutes(moment) for moment in habit.arrivals)
+                x0, x1 = self._x(low, left, width), self._x(high, left, width)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(band)
+                painter.drawRoundedRect(QRectF(x0, middle - 6, max(2.0, x1 - x0), 12), 3, 3)
+            assert habit.typical_in is not None
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(work)
+            painter.drawEllipse(
+                QPointF(self._x(_minutes(habit.typical_in), left, width), middle), 5, 5
+            )
+            painter.setFont(caption)
+            painter.setPen(QColor(palette.text_muted))
+            painter.drawText(
+                QRectF(self.width() - label_width, top, label_width, self.ROW),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                f"{fmt.clock_time(habit.typical_in)} · {habit.sample} days",
+            )
+        painter.end()
+
+
+def _minutes(moment: time) -> int:
+    return moment.hour * 60 + moment.minute
+
+
+def _clock_short(minutes: int) -> str:
+    moment = datetime.combine(date.today(), time(0)) + timedelta(minutes=minutes)
+    return moment.strftime("%I:%M").lstrip("0")
 
 
 def _abs(value: Duration) -> Duration:

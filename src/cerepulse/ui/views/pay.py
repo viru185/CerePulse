@@ -1,13 +1,17 @@
-"""The Pay screen: the latest slip, the CTC statement and the year at a glance.
+"""The Pay screen: a payslip, the year by month and the CTC statement, behind three tabs.
 
 Masked by default. This is the app that sits open on an office desk, so every figure reads
-as dots until the one control at the top is switched on, and the switch forgets itself
-when the screen is left. The slip can be saved as a PDF — rendered here from the figures,
-because the portal's own export answers 500 to anything that is not a browser.
+as dots until the one switch at the top is on, and the switch forgets itself when the screen
+is left. The slip can be saved as a PDF — rendered here from the figures, because the
+portal's own export answers 500 to anything that is not a browser.
 
 The slip and the CTC are ledgers — label, amount, subtotal — not grids, and a table widget
 sized to its contents left two-thirds of every frame empty. :class:`_Ledger` fills its
 column. The monthly report is the one genuine grid here and stays a table.
+
+The three documents answer three different questions, so they are three views rather than
+one long page: the redesign's mockup put the slip first, alone, with the net pay at the size
+of the figure the screen is opened for.
 """
 
 from __future__ import annotations
@@ -19,14 +23,9 @@ from enum import Enum
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPageSize, QPdfWriter, QTextDocument
 from PySide6.QtWidgets import (
-    QComboBox,
-    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
-    QLabel,
-    QPushButton,
-    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -36,15 +35,9 @@ from PySide6.QtWidgets import (
 from cerepulse.models.pay import CtcStatement, MonthlyStatement, Payslip
 from cerepulse.services.pay import PaySnapshot
 from cerepulse.ui import formatting as fmt
+from cerepulse.ui import kit
 from cerepulse.ui.theme import Palette, Space
-from cerepulse.ui.widgets import (
-    Banner,
-    Card,
-    EmptyState,
-    SectionTitle,
-    card_row,
-    data_table,
-)
+from cerepulse.ui.widgets import Banner, EmptyState, card_row
 
 MASK = "••••••"
 
@@ -80,11 +73,18 @@ class LineStyle(Enum):
 Line = tuple[str, tuple[str, ...], LineStyle]
 
 
-class _Ledger(QFrame):
+#: The three views behind the tabs, in order.
+TABS = ("Payslip", "Year by month", "CTC")
+SLIP, YEAR, CTC = range(3)
+
+
+class _Ledger(kit.Surface):
     """Label on the left, amounts on the right, totals ruled off — filling its column.
 
     Takes strings, never numbers: masking is the view's decision, and a ledger that never
-    sees a figure cannot leak one.
+    sees a figure cannot leak one. Built from kit text, so the rows carry no stylesheet of
+    their own — the shaded rows that used to alternate here drew as solid black bars in the
+    light theme.
     """
 
     def __init__(
@@ -94,71 +94,63 @@ class _Ledger(QFrame):
         palette: Palette,
         parent: QWidget | None = None,
     ) -> None:
-        super().__init__(parent)
-        self.setObjectName("Card")
+        super().__init__(parent, variant="card")
         self._palette = palette
         self._columns = 1 + len(headings)
-        self._cells: list[list[QLabel]] = []
+        self._cells: list[list[kit.Text]] = []
+        self._drawn: list[QWidget] = []
 
         self._grid = QGridLayout(self)
-        self._grid.setContentsMargins(16, 12, 16, 12)
-        self._grid.setHorizontalSpacing(0)
-        self._grid.setVerticalSpacing(0)
+        self._grid.setContentsMargins(Space.GAP, 14, Space.GAP, 14)
+        self._grid.setHorizontalSpacing(Space.GAP)
+        self._grid.setVerticalSpacing(6)
         self._grid.setColumnStretch(0, 1)
 
-        head = QLabel(title.upper())
-        head.setObjectName("CardTitle")
-        head.setStyleSheet("padding: 0 8px 8px 8px;")
-        self._grid.addWidget(head, 0, 0)
+        self._grid.addWidget(kit.Text(title, self, role="caption", tone="muted"), 0, 0)
         for column, heading in enumerate(headings, start=1):
-            label = QLabel(heading.upper())
-            label.setObjectName("CardTitle")
+            label = kit.Text(heading, self, role="caption", tone="muted")
             label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            label.setStyleSheet("padding: 0 8px 8px 8px;")
             self._grid.addWidget(label, 0, column)
-        self._grid.setRowStretch(1, 0)
 
     def set_lines(self, lines: Sequence[Line]) -> None:
         # Reparent before deleting, or the old rows keep painting until the loop drains.
-        for row in self._cells:
-            for cell in row:
-                self._grid.removeWidget(cell)
-                cell.setParent(None)
-                cell.deleteLater()
+        for widget in self._drawn:
+            self._grid.removeWidget(widget)
+            widget.setParent(None)
+            widget.deleteLater()
+        self._drawn = []
         self._cells = []
 
-        palette = self._palette
-        shade = False
-        for index, (label, amounts, style) in enumerate(lines, start=1):
-            cells = [QLabel(label)]
+        row = 1
+        for label, amounts, style in lines:
             if style is LineStyle.HEADING:
-                cells[0].setStyleSheet(
-                    f"color: {palette.text_muted}; font-size: 11px; font-weight: 600;"
-                    f" padding: 10px 8px 4px 8px;"
-                )
-                self._grid.addWidget(cells[0], index, 0, 1, self._columns)
-                self._cells.append(cells)
-                shade = False
+                heading = kit.Text(label, self, role="caption", tone="muted")
+                heading.setContentsMargins(0, Space.SNUG, 0, 0)
+                self._grid.addWidget(heading, row, 0, 1, self._columns)
+                self._drawn.append(heading)
+                self._cells.append([heading])
+                row += 1
                 continue
 
+            if style is LineStyle.TOTAL:
+                rule = kit.Divider(self)
+                self._grid.addWidget(rule, row, 0, 1, self._columns)
+                self._drawn.append(rule)
+                row += 1
+
+            role = "body-strong" if style is LineStyle.TOTAL else "body"
+            cells = [kit.Text(label, self, role=role, wrap=True)]
             for column in range(1, self._columns):
-                amount = QLabel(amounts[column - 1] if column - 1 < len(amounts) else "")
+                amount = kit.Text(
+                    amounts[column - 1] if column - 1 < len(amounts) else "", self, role=role
+                )
                 amount.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 cells.append(amount)
-
-            if style is LineStyle.TOTAL:
-                rule = (
-                    f"font-weight: 600; padding: 7px 8px; border-top: 1px solid {palette.border};"
-                )
-                shade = False
-            else:
-                tint = f"background-color: {palette.overlay};" if shade else ""
-                rule = f"padding: 6px 8px; {tint}"
-                shade = not shade
             for column, cell in enumerate(cells):
-                cell.setStyleSheet(rule)
-                self._grid.addWidget(cell, index, column)
+                self._grid.addWidget(cell, row, column)
+            self._drawn.extend(cells)
             self._cells.append(cells)
+            row += 1
 
     def text_at(self, row: int, column: int) -> str:
         return self._cells[row][column].text()
@@ -180,21 +172,12 @@ class PayView(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        outer.addWidget(scroll)
-
-        content = QWidget()
-        scroll.setWidget(content)
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(Space.SECTION, 20, Space.SECTION, Space.SECTION)
-        layout.setSpacing(Space.GAP)
+        page = kit.ScrollArea(spacing=Space.GAP)
+        outer.addWidget(page)
+        layout = page.body
 
         layout.addLayout(self._build_header())
-        self._fetched = QLabel()
-        self._fetched.setObjectName("CardCaption")
+        self._fetched = kit.Text(role="caption", tone="muted", wrap=True)
         layout.addWidget(self._fetched)
 
         self.banner = Banner()
@@ -206,9 +189,9 @@ class PayView(QWidget):
             "encrypted to your Windows account, and masked on screen until you reveal them.",
         )
         layout.addWidget(self._off)
-        self._settings_link = QPushButton("Open Settings")
-        self._settings_link.setObjectName("Primary")
-        self._settings_link.clicked.connect(self.settings_requested.emit)
+        self._settings_link = kit.Button(
+            "Open Settings", variant="primary", on_click=self.settings_requested.emit
+        )
         layout.addWidget(self._settings_link, 0, Qt.AlignmentFlag.AlignLeft)
 
         self._empty = EmptyState(
@@ -218,81 +201,103 @@ class PayView(QWidget):
         )
         layout.addWidget(self._empty)
 
-        self._content = QWidget()
+        self._content = kit.Box()
         body = QVBoxLayout(self._content)
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(Space.GAP)
         layout.addWidget(self._content)
-
-        self.net_pay = Card("Net pay")
-        self.gross = Card("Gross")
-        self.ctc_yearly = Card("Cost to company")
-        self.ctc_monthly = Card("CTC per month")
-        body.addWidget(card_row(self.net_pay, self.gross, self.ctc_yearly, self.ctc_monthly))
-
-        # --- payslip ---
-        slip_header = QHBoxLayout()
-        slip_header.addWidget(SectionTitle("Payslip"))
-        slip_header.addStretch(1)
-        self._period = QComboBox()
-        self._period.setMinimumWidth(170)
-        self._period.currentIndexChanged.connect(lambda _index: self._render_slip())
-        slip_header.addWidget(self._period)
-        self._save_pdf = QPushButton("Save as PDF…")
-        self._save_pdf.clicked.connect(self._on_save_pdf)
-        slip_header.addWidget(self._save_pdf)
-        body.addLayout(slip_header)
-
-        self._earnings = _Ledger("Earnings", ("Amount",), palette)
-        self._deductions = _Ledger("Deductions", ("Amount",), palette)
-        self._variables = _Ledger("Variables", ("Amount",), palette)
-        body.addWidget(card_row(self._earnings, self._deductions, self._variables))
-
-        self.slip_net = Card("Net pay for the month")
-        body.addWidget(self.slip_net)
-
-        # --- CTC ---
-        ctc_header = QHBoxLayout()
-        ctc_header.addWidget(SectionTitle("CTC statement"))
-        self._ctc_note = QLabel()
-        self._ctc_note.setObjectName("CardCaption")
-        ctc_header.addWidget(self._ctc_note)
-        ctc_header.addStretch(1)
-        body.addLayout(ctc_header)
-        self._ctc = _Ledger("Item", ("Monthly", "Yearly"), palette)
-        body.addWidget(self._ctc)
-
-        # --- monthly report ---
-        monthly_header = QHBoxLayout()
-        monthly_header.addWidget(SectionTitle("Monthly report"))
-        self._monthly_note = QLabel()
-        self._monthly_note.setObjectName("CardCaption")
-        monthly_header.addWidget(self._monthly_note)
-        monthly_header.addStretch(1)
-        body.addLayout(monthly_header)
-        self._monthly = data_table(("Particulars",), stretch_last=False, fit_rows=True)
-        self._monthly.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        body.addWidget(self._monthly)
+        self._views = [self._build_slip(), self._build_year(), self._build_ctc()]
+        for view in self._views:
+            body.addWidget(view)
+        self._show_view(SLIP)
 
         layout.addStretch(1)
         self.set_enabled_state(False)
 
     def _build_header(self) -> QHBoxLayout:
         header = QHBoxLayout()
-        header.addWidget(SectionTitle("Pay"))
+        header.setSpacing(Space.SNUG)
+        header.addWidget(kit.Text("Pay", role="title"))
+        header.addSpacing(Space.SNUG)
+        self._tabs = kit.Tabs(list(TABS))
+        self._tabs.changed.connect(self._show_view)
+        header.addWidget(self._tabs)
         header.addStretch(1)
-        self._reveal = QPushButton("Show figures")
-        self._reveal.setCheckable(True)
+        self._reveal = kit.CheckBox("Show figures")
         self._reveal.setToolTip(
             "Figures stay masked until this is on, and mask again when you leave the screen."
         )
         self._reveal.toggled.connect(self._on_reveal)
         header.addWidget(self._reveal)
-        self._refresh = QPushButton("Refresh")
+        self._refresh = kit.Button("Refresh", on_click=self.refresh_requested.emit)
         self._refresh.setToolTip("Fetch the CTC, the monthly report and any new payslips.")
-        self._refresh.clicked.connect(self.refresh_requested.emit)
         header.addWidget(self._refresh)
         return header
+
+    def _build_slip(self) -> QWidget:
+        view = kit.Box()
+        layout = QVBoxLayout(view)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Space.GAP)
+
+        bar = QHBoxLayout()
+        bar.setSpacing(Space.SNUG)
+        self._period = kit.ComboBox()
+        self._period.setMinimumWidth(170)
+        self._period.currentIndexChanged.connect(lambda _index: self._render_slip())
+        bar.addWidget(self._period)
+        bar.addStretch(1)
+        self._save_pdf = kit.Button("Save as PDF…", variant="quiet", on_click=self._on_save_pdf)
+        bar.addWidget(self._save_pdf)
+        layout.addLayout(bar)
+
+        # The figure the screen is opened for, at the size of one; what it is made of beside.
+        self.net_pay = kit.StatCard("Net pay", large=True)
+        #: The same card: the slip on view is the net pay on view. Two cards for one figure
+        #: said "October" twice, a hand's width apart.
+        self.slip_net = self.net_pay
+        self.gross = kit.StatCard("Earnings")
+        self.deductions = kit.StatCard("Deductions")
+        layout.addWidget(card_row(self.net_pay, self.gross, self.deductions))
+
+        self._earnings = _Ledger("Earnings", ("Amount",), self._palette)
+        self._deductions = _Ledger("Deductions", ("Amount",), self._palette)
+        self._variables = _Ledger("Variables", ("Amount",), self._palette)
+        layout.addWidget(card_row(self._earnings, self._deductions, self._variables))
+        return view
+
+    def _build_year(self) -> QWidget:
+        view = kit.Box()
+        layout = QVBoxLayout(view)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Space.SNUG)
+        self._monthly_header = kit.SectionHeader("The year by month")
+        layout.addWidget(self._monthly_header)
+        self._monthly = kit.TableWidget(("Particulars",), stretch_last=False, fit_rows=True)
+        self._monthly.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        layout.addWidget(self._monthly)
+        return view
+
+    def _build_ctc(self) -> QWidget:
+        view = kit.Box()
+        layout = QVBoxLayout(view)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Space.GAP)
+        self.ctc_yearly = kit.StatCard("Cost to company")
+        self.ctc_monthly = kit.StatCard("CTC per month")
+        layout.addWidget(card_row(self.ctc_yearly, self.ctc_monthly))
+        self._ctc = _Ledger("Item", ("Monthly", "Yearly"), self._palette)
+        layout.addWidget(self._ctc)
+        return view
+
+    def _show_view(self, index: int) -> None:
+        for position, view in enumerate(self._views):
+            view.setVisible(position == index)
+
+    def show_view(self, index: int) -> None:
+        """Open one of the three documents, as a click on its tab would."""
+        self._tabs.set_current(index)
+        self._show_view(index)
 
     # --- state --------------------------------------------------------------------------
 
@@ -306,6 +311,7 @@ class PayView(QWidget):
         self._settings_link.setVisible(not enabled)
         self._reveal.setVisible(enabled)
         self._refresh.setVisible(enabled)
+        self._tabs.setVisible(enabled)
         self._fetched.setVisible(enabled)
         if not enabled:
             self._snapshot = None
@@ -324,7 +330,6 @@ class PayView(QWidget):
         super().hideEvent(event)  # type: ignore[arg-type]
 
     def _on_reveal(self, _checked: bool) -> None:
-        self._reveal.setText("Hide figures" if self.revealed else "Show figures")
         self._render()
 
     # --- rendering ----------------------------------------------------------------------
@@ -339,6 +344,7 @@ class PayView(QWidget):
         empty = snapshot is None or snapshot.is_empty
         self._empty.setVisible(empty)
         self._content.setVisible(not empty)
+        self._tabs.setVisible(not empty)
         if snapshot is None or empty:
             self._fetched.setText("Encrypted to your Windows account; masked until you ask.")
             return
@@ -348,16 +354,11 @@ class PayView(QWidget):
             if snapshot.last_synced
             else "Not fetched yet"
         )
-        self._fetched.setText(f"{fetched} · encrypted to your Windows account")
-
-        latest = snapshot.latest
-        self.net_pay.set_value(
-            self._money(latest.net_pay) if latest else "—",
-            accent=self._palette.good if latest and self.revealed else None,
+        self._fetched.setText(
+            f"{fetched} · encrypted to your Windows account · figures hide again when you "
+            f"leave this screen"
         )
-        self.net_pay.set_caption(latest.label if latest else "No payslip yet")
-        self.gross.set_value(self._money(latest.gross) if latest else "—")
-        self.gross.set_caption(f"{self._money(latest.total_deductions)} deducted" if latest else "")
+
         ctc = snapshot.ctc.cost_to_company if snapshot.ctc else None
         self.ctc_yearly.set_value(self._money(ctc.yearly) if ctc else "—")
         self.ctc_yearly.set_caption(
@@ -399,8 +400,11 @@ class PayView(QWidget):
         if slip is None:
             for ledger in (self._earnings, self._deductions, self._variables):
                 ledger.set_lines([])
-            self.slip_net.set_value("—")
-            self.slip_net.set_caption("No payslip has been fetched.")
+            self.net_pay.set_value(fmt.EMPTY)
+            self.net_pay.set_caption("No payslip has been fetched.")
+            for card in (self.gross, self.deductions):
+                card.set_value(fmt.EMPTY)
+                card.set_caption("")
             return
 
         def lines(items: Sequence[object], total: tuple[str, float] | None) -> list[Line]:
@@ -417,18 +421,21 @@ class PayView(QWidget):
             lines(slip.deductions, ("Total deductions", slip.total_deductions))
         )
         self._variables.set_lines(lines(slip.variables, None))
-        self.slip_net.set_value(
-            self._money(slip.net_pay), accent=self._palette.good if self.revealed else None
-        )
+        # A slip with no variables leaves an empty frame beside two full ones.
+        self._variables.setVisible(bool(slip.variables))
+        self.net_pay.title.setText(f"Net pay for {slip.label}")
+        self.net_pay.set_value(self._money(slip.net_pay), tone="good" if self.revealed else None)
         words = slip.in_words if self.revealed else ""
-        self.slip_net.set_caption(f"{slip.label}" + (f" · {words}" if words else ""))
+        self.net_pay.set_caption(words or "the slip's net, after deductions")
+        self.gross.set_value(self._money(slip.gross))
+        self.gross.set_caption(f"{len(slip.earnings)} line(s) on the slip")
+        self.deductions.set_value(self._money(slip.total_deductions))
+        self.deductions.set_caption(f"{len(slip.deductions)} line(s) on the slip")
 
     def _render_ctc(self, ctc: CtcStatement | None) -> None:
         if ctc is None:
-            self._ctc_note.setText("Not fetched yet.")
-            self._ctc.set_lines([])
+            self._ctc.set_lines([("Not fetched yet.", (), LineStyle.HEADING)])
             return
-        self._ctc_note.setText(f"for {ctc.for_year}" if ctc.for_year else "")
         rows: list[Line] = []
         section = ""
         for line in ctc.lines:
@@ -446,10 +453,10 @@ class PayView(QWidget):
 
     def _render_monthly(self, monthly: MonthlyStatement | None) -> None:
         if monthly is None:
-            self._monthly_note.setText("Not fetched yet.")
+            self._monthly_header.set_meta("not fetched yet")
             self._monthly.setRowCount(0)
             return
-        self._monthly_note.setText(monthly.period_label)
+        self._monthly_header.set_meta(monthly.period_label)
         self._monthly.setColumnCount(1 + len(monthly.months))
         self._monthly.setHorizontalHeaderLabels(["Particulars", *monthly.months])
         header = self._monthly.horizontalHeader()

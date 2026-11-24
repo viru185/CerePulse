@@ -30,7 +30,7 @@ from datetime import date, time, timedelta
 from cerepulse.intelligence.day import DayAnalysis, DayState
 from cerepulse.intelligence.month import week_start_for
 from cerepulse.intelligence.policy import ShiftPolicy
-from cerepulse.intelligence.stats import median_duration, median_time
+from cerepulse.intelligence.stats import median_duration, median_time, middle_half
 from cerepulse.models.attendance import AttendanceDay
 from cerepulse.models.values import Duration
 
@@ -77,6 +77,10 @@ class WeekdayHabit:
     typical_in: time | None
     typical_worked: Duration
     sample: int
+    #: Where the middle half of this weekday's arrivals fall, once there are enough of them
+    #: to have a middle half. The median alone cannot say whether "9:40" is a habit or an
+    #: average of chaos.
+    arrivals: tuple[time, time] | None = None
 
     @property
     def name(self) -> str:
@@ -329,6 +333,7 @@ def _weekday_habits(facts: Sequence[DayFact]) -> list[WeekdayHabit]:
                 typical_in=_median_time(fact.first_in for fact in same),
                 typical_worked=_median_duration(fact.worked for fact in same) or Duration(0),
                 sample=len(same),
+                arrivals=middle_half(fact.first_in for fact in same),
             )
         )
     return habits

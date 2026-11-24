@@ -45,23 +45,23 @@ def test_figures_are_masked_until_revealed(qapp: QApplication) -> None:
     view = PayView(PALETTES["dark"])
     view.set_enabled_state(True)
     view.show_snapshot(SNAPSHOT)
-    assert view.net_pay._value.text() == MASK  # noqa: SLF001
+    assert view.net_pay.value.text() == MASK  # noqa: SLF001
     assert view._earnings.text_at(0, 1) == MASK  # noqa: SLF001
     assert view._earnings.text_at(2, 0) == "Gross"  # noqa: SLF001
-    assert "Twelve Thousand" not in view.slip_net._caption.text()  # noqa: SLF001
+    assert "Twelve Thousand" not in view.slip_net.caption.text()  # noqa: SLF001
 
     view._reveal.setChecked(True)  # noqa: SLF001
-    assert view.net_pay._value.text() == "₹12,800.00"  # noqa: SLF001
+    assert view.net_pay.value.text() == "₹12,800.00"  # noqa: SLF001
     assert view._earnings.text_at(0, 1) == "₹10,000.00"  # noqa: SLF001
     assert view._earnings.text_at(2, 1) == "₹14,000.00", "the ledger ends in its total"  # noqa: SLF001
     assert view._ctc.text_at(0, 2) == "₹1,78,000.00"  # noqa: SLF001
-    assert view.ctc_yearly._value.text() == "₹1,78,000.00"  # noqa: SLF001
-    assert "Twelve Thousand" in view.slip_net._caption.text()  # noqa: SLF001
+    assert view.ctc_yearly.value.text() == "₹1,78,000.00"  # noqa: SLF001
+    assert "Twelve Thousand" in view.slip_net.caption.text()  # noqa: SLF001
 
     # Leaving the screen masks it again.
     view.hideEvent(None)
     assert not view.revealed
-    assert view.net_pay._value.text() == MASK  # noqa: SLF001
+    assert view.net_pay.value.text() == MASK  # noqa: SLF001
 
 
 def test_off_state_hides_the_figures_and_offers_settings(qapp: QApplication) -> None:
@@ -89,3 +89,25 @@ def test_the_pdf_carries_figures_and_nothing_personal(qapp: QApplication, tmp_pa
     target = tmp_path / "slip.pdf"
     write_payslip_pdf(SLIP, str(target))
     assert target.read_bytes().startswith(b"%PDF")
+
+
+def test_the_three_documents_are_three_views(qapp: QApplication) -> None:
+    """The slip, the year and the CTC answer different questions; one shows at a time."""
+    view = PayView(PALETTES["dark"])
+    view.set_enabled_state(True)
+    view.show_snapshot(SNAPSHOT)
+
+    slip, year, ctc = view._views  # noqa: SLF001
+    assert slip.isVisibleTo(view) and not ctc.isVisibleTo(view)
+    view.show_view(2)
+    assert ctc.isVisibleTo(view) and not slip.isVisibleTo(view)
+    assert view.net_pay.title.text() == "Net pay for July 2026"
+
+
+def test_a_slip_without_variables_leaves_no_empty_frame(qapp: QApplication) -> None:
+    from dataclasses import replace
+
+    view = PayView(PALETTES["light"])
+    view.set_enabled_state(True)
+    view.show_snapshot(replace(SNAPSHOT, payslips=(replace(SLIP, variables=()),)))
+    assert not view._variables.isVisibleTo(view)  # noqa: SLF001
