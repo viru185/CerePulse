@@ -139,3 +139,23 @@ def test_every_screen_lays_out_at_the_windows_minimum(
     qc_app.settle(built, at_least=0.05)
     issues = [str(issue) for issue in layout.find_issues(built)]
     assert issues == [], f"{screen} at the minimum size:\n" + "\n".join(issues)
+
+
+@pytest.mark.parametrize(("scale", "width", "height"), SCREENS_AT_SCALE)
+@pytest.mark.parametrize(
+    ("screen", "suffix", "view"),
+    [(screen, suffix, view) for screen, views in qc_app.VIEWS.items() for suffix, view in views],
+)
+def test_every_view_behind_a_tab_lays_out_too(
+    built: Any, scale: str, width: int, height: int, screen: str, suffix: str, view: int
+) -> None:
+    """A tab hides a whole page from the checks above, which only ever see the first view."""
+    built.resize(width, height)
+    built._navigation.select(qc_app.SCREENS.index(screen))
+    getattr(built, screen).show_view(view)
+    qc_app.settle(built, at_least=0.05)
+    try:
+        issues = [str(issue) for issue in layout.find_issues(built)]
+    finally:
+        getattr(built, screen).show_view(0)
+    assert issues == [], f"{screen}{suffix} at {scale}: " + " | ".join(issues)

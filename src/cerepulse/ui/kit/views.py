@@ -24,6 +24,16 @@ from PySide6.QtWidgets import (
 from cerepulse.ui.theme import Space
 
 
+class Box(QWidget):
+    """A container that paints nothing of its own.
+
+    A plain ``QWidget`` paints the page's surface colour — the sheet's ``QWidget`` rule
+    matches it — so one used to group labels inside a card drew a page-coloured box on the
+    card. Qt paints a sheet background only for plain ``QWidget`` instances, not
+    subclasses, and this is one.
+    """
+
+
 class ScrollArea(QScrollArea):
     """A page that scrolls up and down and never sideways. ``body`` is its layout."""
 

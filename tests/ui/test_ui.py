@@ -1087,9 +1087,10 @@ def test_the_comp_off_card_shows_what_can_be_spent(qapp: QApplication) -> None:
     assert "approval date" not in text
 
 
-def test_the_comp_off_credits_table_lists_every_credit_and_its_fate(qapp: QApplication) -> None:
+def test_the_comp_off_credits_are_grouped_by_what_became_of_them(qapp: QApplication) -> None:
     from cerepulse.services.leave import LeaveView
-    from cerepulse.ui.views.records import RecordsView
+    from cerepulse.ui.kit import Text
+    from cerepulse.ui.views.records import RecordsView, _CreditGroup, _CreditRow
 
     view = RecordsView(DARK)
     view.show_leave(
@@ -1103,28 +1104,23 @@ def test_the_comp_off_credits_table_lists_every_credit_and_its_fate(qapp: QAppli
         )
     )
 
-    rows = [
-        [view.credits.item(row, column).text() for column in range(view.credits.columnCount())]
-        for row in range(view.credits.rowCount())
-    ]
-    assert [row[0] for row in rows] == [
-        "Sun 30 Aug",
-        "Sat 8 Aug",
-        "Tue 4 Aug",
-        "Sat 18 Jul",
-        "Thu 4 Jun",
-    ]
-    assert [row[3] for row in rows] == [
-        "Awaiting approval",
-        "Booked for Thu 10 Sep · leave awaiting approval",
-        "Available · 57 days left",
-        "Available · 40 days left",
-        "Lapsed unused",
-    ]
+    groups = view.findChildren(_CreditGroup)
+    titles = [group.findChildren(Text)[0].text() for group in groups]
+    assert titles == ["Usable now", "Booked", "Awaiting approval", "Used or lapsed this year"]
+
+    def fates(group: object) -> list[tuple[str, str]]:
+        return [(row.fate.text(), row.left.text()) for row in group.findChildren(_CreditRow)]  # type: ignore[attr-defined]
+
+    usable, booked, pending, settled = groups
+    # Soonest to lapse first: the one to spend next is on top.
+    assert fates(usable) == [("Available", "40 days left"), ("Available", "57 days left")]
+    assert fates(booked) == [("For Thu 10 Sep · leave #6", "held")]
+    assert fates(pending) == [("Awaiting approval · comp-off #5 in process", "pending")]
+    assert fates(settled) == [("Lapsed unused", "lost")]
     assert "31 March" in view._credits_note.text()
 
 
-def test_the_comp_off_credits_table_hides_with_nothing_to_show(qapp: QApplication) -> None:
+def test_the_comp_off_credits_hide_with_nothing_to_show(qapp: QApplication) -> None:
     from cerepulse.services.leave import LeaveView
     from cerepulse.ui.views.records import RecordsView
 
@@ -1132,8 +1128,7 @@ def test_the_comp_off_credits_table_hides_with_nothing_to_show(qapp: QApplicatio
     view.show()
     view.show_leave(LeaveView([], [], [], None, True))
 
-    assert view.credits.isHidden()
-    assert view._credits_title.isHidden()
+    assert view._credits_section.isHidden()
 
 
 def test_settings_sections_are_in_order(qapp: QApplication) -> None:

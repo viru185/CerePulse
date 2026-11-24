@@ -73,7 +73,9 @@ class Button(QPushButton):
         small: bool = False,
         on_click: Callable[[], object] | None = None,
     ) -> None:
-        super().__init__(text, parent)
+        # A single "&" is a keyboard mnemonic to Qt: "Balances & comp-off" drew as
+        # "Balances _comp-off". Every label here is literal text, so it is escaped once, here.
+        super().__init__(text.replace("&", "&&"), parent)
         if variant not in BUTTON_VARIANTS:
             raise ValueError(f"unknown button variant {variant!r}")
         self.setProperty("variant", variant)
@@ -81,7 +83,7 @@ class Button(QPushButton):
             self.setProperty("small", True)
         if tooltip:
             self.setToolTip(tooltip)
-        self.setAccessibleName(text.replace("&&", "&").replace("…", "").strip() or tooltip)
+        self.setAccessibleName(text.replace("…", "").strip() or tooltip)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAutoDefault(False)
         if on_click is not None:

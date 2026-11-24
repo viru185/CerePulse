@@ -19,6 +19,10 @@ from tests.qc import seed
 #: Sidebar order, as the window lays it out.
 SCREENS = ("today", "week", "attendance", "insights", "records", "pay", "settings", "about")
 
+#: Screens with more than one view behind tabs: (file suffix, view index) for each view
+#: after the first, which the screen opens on.
+VIEWS: dict[str, tuple[tuple[str, int], ...]] = {"records": (("-balances", 1), ("-calendar", 2))}
+
 
 def config_for(theme: str = "dark") -> AppConfig:
     """Everything visible, nothing that reaches outside the process."""

@@ -156,31 +156,38 @@ def _child(args: argparse.Namespace) -> int:
                         continue
                     window._navigation.select(index)
                     qc_app.settle(window, at_least=0.05)
-                    stem = f"{index + 1:02d}-{screen}"
-                    window.grab().save(str(folder / f"{stem}.png"))
-                    page = window._stack.currentWidget()
-                    areas = [a for a in page.findChildren(QScrollArea) if a.isVisible()]
-                    if areas and not args.no_pages:
-                        content = max(areas, key=lambda a: a.widget().height()).widget()
-                        if content is not None and content.height() > areas[0].height():
-                            content.grab().save(str(folder / f"{stem}-page.png"))
-                    if theme_index == 0:
-                        issues = [str(issue) for issue in layout.find_issues(window)]
-                        if actual != target:
-                            issues.insert(
-                                0,
-                                f"window: asked for {target[0]}x{target[1]}, the window's "
-                                f"minimum forced {actual[0]}x{actual[1]}",
+                    views = [("", None), *qc_app.VIEWS.get(screen, ())]
+                    for suffix, view_index in views:
+                        if view_index is not None:
+                            getattr(window, screen).show_view(view_index)
+                            qc_app.settle(window, at_least=0.05)
+                        stem = f"{index + 1:02d}-{screen}{suffix}"
+                        window.grab().save(str(folder / f"{stem}.png"))
+                        page = window._stack.currentWidget()
+                        areas = [a for a in page.findChildren(QScrollArea) if a.isVisible()]
+                        if areas and not args.no_pages:
+                            content = max(areas, key=lambda a: a.widget().height()).widget()
+                            if content is not None and content.height() > areas[0].height():
+                                content.grab().save(str(folder / f"{stem}-page.png"))
+                        if theme_index == 0:
+                            issues = [str(issue) for issue in layout.find_issues(window)]
+                            if actual != target:
+                                issues.insert(
+                                    0,
+                                    f"window: asked for {target[0]}x{target[1]}, the window's "
+                                    f"minimum forced {actual[0]}x{actual[1]}",
+                                )
+                            reports.append(
+                                {
+                                    "scale": args.scales[0],
+                                    "size": size_name,
+                                    "window": list(actual),
+                                    "screen": f"{screen}{suffix}",
+                                    "issues": issues,
+                                }
                             )
-                        reports.append(
-                            {
-                                "scale": args.scales[0],
-                                "size": size_name,
-                                "window": list(actual),
-                                "screen": screen,
-                                "issues": issues,
-                            }
-                        )
+                    if screen in qc_app.VIEWS:
+                        getattr(window, screen).show_view(0)
                 print(f"   {size_name} {theme} done", flush=True)
         qc_app.close(window)
     (args.out / f"report-{args.scales[0]}.json").write_text(

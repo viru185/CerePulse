@@ -144,3 +144,10 @@ def test_a_list_row_hides_what_it_was_not_given(qapp: QApplication) -> None:
     assert not row.detail.isVisibleTo(row)
     assert not row.kind.isVisibleTo(row)
     assert row.state.isVisibleTo(row)
+
+
+def test_an_ampersand_is_text_not_a_shortcut(qapp: QApplication) -> None:
+    """Qt reads a lone "&" as a mnemonic: "Balances & comp-off" drew as "Balances _comp-off"."""
+    tab = kit.SegmentButton("Balances & comp-off")
+    assert tab.text() == "Balances && comp-off"
+    assert tab.accessibleName() == "Balances & comp-off"

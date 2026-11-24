@@ -41,7 +41,7 @@ PATHS: dict[str, str] = {
     "chevron-left": "M12.5 4.5L7 10l5.5 5.5",
     "chevron-right": "M7.5 4.5L13 10l-5.5 5.5",
     # What happened.
-    "leave": "M10 3c3 3 4 6 0 14-4-8-3-11 0-14z",
+    "leave": "M3.5 5h13v11.5h-13zM3.5 8.5h13M7 3v3M13 3v3M7.5 12.5h5",
     "earned": "M10 4v12M4 10h12",
     "lapse": "M10 3.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM6.5 6.5l7 7",
     "swipe": "M4 10h11M11 6l4 4-4 4",

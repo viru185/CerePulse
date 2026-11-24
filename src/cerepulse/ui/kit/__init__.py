@@ -34,9 +34,10 @@ from cerepulse.ui.kit.inputs import (
 )
 from cerepulse.ui.kit.surfaces import Divider, ListRow, SectionHeader, StatCard, Surface
 from cerepulse.ui.kit.text import Pill, Text
-from cerepulse.ui.kit.views import ScrollArea, TableWidget
+from cerepulse.ui.kit.views import Box, ScrollArea, TableWidget
 
 __all__ = [
+    "Box",
     "Button",
     "CheckBox",
     "ComboBox",

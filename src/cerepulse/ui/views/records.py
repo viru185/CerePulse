@@ -1,14 +1,20 @@
-"""Records — balances, and one timeline of everything that was not an ordinary day.
+"""Records — what happened, the balances and comp-off credits, and the year's holidays.
 
-Replaces the separate Leave and Requests screens. They were split by which portal page the
-data came from, which is the vendor's filing system rather than the user's: a week in June
-was outdoor duty on the muster, a comp-off credit in the leave ledger and a swipe request in
-a third list, and piecing it together meant reading two screens and holding the dates in
-your head. Both screens were also the same shape — a header, a banner, a short capped table
-and one stretch-1 table — so merging them costs nothing structurally.
+One screen, three views behind tabs, What happened first. It used to be one long column — six
+balance cards, insights, a credits table, the best breaks, the holiday calendar, and only
+then the timeline — so the question the screen is opened with most ("what happened to my
+time?") was the one answered at the bottom. Each view now answers one question.
 
-Balances sit on top because "how much leave do I have" is what the screen is opened with.
-Everything else is one stream ordered by time and filtered by kind.
+* **What happened** leads with what needs doing — the few things only the user can settle —
+  then one stream of everything that was not an ordinary day, grouped by day, filtered by
+  kind and by state on two separate controls (one dropdown of both used to make "swipe
+  requests still waiting" impossible to ask).
+* **Balances & comp-off** is how much leave there is, and every comp-off credit with what
+  became of it: usable, booked by a leave awaiting approval, waiting for its own approval,
+  used, or lapsed.
+* **Holidays & breaks** is the published calendar and the cheapest breaks it allows.
+
+Built from the kit throughout, so nothing here sizes or colours itself.
 """
 
 from __future__ import annotations
@@ -16,15 +22,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import date
 
-from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices
+from PySide6.QtCore import QRectF, Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPaintEvent
 from PySide6.QtWidgets import (
-    QComboBox,
     QGridLayout,
     QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QScrollArea,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -45,22 +48,19 @@ from cerepulse.intelligence.sandwich import SandwichAssessment
 from cerepulse.models.leave import Holiday, LeaveCategory
 from cerepulse.services.leave import LeaveView as LeaveData
 from cerepulse.ui import formatting as fmt
-from cerepulse.ui.theme import Palette, Space
-from cerepulse.ui.widgets import (
-    Banner,
-    Card,
-    EmptyState,
-    InsightStrip,
-    SectionTitle,
-    StatusChip,
-    data_table,
-    empty_layout,
-)
+from cerepulse.ui import kit
+from cerepulse.ui.kit.text import measure
+from cerepulse.ui.theme import Palette, Space, tone_colour
+from cerepulse.ui.widgets import Banner, EmptyState, FlowLayout, InsightStrip, empty_layout
+
+#: The three views, in the order the screen is used.
+TABS = ("What happened", "Balances & comp-off", "Holidays & breaks")
+HAPPENED, BALANCES, CALENDAR = range(3)
 
 BREAK_COLUMNS = ("When", "Days off", "Leave used", "Value", "Book these days")
+HOLIDAY_COLUMNS = ("Date", "Day", "Holiday", "")
 
-#: Balance cards per row. Six in one row overflowed a narrow window before the comp-off
-#: card grew a line per credit.
+#: Balance cards per row.
 CARDS_PER_ROW = 3
 
 #: Order the balance cards so the ones with a deadline lead.
@@ -73,33 +73,37 @@ CARD_ORDER = (
     LeaveCategory.OTHER,
 )
 
-HOLIDAY_COLUMNS = ("Date", "Day", "Holiday", "")
+#: What each kind of leave is called on its card. The portal's own code follows it, since
+#: that is what SpineHR's screens say.
+CATEGORY_NAMES = {
+    LeaveCategory.PLANNED: "Planned leave",
+    LeaveCategory.COMP_OFF: "Comp-off",
+    LeaveCategory.CARRY_FORWARD: "Carry-forward",
+    LeaveCategory.MEDICAL: "Medical",
+    LeaveCategory.CASUAL: "Casual",
+}
 
-#: One row per comp-off credit: the question the register's single figure could not answer.
-CREDIT_COLUMNS = ("Earned", "Days", "Use by", "Status", "Earned for")
-
-#: The timeline filters, on **two** axes rather than one.
+#: The timeline filters, on **two** axes rather than one: a kind, and a state.
 #:
-#: They used to share a single dropdown of eight entries: three describing a *state* and five
-#: a *kind*. That made them mutually exclusive when they are nothing of the sort — there was
-#: no way to ask for "leave that still needs doing", because picking a kind threw away the
-#: state and picking a state threw away the kind. Two controls that combine with AND is the
-#: same information, fewer entries each, and a question the old one could not express.
+#: They used to share a single dropdown of eight entries, three describing a state and five
+#: a kind. That made them mutually exclusive when they are nothing of the sort — there was no
+#: way to ask for "leave that still needs doing". Two controls that combine is the same
+#: information and a question the old one could not express.
 KIND_FILTERS: tuple[tuple[str, Callable[[Record], bool]], ...] = (
-    ("All kinds", lambda record: True),
+    ("All", lambda record: True),
     # A day of comp-off is spent through a leave application, and answers both "which days
     # did I take off" and "where did my comp-off go" — so it matches both filters.
     ("Leave", lambda record: record.is_kind(RecordKind.LEAVE)),
-    ("Outdoor duty", lambda record: record.is_kind(RecordKind.OUTDOOR_DUTY)),
     (
         "Comp-off",
         lambda record: record.is_kind(
             RecordKind.COMP_OFF_EARNED, RecordKind.COMP_OFF_SPENT, RecordKind.COMP_OFF_LAPSED
         ),
     ),
-    ("Swipe requests", lambda record: record.is_kind(RecordKind.SWIPE_REQUEST)),
-    # Absence had no entry at all under the old single dropdown, so the one kind that always
-    # needs an explanation was the one kind that could not be filtered to.
+    ("Outdoor duty", lambda record: record.is_kind(RecordKind.OUTDOOR_DUTY)),
+    ("Swipes", lambda record: record.is_kind(RecordKind.SWIPE_REQUEST)),
+    # Absence had no entry under the old single dropdown, so the one kind that always needs
+    # an explanation was the one kind that could not be filtered to.
     ("Absence", lambda record: record.is_kind(RecordKind.ABSENCE)),
 )
 
@@ -127,6 +131,13 @@ PERIODS: tuple[tuple[str, int | None], ...] = (
 #: "this is all there is", which is worse than the big list it avoids.
 MAX_ROWS = 200
 
+#: How many of the things that need doing are listed above the timeline. The rest are one
+#: filter away; a panel that grows without bound stops being a summary.
+NEEDS_DOING_SHOWN = 4
+
+#: A credit's days-left bar turns from green to amber inside this many days.
+CREDIT_WARNING_DAYS = 60
+
 
 def period_start(months: int | None, *, today: date) -> date | None:
     """The first day the selected period covers, or ``None`` for no bound."""
@@ -141,7 +152,7 @@ def period_start(months: int | None, *, today: date) -> date | None:
 
 
 class RecordsView(QWidget):
-    """Leave balances, the breaks they can buy, and everything that happened."""
+    """What happened, the balances behind it, and the year's holidays."""
 
     refresh_requested = Signal()
     open_portal = Signal()
@@ -157,80 +168,85 @@ class RecordsView(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        outer.addWidget(scroll)
+        page = kit.ScrollArea()
+        outer.addWidget(page)
+        body = page.body
 
-        content = QWidget()
-        scroll.setWidget(content)
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(Space.SECTION, 20, Space.SECTION, Space.SECTION)
-        layout.setSpacing(Space.GAP)
-
-        layout.addLayout(self._build_header())
+        body.addLayout(self._build_header())
+        self._tabs = kit.Tabs(list(TABS))
+        self._tabs.changed.connect(self._show_view)
+        body.addWidget(self._tabs, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.banner = Banner()
-        layout.addWidget(self.banner)
+        body.addWidget(self.banner)
 
-        # The total leads: adding six cards up in your head is not an answer to "how much
-        # leave do I have".
-        self.total = Card("Total available")
-        layout.addWidget(self.total)
+        # Shown and hidden rather than stacked: a stacked widget is as tall as its tallest
+        # page, so a short view sat on top of a page of empty space.
+        self._views = [self._build_happened(), self._build_balances(), self._build_calendar()]
+        for view in self._views:
+            body.addWidget(view)
+        body.addStretch(1)
+        self._show_view(HAPPENED)
 
-        # A grid, three across. Six categories in one row at 170 px each already overflowed
-        # a narrow window, and the comp-off card now carries a line per credit.
-        self._cards = QGridLayout()
-        self._cards.setSpacing(Space.ROW)
-        cards_host = QWidget()
-        cards_host.setLayout(self._cards)
-        layout.addWidget(cards_host)
+    # --- construction ---------------------------------------------------------------
 
-        self._insights = InsightStrip(palette)
-        layout.addWidget(self._insights)
+    def _build_header(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(Space.SNUG)
+        row.addWidget(kit.Text("Records", role="title"))
+        row.addStretch(1)
+        row.addWidget(kit.Button("Refresh", on_click=self.refresh_requested.emit))
+        row.addWidget(
+            kit.Button("Open in SpineHR", variant="primary", on_click=self.open_portal.emit)
+        )
+        return row
 
-        # Every comp-off credit and what became of it. The card above gives the one number;
-        # this answers which credits make it up, which a leave spent, and which were lost.
-        self._credits_title = SectionTitle("Comp-off credits")
-        layout.addWidget(self._credits_title)
-        self.credits = data_table(CREDIT_COLUMNS, fit_rows=True)
-        layout.addWidget(self.credits)
-        self._credits_note = QLabel()
-        self._credits_note.setObjectName("CardCaption")
-        self._credits_note.setWordWrap(True)
-        layout.addWidget(self._credits_note)
+    def _build_happened(self) -> QWidget:
+        view = QWidget()
+        layout = QVBoxLayout(view)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Space.GAP)
 
-        layout.addWidget(SectionTitle("Best breaks you can book"))
-        self.breaks = data_table(BREAK_COLUMNS, fit_rows=True)
-        layout.addWidget(self.breaks)
-        self._breaks_note = QLabel()
-        self._breaks_note.setObjectName("CardCaption")
-        self._breaks_note.setWordWrap(True)
-        layout.addWidget(self._breaks_note)
+        # The few things only the user can settle, before everything else. They are in the
+        # timeline too; here they cannot be scrolled past.
+        self._attention = kit.Surface(variant="panel")
+        panel = QVBoxLayout(self._attention)
+        panel.setContentsMargins(Space.GAP, 14, Space.GAP, 14)
+        panel.setSpacing(Space.TIGHT)
+        self._attention_header = kit.SectionHeader("Needs doing", role="body-strong")
+        panel.addWidget(self._attention_header)
+        self._attention_rows = QVBoxLayout()
+        self._attention_rows.setSpacing(0)
+        panel.addLayout(self._attention_rows)
+        layout.addWidget(self._attention)
 
-        # The whole published year, not the month on screen. The timeline deliberately bounds
-        # holidays to the displayed month so a year of future dates cannot bury what actually
-        # happened — which left the full calendar with nowhere to live, and "when is the next
-        # day off" unanswerable without opening the portal.
-        layout.addWidget(SectionTitle("Company holidays"))
-        self.holidays = data_table(HOLIDAY_COLUMNS, fit_rows=True)
-        layout.addWidget(self.holidays)
-        self._holidays_note = QLabel()
-        self._holidays_note.setObjectName("CardCaption")
-        self._holidays_note.setWordWrap(True)
-        layout.addWidget(self._holidays_note)
+        filters_host = kit.Box()
+        filters = FlowLayout(filters_host, spacing=Space.SNUG)
+        self._kind = kit.Tabs([label for label, _ in KIND_FILTERS])
+        self._kind.changed.connect(lambda _index: self._render_timeline())
+        filters.addWidget(self._kind)
+        self._state = kit.ComboBox()
+        for label, _predicate in STATE_FILTERS:
+            self._state.addItem(label)
+        self._state.currentIndexChanged.connect(lambda _index: self._render_timeline())
+        filters.addWidget(self._state)
+        # The period re-loads from the cache rather than re-filtering what is on screen, so
+        # it signals the window instead of rendering locally like the other two.
+        self._period = kit.ComboBox()
+        for label, _months in PERIODS:
+            self._period.addItem(label)
+        self._period.currentIndexChanged.connect(lambda _index: self.period_changed.emit())
+        filters.addWidget(self._period)
+        layout.addWidget(filters_host)
 
-        layout.addLayout(self._build_timeline_header())
         self._timeline = QVBoxLayout()
-        self._timeline.setSpacing(Space.TIGHT)
-        timeline_host = QWidget()
+        self._timeline.setSpacing(0)
+        timeline_host = kit.Box()
         timeline_host.setLayout(self._timeline)
         layout.addWidget(timeline_host)
 
         # The cut always announces itself; a silently bounded list reads as complete.
-        self._overflow = QLabel()
-        self._overflow.setObjectName("CardCaption")
-        self._overflow.setWordWrap(True)
+        self._overflow = kit.Text(role="caption", tone="muted", wrap=True)
         self._overflow.setVisible(False)
         layout.addWidget(self._overflow)
 
@@ -240,57 +256,91 @@ class RecordsView(QWidget):
             "months they belong to have synced.",
         )
         layout.addWidget(self._nothing)
+        layout.addWidget(
+            kit.Text(
+                "Newest first. Each event once: the application owns the row, and the "
+                "attendance muster only fills in what it lacks.",
+                role="caption",
+                tone="faint",
+                wrap=True,
+            )
+        )
+        return view
 
-        layout.addStretch(1)
+    def _build_balances(self) -> QWidget:
+        view = QWidget()
+        layout = QVBoxLayout(view)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Space.GAP)
 
-    def _build_header(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(Space.SNUG)
-        row.addWidget(SectionTitle("Records"))
-        row.addStretch(1)
+        # The total leads: adding the cards up in your head is not an answer to "how much
+        # leave do I have".
+        self.total = kit.StatCard("Leave you can take", large=True)
+        layout.addWidget(self.total)
+        self._cards = QGridLayout()
+        self._cards.setSpacing(Space.ROW)
+        cards_host = kit.Box()
+        cards_host.setLayout(self._cards)
+        layout.addWidget(cards_host)
 
-        refresh = QPushButton("Refresh")
-        refresh.clicked.connect(self.refresh_requested)
-        portal = QPushButton("Open in SpineHR")
-        portal.setObjectName("Primary")
-        portal.clicked.connect(self.open_portal)
-        row.addWidget(refresh)
-        row.addWidget(portal)
-        return row
+        self._insights = InsightStrip(self._palette)
+        layout.addWidget(self._insights)
 
-    def _build_timeline_header(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(Space.SNUG)
-        row.addWidget(SectionTitle("What happened"))
-        # The period re-loads from the cache rather than re-filtering what is on screen, so
-        # it signals the window instead of rendering locally like the other two.
-        self._period = QComboBox()
-        self._period.setMinimumWidth(140)
-        for label, _months in PERIODS:
-            self._period.addItem(label)
-        self._period.currentIndexChanged.connect(lambda _index: self.period_changed.emit())
-        self._kind = self._filter_box(KIND_FILTERS, width=160)
-        self._state = self._filter_box(STATE_FILTERS, width=170)
-        row.addStretch(1)
-        row.addWidget(self._period)
-        row.addWidget(self._kind)
-        row.addWidget(self._state)
-        return row
+        # Every comp-off credit and what became of it. The card above gives the one number;
+        # this answers which credits make it up, which a leave spent, and which were lost.
+        self._credits_section = kit.Box()
+        credits = QVBoxLayout(self._credits_section)
+        credits.setContentsMargins(0, Space.SNUG, 0, 0)
+        credits.setSpacing(Space.ROW)
+        self._credits_header = kit.SectionHeader(
+            "Comp-off credits", meta="Each credit, and what became of it"
+        )
+        self._portal_check = kit.Pill(tone="good")
+        self._credits_header.add_action(self._portal_check)
+        credits.addWidget(self._credits_header)
+        self._credit_groups = QVBoxLayout()
+        self._credit_groups.setSpacing(Space.ROW)
+        credits.addLayout(self._credit_groups)
+        self._credits_note = kit.Text(role="caption", tone="muted", wrap=True)
+        credits.addWidget(self._credits_note)
+        layout.addWidget(self._credits_section)
+        return view
+
+    def _build_calendar(self) -> QWidget:
+        view = QWidget()
+        layout = QVBoxLayout(view)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Space.ROW)
+
+        layout.addWidget(kit.SectionHeader("Best breaks you can book"))
+        self.breaks = kit.TableWidget(BREAK_COLUMNS, fit_rows=True)
+        layout.addWidget(self.breaks)
+        self._breaks_note = kit.Text(role="caption", tone="muted", wrap=True)
+        layout.addWidget(self._breaks_note)
+
+        # The whole published year, not the month on screen, so "when is the next day off"
+        # is answerable without opening the portal.
+        layout.addSpacing(Space.SNUG)
+        layout.addWidget(kit.SectionHeader("Company holidays"))
+        self.holidays = kit.TableWidget(HOLIDAY_COLUMNS, fit_rows=True)
+        layout.addWidget(self.holidays)
+        self._holidays_note = kit.Text(role="caption", tone="muted", wrap=True)
+        layout.addWidget(self._holidays_note)
+        return view
+
+    def _show_view(self, index: int) -> None:
+        for position, view in enumerate(self._views):
+            view.setVisible(position == index)
+
+    def show_view(self, index: int) -> None:
+        """Bring one of the three views forward, as its tab would."""
+        self._tabs.set_current(index)
+        self._show_view(index)
 
     def period_start(self, *, today: date | None = None) -> date | None:
         """The first day the selected period covers, or ``None`` for everything."""
         _label, months = PERIODS[max(0, self._period.currentIndex())]
         return period_start(months, today=today or date.today())
-
-    def _filter_box(
-        self, entries: tuple[tuple[str, Callable[[Record], bool]], ...], *, width: int
-    ) -> QComboBox:
-        box = QComboBox()
-        box.setMinimumWidth(width)
-        for label, _predicate in entries:
-            box.addItem(label)
-        box.currentIndexChanged.connect(lambda _index: self._render_timeline())
-        return box
 
     # --- rendering ------------------------------------------------------------------
 
@@ -304,6 +354,7 @@ class RecordsView(QWidget):
 
     def show_records(self, records: list[Record]) -> None:
         self._records = records
+        self._render_attention()
         self._render_timeline()
 
     def show_requests(self, requests: list[object]) -> None:
@@ -336,96 +387,72 @@ class RecordsView(QWidget):
         # close to lapsing. Comp-off expires a credit at a time and the difference is large.
         at_risk = sum(outlook.at_risk_days for outlook in live)
 
-        self.total.set_value(
-            _days(total), accent=self._palette.good if total > 0 else self._palette.text_muted
-        )
-        parts = [f"across {len(live)} leave type(s)"]
+        self.total.set_value(_days(total), tone="good" if total > 0 else "muted")
+        parts = [f"across {len(live)} kind{'s' if len(live) != 1 else ''} of leave"]
         if at_risk:
-            parts.append(f"{_days(at_risk)} expiring soon")
+            parts.append(f"{_days(at_risk)} of it lapses within 60 days")
         expired = [outlook for outlook in outlooks if outlook.is_expired]
         if expired:
-            parts.append(f"{len(expired)} type(s) already lapsed and not counted")
-        self.total.set_caption("  ·  ".join(parts))
+            parts.append(f"{len(expired)} kind(s) already lapsed and not counted")
+        self.total.set_caption(" · ".join(parts))
 
     def _render_cards(self, outlooks: list[LeaveOutlook]) -> None:
         empty_layout(self._cards)
-
         ordered = sorted(outlooks, key=lambda outlook: CARD_ORDER.index(outlook.balance.category))
         for index, outlook in enumerate(ordered):
             self._cards.addWidget(
                 self._card_for(outlook), index // CARDS_PER_ROW, index % CARDS_PER_ROW
             )
 
-    def _card_for(self, outlook: LeaveOutlook) -> Card:
+    def _card_for(self, outlook: LeaveOutlook) -> kit.StatCard:
         balance = outlook.balance
-        accent = None
+        tone = None
         if outlook.is_expired:
-            accent = self._palette.bad
+            tone = "bad"
         elif outlook.is_at_risk:
-            accent = self._palette.rest
+            tone = "rest"
         elif balance.available_balance > 0:
-            accent = self._palette.good
+            tone = "good"
 
-        # A balance card shows a balance. The credits behind a comp-off figure — earned,
-        # expiring, used — are events, and live on the timeline below as "Comp-off earned".
-        card = Card(balance.leave_type, value=f"{balance.available_balance:g}", accent=accent)
+        name = CATEGORY_NAMES.get(balance.category)
+        title = f"{name} · {balance.leave_type}" if name else balance.leave_type
         caption = _expiry_caption(outlook)
         if outlook.comp_off is not None:
             extra = _comp_off_caption(outlook.comp_off)
             caption = " · ".join(part for part in (caption, extra) if part)
-        card.set_caption(caption)
+        card = kit.StatCard(
+            title, value=f"{balance.available_balance:g}", caption=caption, tone=tone
+        )
         card.setMinimumWidth(170)
         return card
 
     def _render_credits(self, ledger: CompOffLedger | None) -> None:
-        """Every comp-off credit of the financial year, and any older one still open.
-
-        Newest first, like the timeline. Credits from an earlier year are history once
-        settled, and the register stops showing them in April, so they stay off this table
-        too; they remain on the timeline.
-        """
-        from PySide6.QtWidgets import QTableWidgetItem
-
-        shown = _credits_to_show(ledger)
-        visible = bool(shown)
-        self._credits_title.setVisible(visible)
-        self.credits.setVisible(visible)
-        self._credits_note.setVisible(visible)
-        self.credits.setRowCount(len(shown))
-        if ledger is None or not shown:
+        """Every comp-off credit of the financial year, grouped by what became of it."""
+        empty_layout(self._credit_groups)
+        groups = _credit_groups(ledger)
+        self._credits_section.setVisible(bool(groups))
+        if ledger is None or not groups:
             return
 
-        today = ledger.assessed_on
-        for row, credit in enumerate(shown):
-            status, colour = _credit_status(credit, today, self._palette)
-            values = (
-                fmt.day_label(credit.earned_on),
-                f"{credit.days:g}",
-                fmt.day_label(credit.expires_on),
-                status,
-                credit.reason or "—",
+        for title, meta, credits in groups:
+            self._credit_groups.addWidget(
+                _CreditGroup(title, meta, credits, ledger.assessed_on, self._palette)
             )
-            settled = credit.state in (CreditState.USED, CreditState.LAPSED)
-            for column, text in enumerate(values):
-                item = QTableWidgetItem(text)
-                if column == 1:
-                    item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                    )
-                if column == 3:
-                    item.setForeground(QColor(colour))
-                elif settled:
-                    item.setForeground(QColor(self._palette.text_faint))
-                if column == 4 and credit.reason:
-                    item.setToolTip(credit.reason)
-                self.credits.setItem(row, column, item)
 
+        if ledger.portal_agrees is True and ledger.portal is not None:
+            self._portal_check.set_state(
+                f"SpineHR's own lookup also says {ledger.portal.balance:g} today", "good"
+            )
+        elif ledger.portal_agrees is False and ledger.portal is not None:
+            self._portal_check.set_state(
+                f"SpineHR's own lookup says {ledger.portal.balance:g} today", "bad"
+            )
+        else:
+            self._portal_check.set_state("", "muted")
         self._credits_note.setText(_credits_note(ledger))
 
     def show_holidays(self, holidays: list[Holiday], *, today: date | None = None) -> None:
         """The published calendar, past dimmed and the next one named."""
-        from PySide6.QtWidgets import QTableWidgetItem
-
         entries = holiday_calendar(holidays, today=today or date.today())
         self.holidays.setRowCount(len(entries))
         self.holidays.setVisible(bool(entries))
@@ -467,8 +494,6 @@ class RecordsView(QWidget):
             )
 
     def _render_breaks(self, plans: list[BreakPlan]) -> None:
-        from PySide6.QtWidgets import QTableWidgetItem
-
         self.breaks.setRowCount(len(plans))
         self.breaks.setVisible(bool(plans))
 
@@ -513,24 +538,48 @@ class RecordsView(QWidget):
             )
         self._breaks_note.setText(note)
 
+    def _render_attention(self) -> None:
+        empty_layout(self._attention_rows)
+        needing = [record for record in self._records if record.needs_action]
+        self._attention.setVisible(bool(needing))
+        if not needing:
+            return
+        count = len(needing)
+        self._attention_header.set_meta(
+            f"{count} thing{'s' if count != 1 else ''} only you can settle — "
+            "they stay here until they are"
+        )
+        for record in needing[:NEEDS_DOING_SHOWN]:
+            row = _RecordRow(record, self._palette, dated=True)
+            row.clicked.connect(lambda day=record.day: self.day_selected.emit(day))
+            self._attention_rows.addWidget(row)
+        if count > NEEDS_DOING_SHOWN:
+            self._attention_rows.addWidget(
+                kit.Text(
+                    f"and {count - NEEDS_DOING_SHOWN} more — pick Needs doing below",
+                    role="caption",
+                    tone="muted",
+                )
+            )
+
     def _render_timeline(self) -> None:
         empty_layout(self._timeline)
 
-        _kind_label, by_kind = KIND_FILTERS[max(0, self._kind.currentIndex())]
+        _kind_label, by_kind = KIND_FILTERS[self._kind.current()]
         _state_label, by_state = STATE_FILTERS[max(0, self._state.currentIndex())]
         shown = [record for record in self._records if by_kind(record) and by_state(record)]
         self._nothing.setVisible(not shown)
 
         # Grouped under the day rather than dated per row: three things on one Thursday are
-        # one heading and three lines, and the date stops competing with the title.
-        current: date | None = None
+        # one date and three lines, and the date stops competing with the title.
+        group: _DayGroup | None = None
         for record in shown[:MAX_ROWS]:
-            if record.day != current:
-                current = record.day
-                self._timeline.addWidget(_DayHeader(record.day, self._palette))
+            if group is None or group.day != record.day:
+                group = _DayGroup(record.day)
+                self._timeline.addWidget(group)
             row = _RecordRow(record, self._palette)
             row.clicked.connect(lambda day=record.day: self.day_selected.emit(day))
-            self._timeline.addWidget(row)
+            group.add(row)
 
         if len(shown) > MAX_ROWS:
             self._overflow.setText(
@@ -540,108 +589,307 @@ class RecordsView(QWidget):
         self._overflow.setVisible(len(shown) > MAX_ROWS)
 
 
-class _DayHeader(QLabel):
-    """The date, once, above everything that happened on it. Not a row: not clickable."""
+# --- the timeline ---------------------------------------------------------------------------
 
-    def __init__(self, day: date, palette: Palette, parent: QWidget | None = None) -> None:
-        super().__init__(fmt.day_label(day), parent)
-        self.setStyleSheet(
-            f"color: {palette.text_muted}; font-weight: 600; font-size: 11px;"
-            f" padding: {Space.SNUG}px 0 2px 0; border-bottom: 1px solid {palette.border};"
+
+class _DayHeader(QWidget):
+    """The date, once, beside everything that happened on it. Not clickable."""
+
+    def __init__(self, day: date, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(0)
+        self.date = kit.Text(fmt.day_label(day), self, role="body-strong")
+        layout.addWidget(self.date)
+        # The year only when it is not this one: "2026" under every date was noise.
+        if day.year != date.today().year:
+            layout.addWidget(kit.Text(str(day.year), self, role="caption", tone="faint"))
+        layout.addStretch(1)
+        self.setFixedWidth(measure("Wed 30 Sep", role="body-strong") + Space.GAP)
+
+
+class _DayGroup(QWidget):
+    """One day: its date on the left, a row per thing that happened on the right."""
+
+    def __init__(self, day: date, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.day = day
+        column = QVBoxLayout(self)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
+        column.addWidget(kit.Divider(self))
+        row = QHBoxLayout()
+        row.setContentsMargins(0, Space.TIGHT, 0, Space.TIGHT)
+        row.setSpacing(Space.SNUG)
+        row.addWidget(_DayHeader(day, self), 0, Qt.AlignmentFlag.AlignTop)
+        self._rows = QVBoxLayout()
+        self._rows.setSpacing(0)
+        row.addLayout(self._rows, 1)
+        column.addLayout(row)
+
+    def add(self, row: QWidget) -> None:
+        self._rows.addWidget(row)
+
+
+#: Which icon, and in which tone, each kind of event is drawn with.
+KIND_ICONS: dict[RecordKind, tuple[str, str]] = {
+    RecordKind.LEAVE: ("leave", "adjust"),
+    RecordKind.OUTDOOR_DUTY: ("duty", "work"),
+    RecordKind.COMP_OFF_EARNED: ("earned", "good"),
+    RecordKind.COMP_OFF_SPENT: ("leave", "good"),
+    RecordKind.COMP_OFF_LAPSED: ("lapse", "bad"),
+    RecordKind.SWIPE_REQUEST: ("swipe", "work"),
+    RecordKind.ABSENCE: ("absence", "bad"),
+}
+
+#: The pill's tone, by state: approved green, pending amber, rejected and lapsed red.
+STATE_TONES: dict[RecordState, str] = {
+    RecordState.APPROVED: "good",
+    RecordState.PENDING: "rest",
+    RecordState.REJECTED: "bad",
+    RecordState.LAPSED: "bad",
+    RecordState.CANCELLED: "muted",
+}
+
+ASIDE_TONES = {Tone.MUTED: "muted", Tone.FAINT: "faint", Tone.WARN: "rest", Tone.BAD: "bad"}
+
+
+class _RecordRow(kit.ListRow):
+    """One event: an icon for its kind, what it was, why, what became of it, its state.
+
+    The pill is coloured by *state* — approved green, pending amber, rejected red — and the
+    icon by kind, so the two ends of a row answer two different questions and a rejection is
+    never the same colour as an approval. Only requests get a pill: a half day the portal
+    marked for a late arrival has no approval state, and a blank pill would read as one that
+    failed to load.
+    """
+
+    def __init__(
+        self,
+        record: Record,
+        palette: Palette,
+        parent: QWidget | None = None,
+        *,
+        dated: bool = False,
+    ) -> None:
+        icon, icon_tone = KIND_ICONS.get(record.kind, ("info", "muted"))
+        kind = record.kind.label
+        if record.decided_on is not None:
+            kind = f"{kind} · decided {fmt.day_label(record.decided_on)}"
+        title = f"{fmt.day_label(record.day)} · {record.title}" if dated else record.title
+        super().__init__(
+            palette,
+            icon=icon,
+            icon_tone=icon_tone,
+            title=title,
+            detail=record.detail,
+            aside=record.aside,
+            aside_tone=ASIDE_TONES.get(record.aside_tone, "muted"),
+            kind=kind,
+            state=record.status if record.state is not RecordState.NONE else "",
+            state_tone=STATE_TONES.get(record.state, "muted"),
+            tooltip=record.note,
+            clickable=True,
+            parent=parent,
         )
 
 
-class _RecordRow(QWidget):
-    """One event: what kind, what it was, what became of it.
+# --- comp-off credits -----------------------------------------------------------------------
 
-    The chip says the kind and the title says the thing, so neither repeats the other. The
-    pill at the end is coloured by *state* — approved green, pending amber, rejected red —
-    and the chip by kind, so the two ends of a row answer two different questions and a
-    rejection is never the same colour as an approval.
+
+def _credit_groups(
+    ledger: CompOffLedger | None,
+) -> list[tuple[str, str, list[CompOffCredit]]]:
+    """The credits worth showing, grouped as the user asks about them, empty groups dropped.
+
+    The financial year's credits and any older one still open. Credits from an earlier year
+    are history once settled, and the register stops showing them in April too.
     """
+    if ledger is None:
+        return []
+    start = _financial_year_start(ledger)
+    usable = list(ledger.available)
+    booked = [c for c in ledger.credits if c.state is CreditState.BOOKED]
+    pending = [c for c in ledger.credits if c.state is CreditState.PENDING]
+    settled = sorted(
+        (
+            c
+            for c in ledger.credits
+            if c.state in (CreditState.USED, CreditState.LAPSED) and c.earned_on >= start
+        ),
+        key=lambda credit: credit.earned_on,
+        reverse=True,
+    )
+    used = sum(1 for c in settled if c.state is CreditState.USED)
+    lost = sum(c.remaining for c in settled if c.state is CreditState.LAPSED)
+    groups = [
+        ("Usable now", f"{_days(ledger.usable)} · spend the top one first", usable),
+        ("Booked", f"{_days(ledger.booked_days)} held by leave awaiting approval", booked),
+        ("Awaiting approval", f"{_days(ledger.pending_days)} · not spendable yet", pending),
+        (
+            "Used or lapsed this year",
+            " · ".join(
+                part
+                for part in (
+                    f"{used} used" if used else "",
+                    f"{_days(lost)} lapsed" if lost else "",
+                )
+                if part
+            ),
+            settled,
+        ),
+    ]
+    return [group for group in groups if group[2]]
 
-    clicked = Signal()
 
-    def __init__(self, record: Record, palette: Palette, parent: QWidget | None = None) -> None:
+class _CreditGroup(kit.Surface):
+    """One group of credits: a header strip, then a row per credit."""
+
+    def __init__(
+        self,
+        title: str,
+        meta: str,
+        credits: list[CompOffCredit],
+        today: date,
+        palette: Palette,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent, variant="card")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(Space.GAP, Space.ROW, Space.GAP, Space.SNUG)
+        layout.setSpacing(Space.TIGHT)
+        layout.addWidget(kit.SectionHeader(title, meta=meta, role="body-strong"))
+        for credit in credits:
+            layout.addWidget(kit.Divider(self))
+            layout.addWidget(_CreditRow(credit, today, palette, self))
+
+
+class _CreditRow(QWidget):
+    """Earned, how much, what became of it and why it was earned, and its use-by date."""
+
+    def __init__(
+        self, credit: CompOffCredit, today: date, palette: Palette, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        if record.note:
-            self.setToolTip(record.note)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, Space.TIGHT, 0, Space.TIGHT)
+        row.setSpacing(Space.GAP)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, Space.TIGHT, 0, Space.TIGHT)
-        layout.setSpacing(Space.ROW)
+        earned = kit.Text(fmt.day_label(credit.earned_on), self, role="body-strong")
+        earned.setFixedWidth(measure("Wed 30 Sep", "Mon 21 Sep", role="body-strong"))
+        row.addWidget(earned)
+        amount = kit.Text(_amount(credit.days), self, tone="muted")
+        amount.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        amount.setFixedWidth(measure("½ day", "1 day", "2 days"))
+        row.addWidget(amount)
 
-        chip = StatusChip(record.kind.label, _kind_colour(record.kind, palette))
-        chip.setFixedWidth(100)
-        layout.addWidget(chip, 0, Qt.AlignmentFlag.AlignTop)
+        words = QVBoxLayout()
+        words.setSpacing(0)
+        fate, fate_tone = _credit_fate(credit, today)
+        self.fate = kit.Text(fate, self, tone=fate_tone, wrap=True)
+        words.addWidget(self.fate)
+        if credit.reason:
+            words.addWidget(kit.Text(credit.reason, self, role="caption", tone="muted", wrap=True))
+        row.addLayout(words, 1)
 
-        text = QVBoxLayout()
-        text.setSpacing(1)
-        title = QLabel(record.title)
-        title.setStyleSheet("font-weight: 600;")
-        text.addWidget(title)
-        if record.detail:
-            detail = QLabel(record.detail)
-            detail.setObjectName("CardCaption")
-            detail.setWordWrap(True)
-            text.addWidget(detail)
-        if record.aside:
-            aside = QLabel(record.aside)
-            aside.setObjectName("CardCaption")
-            aside.setWordWrap(True)
-            aside.setStyleSheet(f"color: {_tone_colour(record.aside_tone, palette)};")
-            text.addWidget(aside)
-        layout.addLayout(text, 1)
+        clock = QVBoxLayout()
+        clock.setSpacing(Space.TIGHT)
+        line = QHBoxLayout()
+        line.setSpacing(Space.SNUG)
+        use_by = "Use by" if credit.state is CreditState.AVAILABLE else "Last day"
+        line.addWidget(
+            kit.Text(f"{use_by} {fmt.day_label(credit.expires_on)}", self, role="caption")
+        )
+        line.addStretch(1)
+        left, left_tone, fraction = _credit_clock(credit, today)
+        self.left = kit.Text(left, self, role="caption", tone=left_tone)
+        line.addWidget(self.left)
+        clock.addLayout(line)
+        clock.addWidget(_Meter(fraction, left_tone, palette, self))
+        holder = kit.Box(self)
+        holder.setLayout(clock)
+        # A floor, so the bars line up down the list, and room to grow past it: a fixed
+        # width left out the gap between the two labels and clipped the date.
+        holder.setMinimumWidth(
+            measure("Last day Wed 30 Sep", role="caption")
+            + Space.SNUG
+            + measure("38 days left", role="caption")
+        )
+        row.addWidget(holder)
 
-        if record.decided_on is not None:
-            decided = QLabel(f"decided {fmt.day_label(record.decided_on)}")
-            decided.setStyleSheet(f"color: {palette.text_faint}; font-size: 11px;")
-            layout.addWidget(decided, 0, Qt.AlignmentFlag.AlignTop)
-        # Only the entries that *are* requests get a pill — a half day the portal marked for
-        # a late arrival has no approval state, and a blank pill would read as one that
-        # failed to load.
-        if record.state is not RecordState.NONE:
-            pill = StatusChip(record.status, _state_colour(record.state, palette))
-            layout.addWidget(pill, 0, Qt.AlignmentFlag.AlignTop)
 
-    def mouseReleaseEvent(self, event: object) -> None:  # noqa: N802 — Qt override
-        self.clicked.emit()
-        super().mouseReleaseEvent(event)  # type: ignore[arg-type]
+class _Meter(QWidget):
+    """A thin bar: how much of a credit's window is left, in the tone of its state."""
+
+    def __init__(
+        self, fraction: float, tone: str, palette: Palette, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self._fraction = max(0.0, min(1.0, fraction))
+        self._tone = tone
+        self._palette = palette
+        self.setFixedHeight(4)
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 — Qt override
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        track = QRectF(self.rect())
+        painter.setBrush(QColor(self._palette.overlay))
+        painter.drawRoundedRect(track, 2, 2)
+        if self._fraction > 0:
+            filled = QRectF(track.x(), track.y(), track.width() * self._fraction, track.height())
+            painter.setBrush(QColor(tone_colour(self._palette, self._tone)))
+            painter.drawRoundedRect(filled, 2, 2)
+        painter.end()
+
+
+def _credit_fate(credit: CompOffCredit, today: date) -> tuple[str, str | None]:
+    """What became of a credit, in the words its group does not already say."""
+    spent_on = ", ".join(fmt.day_label(spend.day) for spend in credit.spent_by)
+    if credit.state is CreditState.AVAILABLE:
+        if credit.spent_by:
+            return f"{_amount(credit.remaining)} of it left after {spent_on}", None
+        return "Available", None
+    if credit.state is CreditState.BOOKED:
+        apps = ", ".join(sorted({f"#{s.app_id}" for s in credit.spent_by if s.app_id}))
+        return f"For {spent_on}" + (f" · leave {apps}" if apps else ""), None
+    if credit.state is CreditState.USED:
+        return f"Used {spent_on}", "muted"
+    if credit.state is CreditState.LAPSED:
+        partly = f" · {_amount(credit.remaining)} of it" if credit.spent_by else ""
+        return f"Lapsed unused{partly}", "bad"
+    applied = f" · comp-off #{credit.app_id} in process" if credit.app_id else ""
+    return f"Awaiting approval{applied}", "muted"
+
+
+def _credit_clock(credit: CompOffCredit, today: date) -> tuple[str, str, float]:
+    """The words at the end of the bar, their tone, and how full the bar is."""
+    window = max(1, (credit.expires_on - credit.earned_on).days)
+    if credit.state is CreditState.AVAILABLE:
+        left = credit.days_left(today)
+        tone = "rest" if left <= CREDIT_WARNING_DAYS else "good"
+        return f"{left} day{'s' if left != 1 else ''} left", tone, left / window
+    if credit.state is CreditState.BOOKED:
+        return "held", "faint", 1.0
+    if credit.state is CreditState.PENDING:
+        return "pending", "faint", 0.0
+    if credit.state is CreditState.USED:
+        return "used", "good", 1.0
+    return "lost", "bad", 1.0
+
+
+def _amount(days: float) -> str:
+    return "½ day" if days == 0.5 else _days(days)
+
+
+# --- captions ---------------------------------------------------------------------------------
 
 
 def open_url(url: str) -> None:
     """Open a portal page in the default browser."""
     QDesktopServices.openUrl(QUrl(url))
-
-
-def _kind_colour(kind: RecordKind, palette: Palette) -> str:
-    return {
-        RecordKind.LEAVE: palette.adjust,
-        RecordKind.OUTDOOR_DUTY: palette.work,
-        RecordKind.COMP_OFF_EARNED: palette.good,
-        RecordKind.COMP_OFF_SPENT: palette.good,
-        RecordKind.COMP_OFF_LAPSED: palette.bad,
-        RecordKind.SWIPE_REQUEST: palette.text_muted,
-        RecordKind.ABSENCE: palette.bad,
-    }.get(kind, palette.text_muted)
-
-
-def _state_colour(state: RecordState, palette: Palette) -> str:
-    return {
-        RecordState.APPROVED: palette.good,
-        RecordState.PENDING: palette.rest,
-        RecordState.REJECTED: palette.bad,
-        RecordState.LAPSED: palette.bad,
-    }.get(state, palette.text_muted)
-
-
-def _tone_colour(tone: Tone, palette: Palette) -> str:
-    return {
-        Tone.FAINT: palette.text_faint,
-        Tone.WARN: palette.rest,
-        Tone.BAD: palette.bad,
-    }.get(tone, palette.text_muted)
 
 
 def _expiry_caption(outlook: LeaveOutlook) -> str:
@@ -691,37 +939,6 @@ def _comp_off_caption(ledger: CompOffLedger) -> str:
 def _financial_year_start(ledger: CompOffLedger) -> date:
     today = ledger.assessed_on
     return date(today.year if today.month >= 4 else today.year - 1, 4, 1)
-
-
-def _credits_to_show(ledger: CompOffLedger | None) -> list[CompOffCredit]:
-    if ledger is None:
-        return []
-    start = _financial_year_start(ledger)
-    settled = (CreditState.USED, CreditState.LAPSED)
-    return sorted(
-        (c for c in ledger.credits if c.earned_on >= start or c.state not in settled),
-        key=lambda credit: credit.earned_on,
-        reverse=True,
-    )
-
-
-def _credit_status(credit: CompOffCredit, today: date, palette: Palette) -> tuple[str, str]:
-    """``Available · 37 days left``, ``Used Wed 26 Aug``, and the colour to draw it in."""
-    spent_on = ", ".join(fmt.day_label(spend.day) for spend in credit.spent_by)
-    if credit.state is CreditState.AVAILABLE:
-        left = credit.days_left(today)
-        text = f"Available · {left} day{'s' if left != 1 else ''} left"
-        if credit.spent_by:
-            text += f" · {credit.remaining:g} of {credit.days:g} unused"
-        return text, palette.rest if left <= 60 else palette.good
-    if credit.state is CreditState.BOOKED:
-        return f"Booked for {spent_on} · leave awaiting approval", palette.rest
-    if credit.state is CreditState.USED:
-        return f"Used {spent_on}", palette.text_muted
-    if credit.state is CreditState.LAPSED:
-        partly = f" · {credit.remaining:g} of {credit.days:g}" if credit.spent_by else ""
-        return f"Lapsed unused{partly}", palette.bad
-    return "Awaiting approval", palette.text_muted
 
 
 def _credits_note(ledger: CompOffLedger) -> str:

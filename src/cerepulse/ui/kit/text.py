@@ -9,10 +9,32 @@ coloured label had to be found and repainted when the theme changed. A kit label
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtGui import QFont, QFontMetrics
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from cerepulse.ui.kit.buttons import repolish
 from cerepulse.ui.theme import ROLES, TONES
+
+
+def font_for(role: str) -> QFont:
+    """The font a role is drawn in: the application's family at the ramp's size and weight."""
+    size, weight = ROLES[role]
+    font = QFont(QApplication.font())
+    font.setPointSizeF(size)
+    font.setWeight(QFont.Weight(weight))
+    return font
+
+
+def measure(*samples: str, role: str = "body") -> int:
+    """The width the widest sample needs in a role's font, in logical pixels.
+
+    A column sized for its content has to be measured in the font the sheet *will* apply.
+    A label's own ``fontMetrics()`` at construction is the font before the sheet has polished
+    it — smaller and lighter than the role — and the dates in the comp-off list came out
+    clipped by a few pixels at every scale.
+    """
+    metrics = QFontMetrics(font_for(role))
+    return max(metrics.horizontalAdvance(sample) for sample in samples) + 2
 
 
 def _check(role: str | None, tone: str | None) -> None:

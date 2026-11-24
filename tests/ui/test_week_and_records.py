@@ -298,9 +298,10 @@ def records() -> list[Record]:
 
 
 def _rows(view: RecordsView) -> list[object]:
+    """The timeline's rows — not the copies the Needs doing panel shows above it."""
     from cerepulse.ui.views.records import _RecordRow
 
-    return view.findChildren(_RecordRow)
+    return [row for row in view.findChildren(_RecordRow) if not view._attention.isAncestorOf(row)]
 
 
 def _headers(view: RecordsView) -> list[object]:
@@ -313,8 +314,8 @@ def test_the_timeline_shows_everything_by_default(qapp: QApplication) -> None:
     view = RecordsView(DARK)
     view.show_records(records())
 
-    # Five events on five days: five headers, five rows.
-    assert view._timeline.count() == 10
+    # Five events on five days: five day groups, each with its date and one row.
+    assert view._timeline.count() == 5
     assert len(_rows(view)) == 5
     assert len(_headers(view)) == 5
 
@@ -323,7 +324,7 @@ def _pick(view: RecordsView, *, kind: str | None = None, state: str | None = Non
     from cerepulse.ui.views.records import KIND_FILTERS, STATE_FILTERS
 
     if kind is not None:
-        view._kind.setCurrentIndex([name for name, _ in KIND_FILTERS].index(kind))
+        view._kind.set_current([name for name, _ in KIND_FILTERS].index(kind))
     if state is not None:
         view._state.setCurrentIndex([name for name, _ in STATE_FILTERS].index(state))
 
@@ -354,7 +355,7 @@ def test_the_two_axes_combine(qapp: QApplication) -> None:
     view = RecordsView(DARK)
     view.show_records(records())
 
-    _pick(view, kind="Swipe requests", state="Waiting on approval")
+    _pick(view, kind="Swipes", state="Waiting on approval")
     assert len(_rows(view)) == 1
 
     # Same kind, a state it is not in.
@@ -395,8 +396,9 @@ def test_rebuilding_does_not_leave_rows_painting(qapp: QApplication) -> None:
     for _ in range(4):
         view.show_records(records())
 
-    assert view._timeline.count() == 10
-    assert len(view.findChildren(_RecordRow)) == 5
+    assert view._timeline.count() == 5
+    # Five in the timeline and the one absence repeated under Needs doing — no more.
+    assert len(view.findChildren(_RecordRow)) == 6
     assert len(_headers(view)) == 5
 
 
@@ -417,7 +419,7 @@ def test_rows_on_one_day_share_a_header(qapp: QApplication) -> None:
 
 def test_the_pill_is_coloured_by_state_not_kind(qapp: QApplication) -> None:
     """Approved and rejected used to wear the kind's colour, so they looked alike."""
-    from cerepulse.ui.widgets import StatusChip
+    from cerepulse.ui.kit import Pill
 
     view = RecordsView(DARK)
     view.show_records(
@@ -426,19 +428,21 @@ def test_the_pill_is_coloured_by_state_not_kind(qapp: QApplication) -> None:
             Record(date(2026, 8, 20), RecordKind.LEAVE, "Half day", state=RecordState.REJECTED),
         ]
     )
-    pills = {chip.text(): chip.styleSheet() for chip in view.findChildren(StatusChip)}
+    pills = {pill.text(): pill.property("tone") for pill in view.findChildren(Pill) if pill.text()}
 
-    assert DARK.good in pills["Approved"]
-    assert DARK.bad in pills["Rejected"]
+    assert pills["Approved"] == "good"
+    assert pills["Rejected"] == "bad"
 
 
 def test_a_stateless_record_has_no_pill(qapp: QApplication) -> None:
-    from cerepulse.ui.widgets import StatusChip
+    from cerepulse.ui.kit import Pill
 
     view = RecordsView(DARK)
     view.show_records([Record(date(2026, 8, 25), RecordKind.LEAVE, "Half day", "Late entry")])
 
-    assert [chip.text() for chip in view.findChildren(StatusChip)] == ["Leave"]
+    (row,) = _rows(view)
+    assert [pill for pill in row.findChildren(Pill) if pill.isVisibleTo(row)] == []  # type: ignore[attr-defined]
+    assert row.kind.text() == "Leave"  # type: ignore[attr-defined]
 
 
 def test_the_decision_date_sits_beside_the_pill(qapp: QApplication) -> None:
@@ -475,7 +479,7 @@ def test_a_comp_off_leave_answers_both_kind_filters(qapp: QApplication) -> None:
     assert len(_rows(view)) == 1
     _pick(view, kind="Comp-off")
     assert len(_rows(view)) == 1
-    _pick(view, kind="Swipe requests")
+    _pick(view, kind="Swipes")
     assert len(_rows(view)) == 0
 
 
@@ -506,7 +510,7 @@ def test_every_filter_combination_survives_an_empty_timeline(qapp: QApplication)
     view.show_records([])
     for kind in range(len(KIND_FILTERS)):
         for state in range(len(STATE_FILTERS)):
-            view._kind.setCurrentIndex(kind)
+            view._kind.set_current(kind)
             view._state.setCurrentIndex(state)
 
 
@@ -561,7 +565,7 @@ def test_the_render_cap_announces_itself(qapp: QApplication) -> None:
     view.show_records(many)
 
     assert len(_rows(view)) == MAX_ROWS
-    assert view._timeline.count() == 2 * MAX_ROWS
+    assert view._timeline.count() == MAX_ROWS  # one day each
     assert view._overflow.isVisibleTo(view)
     assert f"{MAX_ROWS} most recent of {MAX_ROWS + 50}" in view._overflow.text()
 
@@ -606,7 +610,7 @@ def test_an_unsynced_calendar_says_so_rather_than_showing_nothing(qapp: QApplica
     view = RecordsView(DARK)
     view.show_holidays([], today=date(2026, 8, 4))
 
-    assert not view.holidays.isVisibleTo(view)
+    assert view.holidays.isHidden()
     assert "not synced" in view._holidays_note.text()
 
 
@@ -615,3 +619,39 @@ def test_a_spent_year_says_so(qapp: QApplication) -> None:
     view.show_holidays(calendar_(), today=date(2026, 12, 31))
 
     assert "have passed" in view._holidays_note.text()
+
+
+# --- the three views ----------------------------------------------------------------------------
+
+
+def test_what_happened_is_the_view_the_screen_opens_on(qapp: QApplication) -> None:
+    from cerepulse.ui.views.records import BALANCES, CALENDAR, HAPPENED
+
+    view = RecordsView(DARK)
+    assert not view._views[HAPPENED].isHidden()
+    assert view._views[BALANCES].isHidden() and view._views[CALENDAR].isHidden()
+
+    view.show_view(CALENDAR)
+    assert view._views[HAPPENED].isHidden()
+    assert not view._views[CALENDAR].isHidden()
+    assert view._tabs.current() == CALENDAR
+
+
+def test_what_needs_doing_leads_and_hides_when_nothing_does(qapp: QApplication) -> None:
+    view = RecordsView(DARK)
+    view.show_records(records())
+    assert not view._attention.isHidden()
+    assert "1 thing only you can settle" in view._attention_header.meta.text()
+
+    view.show_records([Record(date(2026, 6, 20), RecordKind.LEAVE, "Full day")])
+    assert view._attention.isHidden()
+
+
+def test_a_needs_doing_row_carries_its_date(qapp: QApplication) -> None:
+    """In the panel there is no day group beside it, so the row says when."""
+    from cerepulse.ui.views.records import _RecordRow
+
+    view = RecordsView(DARK)
+    view.show_records(records())
+    (flagged,) = [row for row in view.findChildren(_RecordRow) if view._attention.isAncestorOf(row)]
+    assert flagged.title.text() == "Tue 2 Jun · Marked absent"
