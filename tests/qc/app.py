@@ -89,16 +89,19 @@ def style_like_the_app(application: Any, theme: str = "dark") -> Any:
     and a screen that is too tight for the real thing passes. Undone afterwards because the
     sheet is application-wide and the rest of a test session must not inherit it.
     """
-    from cerepulse.ui.theme import apply_font, palette_for, stylesheet
+    from cerepulse.ui.theme import apply_font, apply_links, palette_for, stylesheet
 
     previous_font = application.font()
     previous_sheet = application.styleSheet()
+    previous_palette = application.palette()
     apply_font(application)
     application.setStyleSheet(stylesheet(palette_for(theme)))
+    apply_links(application, palette_for(theme))
 
     def undo() -> None:
         application.setStyleSheet(previous_sheet)
         application.setFont(previous_font)
+        application.setPalette(previous_palette)
 
     return undo
 

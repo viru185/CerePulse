@@ -79,6 +79,28 @@ class Text(QLabel):
         repolish(self)
 
 
+class LinkText(Text):
+    """The app's own sentence with links in it — a credit line, a pointer to the portal.
+
+    Rich text, which :class:`Text` refuses on purpose, so this is for strings the app writes
+    and never for anything the portal or a remote service sent: a remark rendered as markup
+    is a remark that can draw whatever it likes.
+    """
+
+    def __init__(
+        self,
+        html: str = "",
+        parent: QWidget | None = None,
+        *,
+        role: str = "caption",
+        tone: str | None = "muted",
+    ) -> None:
+        super().__init__("", parent, role=role, tone=tone, wrap=True)
+        self.setTextFormat(Qt.TextFormat.RichText)
+        self.setOpenExternalLinks(True)
+        self.setText(html)
+
+
 class Pill(QLabel):
     """A state as a word on a tinted pill — always a word, never colour alone."""
 

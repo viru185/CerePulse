@@ -1195,11 +1195,11 @@ def test_the_comp_off_credits_hide_with_nothing_to_show(qapp: QApplication) -> N
 def test_settings_sections_are_in_order(qapp: QApplication) -> None:
     """One page, grouped: the headings the jump list points at, in reading order."""
     from cerepulse.core.config import AppConfig
+    from cerepulse.ui import kit
     from cerepulse.ui.views.settings import SettingsView
-    from cerepulse.ui.widgets import SectionTitle
 
     view = SettingsView(AppConfig())
-    assert [title.text() for title in view.findChildren(SectionTitle)] == [
+    assert [header.title.text() for header in view.findChildren(kit.SectionHeader)] == [
         "Account",
         "Work day",
         "Notifications",

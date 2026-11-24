@@ -174,3 +174,24 @@ def test_an_ampersand_is_text_not_a_shortcut(qapp: QApplication) -> None:
     tab = kit.SegmentButton("Balances & comp-off")
     assert tab.text() == "Balances && comp-off"
     assert tab.accessibleName() == "Balances & comp-off"
+
+
+def test_links_follow_the_theme(qapp: QApplication) -> None:
+    """A link in a label is drawn from the Qt palette, which no sheet reaches: every credit
+    line was Qt's default blue on every theme."""
+    from PySide6.QtGui import QPalette
+
+    from cerepulse.ui.theme import apply_links
+
+    previous = qapp.palette()
+    try:
+        apply_links(qapp, LIGHT)
+        assert qapp.palette().color(QPalette.ColorRole.Link).name() == LIGHT.work.lower()
+    finally:
+        qapp.setPalette(previous)
+
+
+def test_link_text_keeps_its_links_and_its_role(qapp: QApplication) -> None:
+    label = kit.LinkText('<a href="https://example.com">Example</a> credit')
+    assert label.openExternalLinks()
+    assert label.property("role") == "caption"

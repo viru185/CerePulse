@@ -17,7 +17,7 @@ from cerepulse.core.errors import CerePulseError
 from cerepulse.ui.assets import app_icon
 from cerepulse.ui.main_window import MainWindow
 from cerepulse.ui.single_instance import SingleInstance
-from cerepulse.ui.theme import apply_font, palette_for, stylesheet
+from cerepulse.ui.theme import apply_font, apply_links, palette_for, stylesheet
 
 #: Identifies the app to the Windows shell. Toast notifications are attributed to the
 #: process AUMID, and taskbar grouping and jump lists key off it too.
@@ -112,6 +112,7 @@ def run_app(config: AppConfig) -> int:
     # fallback, so this is what supplies one for glyphs that family happens to lack.
     apply_font(application)
     application.setStyleSheet(stylesheet(palette_for(config.ui.theme)))
+    apply_links(application, palette_for(config.ui.theme))
 
     # In tray mode the window closing must not end the process.
     application.setQuitOnLastWindowClosed(config.ui.background_mode != "tray")

@@ -547,6 +547,21 @@ def _kit_rules(palette: Palette) -> str:
     """
 
 
+def apply_links(application: object, palette: Palette) -> None:
+    """Colour rich-text links from the palette, which a stylesheet cannot reach.
+
+    A link inside a label is drawn from the application's Qt palette, not from the sheet, and
+    nothing ever set it — so every credit line was drawn in Qt's default browser blue on
+    every theme. Called wherever the sheet is applied, so the two cannot drift.
+    """
+    from PySide6.QtGui import QColor, QPalette
+
+    qt = application.palette()  # type: ignore[attr-defined]
+    for role in (QPalette.ColorRole.Link, QPalette.ColorRole.LinkVisited):
+        qt.setColor(role, QColor(palette.work))
+    application.setPalette(qt)  # type: ignore[attr-defined]
+
+
 def stylesheet(palette: Palette, *, wallpaper: bool = False) -> str:
     """Build the application stylesheet for a palette.
 

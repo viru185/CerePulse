@@ -6,7 +6,9 @@ two across, and every control is sized to its content: a spin box holding "8.00"
 business being a thousand pixels wide.
 
 Changes are collected and applied on Save rather than written per keystroke, so a half-typed
-value never becomes the live policy.
+value never becomes the live policy. Save and Revert sit in the title row, pinned above the
+page, as the redesign's mockup has them: always reachable, and beside the title of the thing
+they save rather than under the last card.
 """
 
 from __future__ import annotations
@@ -17,20 +19,11 @@ from functools import partial
 from PySide6.QtCore import QRectF, Qt, QTime, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QResizeEvent
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
-    QDoubleSpinBox,
     QFormLayout,
-    QFrame,
     QGridLayout,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
-    QPushButton,
-    QScrollArea,
     QSlider,
-    QSpinBox,
-    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -39,14 +32,9 @@ from cerepulse import __about__ as about
 from cerepulse.core.config import AppConfig, CommuteConfig
 from cerepulse.core.config.models import THEMES
 from cerepulse.intelligence.sandwich import SandwichRule
-from cerepulse.ui.theme import THEME_LABELS, Palette, palette_for
-from cerepulse.ui.widgets import (
-    Banner,
-    FlowLayout,
-    SectionTitle,
-    add_reveal_toggle,
-    link_button,
-)
+from cerepulse.ui import kit
+from cerepulse.ui.theme import THEME_LABELS, Palette, Space, palette_for
+from cerepulse.ui.widgets import Banner, FlowLayout, add_reveal_toggle
 
 #: Control widths, so nothing stretches to fill the card. Spin boxes need room for their
 #: suffix *and* their stepper buttons, or the arrows sit on top of the number.
@@ -68,7 +56,7 @@ COLUMN_MIN_WIDTH = 380
 #: Space between cards, the page's left and right margins together, and what a vertical
 #: scrollbar takes — the arithmetic deciding between one column and two.
 GRID_GAP = 14
-PAGE_MARGINS = 48
+PAGE_MARGINS = 2 * Space.PAGE
 SCROLLBAR_ROOM = 12
 
 
@@ -108,38 +96,38 @@ class AddressField(QWidget):
 
         row = QHBoxLayout()
         row.setSpacing(8)
-        self.field = QLineEdit()
-        self.field.setPlaceholderText(placeholder)
+        self.field = kit.LineEdit(placeholder=placeholder)
         self.field.setMinimumWidth(320)
         row.addWidget(self.field, 1)
-        find = QPushButton("Find")
-        find.clicked.connect(lambda: self.lookup_requested.emit(self._end, self.field.text()))
-        row.addWidget(find)
+        row.addWidget(
+            kit.Button(
+                "Find", on_click=lambda: self.lookup_requested.emit(self._end, self.field.text())
+            )
+        )
         layout.addLayout(row)
 
         # The candidate picker, hidden until a text search returns more than nothing.
         pick_row = QHBoxLayout()
         pick_row.setSpacing(8)
-        self.candidates = QComboBox()
+        self.candidates = kit.ComboBox()
         self.candidates.setMinimumWidth(320)
         pick_row.addWidget(self.candidates, 1)
-        self.use = QPushButton("Use this")
-        self.use.setObjectName("Primary")
-        self.use.clicked.connect(self._pick)
+        self.use = kit.Button("Use this", variant="primary", on_click=self._pick)
         pick_row.addWidget(self.use)
-        self._pick_host = QWidget()
+        self._pick_host = kit.Box()
         self._pick_host.setLayout(pick_row)
         self._pick_host.setVisible(False)
         layout.addWidget(self._pick_host)
 
         status_row = QHBoxLayout()
         status_row.setSpacing(8)
-        self.status = QLabel()
-        self.status.setObjectName("CardCaption")
-        self.status.setWordWrap(True)
+        self.status = kit.Text(role="caption", tone="muted", wrap=True)
         status_row.addWidget(self.status, 1)
-        self.open_maps = QPushButton("Open in Google Maps")
-        self.open_maps.clicked.connect(lambda: self.open_maps_requested.emit(self._end))
+        self.open_maps = kit.Button(
+            "Open in Google Maps",
+            variant="quiet",
+            on_click=lambda: self.open_maps_requested.emit(self._end),
+        )
         self.open_maps.setVisible(False)
         status_row.addWidget(self.open_maps)
         layout.addLayout(status_row)
@@ -169,26 +157,19 @@ class AddressField(QWidget):
             self.place_picked.emit(self._end, self._candidates[index])
 
 
-class Card(QFrame):
+class Card(kit.Surface):
     """A titled group of settings."""
 
     def __init__(self, title: str, subtitle: str = "", parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("Card")
+        super().__init__(parent, variant="card")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setContentsMargins(Space.GAP + 2, Space.GAP, Space.GAP + 2, Space.GAP)
         layout.setSpacing(10)
 
-        heading = QLabel(title)
-        heading.setStyleSheet("font-size: 14px; font-weight: 700;")
-        layout.addWidget(heading)
-
+        layout.addWidget(kit.Text(title, self, role="body-strong"))
         if subtitle:
-            caption = QLabel(subtitle)
-            caption.setObjectName("CardCaption")
-            caption.setWordWrap(True)
-            layout.addWidget(caption)
+            layout.addWidget(kit.Text(subtitle, self, role="caption", tone="muted", wrap=True))
 
         self.form = QFormLayout()
         self.form.setSpacing(9)
@@ -200,7 +181,7 @@ class Card(QFrame):
         self.body = layout
 
     def add(self, label: str, widget: QWidget) -> None:
-        self.form.addRow(label, widget)
+        self.form.addRow(kit.Text(label, self), widget)
 
     def add_full(self, widget: QWidget) -> None:
         """Add something spanning both label and field columns, like a checkbox."""
@@ -244,16 +225,14 @@ class SettingsView(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        # Settings should never scroll sideways; the grid narrows instead.
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        outer.addWidget(scroll, 1)
+        # The title row, with Save and Revert in it, stays out of the scroll area so it is
+        # always reachable.
+        outer.addWidget(self._build_save_bar())
 
-        content = QWidget()
-        scroll.setWidget(content)
-        page = QVBoxLayout(content)
-        page.setContentsMargins(24, 20, 24, 20)
+        # Settings should never scroll sideways; the grid narrows instead.
+        scroll = kit.ScrollArea(margins=(Space.PAGE, Space.SNUG, Space.PAGE, Space.PAGE))
+        outer.addWidget(scroll, 1)
+        page = scroll.body
         page.setSpacing(14)
 
         self.banner = Banner()
@@ -262,22 +241,27 @@ class SettingsView(QWidget):
         # Twelve cards in one grid read as a wall. Grouped under headings, each group its own
         # two-column grid — so a tall card stretches only its neighbour, never a stranger
         # three rows down — with a jump list at the top so nothing is more than a click away.
-        self._sections: list[SectionTitle] = []
+        self._sections: list[kit.SectionHeader] = []
         # Wraps rather than running in one line: eight buttons sized by their labels needed
         # 1,050 px, which pushed the whole page sideways off a laptop at 175%.
-        jump_host = QWidget()
-        jump = FlowLayout(jump_host, spacing=8)
+        jump_host = kit.Box()
+        jump = FlowLayout(jump_host, spacing=Space.SNUG)
         page.addWidget(jump_host)
         #: Every section's grid and the cards in it, for re-laying out at a new width.
         self._grids: list[tuple[QGridLayout, tuple[tuple[QWidget, int, int, int], ...]]] = []
         self._columns = 2
 
         def section(title: str, *cards: tuple[QWidget, int, int, int]) -> None:
-            heading = SectionTitle(title)
+            heading = kit.SectionHeader(title)
             self._sections.append(heading)
-            # Doubled, or a button reads "&" as a mnemonic: "Sync & data" drew as "Sync _data".
-            label = title.replace("&", "&&")
-            jump.addWidget(link_button(label, partial(scroll.ensureWidgetVisible, heading)))
+            jump.addWidget(
+                kit.Button(
+                    title,
+                    variant="quiet",
+                    small=True,
+                    on_click=partial(scroll.ensureWidgetVisible, heading),
+                )
+            )
             page.addSpacing(6)
             page.addWidget(heading)
             grid = QGridLayout()
@@ -299,9 +283,6 @@ class SettingsView(QWidget):
         section("Updates", (self._build_updates(), 0, 0, 2))
 
         page.addStretch(1)
-
-        # The save bar stays out of the scroll area so it is always reachable.
-        outer.addWidget(self._build_save_bar())
         self._load(config)
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 — Qt override
@@ -342,21 +323,24 @@ class SettingsView(QWidget):
 
     def _build_account(self) -> Card:
         card = Card("Account", "Your password is kept in the Windows Credential Manager.")
-        self._username = QLabel()
-        self._username.setStyleSheet("font-weight: 600;")
+        self._username = kit.Text(role="body-strong")
         card.add("Signed in as", self._username)
 
-        self._remember = QCheckBox("Remember me on this device")
+        self._remember = kit.CheckBox("Remember me on this device")
         card.add_full(self._remember)
 
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
-        sign_out = QPushButton("Sign out")
-        sign_out.clicked.connect(lambda: self.sign_out_requested.emit(False))
-        forget = QPushButton("Sign out and forget password")
-        forget.clicked.connect(lambda: self.sign_out_requested.emit(True))
-        buttons.addWidget(sign_out)
-        buttons.addWidget(forget)
+        buttons.addWidget(
+            kit.Button("Sign out", on_click=lambda: self.sign_out_requested.emit(False))
+        )
+        buttons.addWidget(
+            kit.Button(
+                "Sign out and forget password",
+                variant="danger",
+                on_click=lambda: self.sign_out_requested.emit(True),
+            )
+        )
         buttons.addStretch(1)
         card.body.addLayout(buttons)
         return card.finish()
@@ -380,7 +364,7 @@ class SettingsView(QWidget):
         card = Card("Sync")
         self._interval = _minutes()
         self._ttl = _minutes()
-        self._history = QSpinBox()
+        self._history = kit.SpinBox()
         self._history.setRange(1, 36)
         self._history.setSuffix(" months")
         self._history.setFixedWidth(WIDE_NUMBER_WIDTH)
@@ -413,28 +397,25 @@ class SettingsView(QWidget):
         theme_row.addWidget(self._theme)
         theme_row.addWidget(self._swatch)
         theme_row.addStretch(1)
-        theme_host = QWidget()
+        theme_host = kit.Box()
         theme_host.setLayout(theme_row)
 
         # The wallpaper. The app ships no imagery: this is the user's own picture, which is
         # what makes the anime theme *their* character rather than one nobody can bundle.
-        self._wallpaper_path = QLineEdit()
-        self._wallpaper_path.setPlaceholderText("No picture — the theme's plain surface")
+        self._wallpaper_path = kit.LineEdit(placeholder="No picture — the theme's plain surface")
         self._wallpaper_path.setReadOnly(True)
         self._wallpaper_path.setMinimumWidth(200)
-        choose = QPushButton("Choose…")
-        choose.clicked.connect(self._choose_wallpaper)
-        clear = QPushButton("Clear")
-        clear.clicked.connect(lambda: self._wallpaper_path.setText(""))
         wallpaper_row = QHBoxLayout()
         wallpaper_row.setSpacing(8)
         wallpaper_row.addWidget(self._wallpaper_path)
-        wallpaper_row.addWidget(choose)
-        wallpaper_row.addWidget(clear)
-        wallpaper_host = QWidget()
+        wallpaper_row.addWidget(kit.Button("Choose…", on_click=self._choose_wallpaper))
+        wallpaper_row.addWidget(
+            kit.Button("Clear", variant="quiet", on_click=lambda: self._wallpaper_path.setText(""))
+        )
+        wallpaper_host = kit.Box()
         wallpaper_host.setLayout(wallpaper_row)
 
-        self._wallpaper_on = QCheckBox("Show the picture")
+        self._wallpaper_on = kit.CheckBox("Show the picture")
         self._wallpaper_on.setToolTip("Off keeps the picture on file; on brings it back.")
         self._wallpaper_strength = QSlider(Qt.Orientation.Horizontal)
         self._wallpaper_strength.setRange(0, 100)
@@ -464,7 +445,7 @@ class SettingsView(QWidget):
                 ("Close fully", "foreground"),
             ]
         )
-        self._startup = QCheckBox("Start when I sign in to Windows")
+        self._startup = kit.CheckBox("Start when I sign in to Windows")
         card.add("On window close", self._background)
         card.add_full(self._startup)
         return card.finish()
@@ -472,9 +453,9 @@ class SettingsView(QWidget):
     def _build_daily(self) -> Card:
         """The two switches for the sidebar tile. Off means no request is made at all."""
         card = Card("Daily", "A quote and a picture, once a day, in the sidebar.")
-        self._daily_quote = QCheckBox("Quote of the day")
-        self._daily_picture = QCheckBox("Picture of the day")
-        self._quote_source = QComboBox()
+        self._daily_quote = kit.CheckBox("Quote of the day")
+        self._daily_picture = kit.CheckBox("Picture of the day")
+        self._quote_source = kit.ComboBox()
         for value, label in QUOTE_SOURCE_LABELS:
             self._quote_source.addItem(label, value)
         self._quote_source.setMinimumWidth(CHOICE_WIDTH)
@@ -486,14 +467,11 @@ class SettingsView(QWidget):
         # The providers' credit, beside the switches rather than under the picture.
         providers = {name: (url, line) for name, url, line in about.PROVIDERS}
         zen, anime, bing = providers["ZenQuotes"], providers["Animechan"], providers["Bing"]
-        credit = QLabel(
+        credit = kit.LinkText(
             f'<a href="{zen[0]}">{zen[1]}</a>. <a href="{anime[0]}">{anime[1]}</a>. '
             f'Pictures are <a href="{bing[0]}">Bing</a>\'s picture of the day, with its own '
             "copyright line in the viewer."
         )
-        credit.setObjectName("CardCaption")
-        credit.setWordWrap(True)
-        credit.setOpenExternalLinks(True)
         card.add_full(credit)
         return card.finish()
 
@@ -504,7 +482,7 @@ class SettingsView(QWidget):
             "Payslips, the CTC statement and the monthly report, read from the portal when "
             "you ask. Kept encrypted to your Windows account and masked on screen.",
         )
-        self._pay_enabled = QCheckBox("Show the Pay screen")
+        self._pay_enabled = kit.CheckBox("Show the Pay screen")
         card.add_full(self._pay_enabled)
         return card.finish()
 
@@ -514,7 +492,7 @@ class SettingsView(QWidget):
             "Notifications",
             "Each alert appears at most once a day, and never during quiet hours.",
         )
-        self._notify = QCheckBox("Show desktop notifications")
+        self._notify = kit.CheckBox("Show desktop notifications")
         self._notify.toggled.connect(self._sync_notification_state)
         card.add_full(self._notify)
 
@@ -523,7 +501,7 @@ class SettingsView(QWidget):
         card.add("Quiet hours from", self._quiet_start)
         card.add("Quiet hours until", self._quiet_end)
 
-        self._alerts: dict[str, QCheckBox] = {}
+        self._alerts: dict[str, kit.CheckBox] = {}
         # Two columns. Eight checkboxes stacked one per line made this the tallest thing on
         # the page and left the whole right half of the card empty; the labels are terse
         # enough to sit two-up without inflating the card's minimum width.
@@ -546,10 +524,10 @@ class SettingsView(QWidget):
                 ("leave_reminder", "A long time since leave"),
             )
         ):
-            box = QCheckBox(label)
+            box = kit.CheckBox(label)
             self._alerts[field] = box
             alerts.addWidget(box, index // 2, index % 2)
-        alerts_host = QWidget()
+        alerts_host = kit.Box()
         alerts_host.setLayout(alerts)
         card.add_full(alerts_host)
 
@@ -557,9 +535,9 @@ class SettingsView(QWidget):
         # this button the app had no way to say which of half a dozen reasons applied.
         row = QHBoxLayout()
         row.setSpacing(8)
-        test = QPushButton("Send a test notification")
-        test.clicked.connect(self.test_notification_requested)
-        row.addWidget(test)
+        row.addWidget(
+            kit.Button("Send a test notification", on_click=self.test_notification_requested.emit)
+        )
         row.addStretch(1)
         card.body.addLayout(row)
         return card.finish()
@@ -571,7 +549,7 @@ class SettingsView(QWidget):
             "these are what you tell the app your employer does — not what it has found "
             "out. Leave them alone if you are not sure.",
         )
-        self._sandwich = QComboBox()
+        self._sandwich = kit.ComboBox()
         for rule in SandwichRule:
             self._sandwich.addItem(rule.label, rule.value)
         self._sandwich.setToolTip(
@@ -621,7 +599,7 @@ class SettingsView(QWidget):
         )
         card.add("Travel by", self._mode)
 
-        self._buffer = QSpinBox()
+        self._buffer = kit.SpinBox()
         self._buffer.setRange(0, 60)
         self._buffer.setSuffix(" min")
         self._buffer.setFixedWidth(NUMBER_WIDTH)
@@ -631,9 +609,8 @@ class SettingsView(QWidget):
         )
         card.add("Add for parking etc.", self._buffer)
 
-        self._api_key = QLineEdit()
+        self._api_key = kit.LineEdit(placeholder="Paste your TomTom key")
         self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._api_key.setPlaceholderText("Paste your TomTom key")
         self._api_key.setMinimumWidth(320)
         # Reveals only what was just pasted: a saved key is never put back into the field.
         add_reveal_toggle(self._api_key)
@@ -641,18 +618,18 @@ class SettingsView(QWidget):
 
         row = QHBoxLayout()
         row.setSpacing(8)
-        check = QPushButton("Check key")
-        check.clicked.connect(lambda: self.key_check_requested.emit(self._api_key.text()))
-        row.addWidget(check)
-        guide = QPushButton("How do I get one?")
-        guide.clicked.connect(self.key_guide_requested)
-        row.addWidget(guide)
+        row.addWidget(
+            kit.Button(
+                "Check key", on_click=lambda: self.key_check_requested.emit(self._api_key.text())
+            )
+        )
+        row.addWidget(
+            kit.Button("How do I get one?", variant="quiet", on_click=self.key_guide_requested.emit)
+        )
         row.addStretch(1)
         card.body.addLayout(row)
 
-        self._key_state = QLabel()
-        self._key_state.setObjectName("CardCaption")
-        self._key_state.setWordWrap(True)
+        self._key_state = kit.Text(role="caption", tone="muted", wrap=True)
         card.add_full(self._key_state)
         return card.finish()
 
@@ -674,18 +651,14 @@ class SettingsView(QWidget):
             "day's punch log, so trends and month-over-month comparisons have something to "
             "work with. Download again fetches every month afresh.",
         )
-        self._year_status = QLabel()
-        self._year_status.setObjectName("CardCaption")
-        self._year_status.setWordWrap(True)
+        self._year_status = kit.Text(role="caption", tone="muted", wrap=True)
         card.body.addWidget(self._year_status)
         row = QHBoxLayout()
         row.setSpacing(8)
-        again = QPushButton("Download again")
-        again.clicked.connect(self.sync_history_requested)
-        cancel = QPushButton("Stop")
-        cancel.clicked.connect(self.cancel_history_requested)
-        row.addWidget(again)
-        row.addWidget(cancel)
+        row.addWidget(kit.Button("Download again", on_click=self.sync_history_requested.emit))
+        row.addWidget(
+            kit.Button("Stop", variant="quiet", on_click=self.cancel_history_requested.emit)
+        )
         row.addStretch(1)
         card.body.addLayout(row)
         return card.finish()
@@ -702,8 +675,8 @@ class SettingsView(QWidget):
             "stable release picks you up.",
         )
         self._channel = _choice([("Stable", "stable"), ("Beta", "beta")])
-        self._check_startup = QCheckBox("Check when CerePulse starts")
-        self._auto_download = QCheckBox("Download updates in the background")
+        self._check_startup = kit.CheckBox("Check when CerePulse starts")
+        self._auto_download = kit.CheckBox("Download updates in the background")
         self._auto_download.setToolTip("Installing always waits for you to say yes.")
 
         card.add("Channel", self._channel)
@@ -719,37 +692,31 @@ class SettingsView(QWidget):
         )
         row = QHBoxLayout()
         row.setSpacing(8)
-        clear = QPushButton("Clear cached data")
-        clear.clicked.connect(self.clear_cache_requested)
-        row.addWidget(clear)
+        row.addWidget(
+            kit.Button(
+                "Clear cached data", variant="danger", on_click=self.clear_cache_requested.emit
+            )
+        )
         row.addStretch(1)
         card.body.addLayout(row)
         return card.finish()
 
     def _build_save_bar(self) -> QWidget:
-        bar = QWidget()
-        bar.setObjectName("Sidebar")  # reuse the elevated surface
+        bar = kit.Box()
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(24, 12, 24, 12)
+        layout.setContentsMargins(Space.PAGE, 28, Space.PAGE, Space.SNUG)
+        layout.setSpacing(Space.SNUG)
+        layout.addWidget(kit.Text("Settings", role="title"))
+        layout.addSpacing(Space.GAP)
 
         # The outcome lives beside the button that caused it. It used to go to the banner
-        # at the top of the scrolling page — and the save bar is pinned *outside* the
-        # scroll precisely so it is always reachable, which meant the button and its answer
-        # were never on screen at the same time. Saving from the bottom of the page looked
-        # like nothing happening.
-        self._save_status = QLabel()
-        self._save_status.setObjectName("CardCaption")
-        self._save_status.setWordWrap(True)
+        # at the top of the scrolling page while the bar sat pinned under it, so the button
+        # and its answer were never on screen at the same time.
+        self._save_status = kit.Text(role="caption", tone="muted", wrap=True)
         layout.addWidget(self._save_status, 1)
 
-        revert = QPushButton("Revert")
-        revert.clicked.connect(self._revert)
-        layout.addWidget(revert)
-
-        save = QPushButton("Save changes")
-        save.setObjectName("Primary")
-        save.clicked.connect(self._save)
-        layout.addWidget(save)
+        layout.addWidget(kit.Button("Revert", variant="quiet", on_click=self._revert))
+        layout.addWidget(kit.Button("Save changes", variant="primary", on_click=self._save))
         return bar
 
     def _revert(self) -> None:
@@ -759,9 +726,7 @@ class SettingsView(QWidget):
     def show_save_result(self, text: str, *, failed: bool = False) -> None:
         """Report a save outcome where the Save button is, styled by how it went."""
         self._save_status.setText(text)
-        # One hex rather than a palette lookup: this view is built before a Palette reaches
-        # it, and the colour reads as "wrong" on both themes, which is all it must do.
-        self._save_status.setStyleSheet("color: #e5484d;" if failed else "")
+        self._save_status.set_tone("bad" if failed else "muted")
 
     # --- state ----------------------------------------------------------------------
 
@@ -939,8 +904,8 @@ def _located(latitude: float, longitude: float) -> str:
 # --- control factories ----------------------------------------------------------------
 
 
-def _hours() -> QDoubleSpinBox:
-    spin = QDoubleSpinBox()
+def _hours() -> kit.DoubleSpinBox:
+    spin = kit.DoubleSpinBox()
     spin.setRange(0.0, 24.0)
     spin.setSingleStep(0.25)
     spin.setDecimals(2)
@@ -949,8 +914,8 @@ def _hours() -> QDoubleSpinBox:
     return spin
 
 
-def _minutes() -> QSpinBox:
-    spin = QSpinBox()
+def _minutes() -> kit.SpinBox:
+    spin = kit.SpinBox()
     spin.setRange(1, 240)
     spin.setSuffix(" min")
     spin.setFixedWidth(NUMBER_WIDTH)
@@ -990,17 +955,16 @@ class ThemeSwatch(QWidget):
             )
 
 
-def _choice(options: list[tuple[str, str]]) -> QComboBox:
-    combo = QComboBox()
+def _choice(options: list[tuple[str, str]]) -> kit.ComboBox:
+    combo = kit.ComboBox()
     for label, value in options:
         combo.addItem(label, value)
     combo.setFixedWidth(CHOICE_WIDTH)
     return combo
 
 
-def _time_field() -> QTimeEdit:
-    field = QTimeEdit()
-    field.setDisplayFormat("HH:mm")
+def _time_field() -> kit.TimeEdit:
+    field = kit.TimeEdit(display="HH:mm")
     field.setFixedWidth(TIME_WIDTH)
     return field
 

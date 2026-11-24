@@ -68,7 +68,7 @@ from cerepulse.ui.controllers import NavigationController, SyncController, Updat
 from cerepulse.ui.controllers.sync import YearBackfill
 from cerepulse.ui.daily_viewer import DailyViewer
 from cerepulse.ui.login_dialog import LoginDialog
-from cerepulse.ui.theme import Palette, palette_for, stylesheet
+from cerepulse.ui.theme import Palette, apply_links, palette_for, stylesheet
 from cerepulse.ui.views.about import AboutView, open_logs
 from cerepulse.ui.views.attendance import AttendanceView
 from cerepulse.ui.views.insights import InsightsView
@@ -1885,6 +1885,7 @@ class MainWindow(QMainWindow):
             application.setStyleSheet(  # type: ignore[attr-defined]
                 stylesheet(self._palette, wallpaper=self._backdrop.active)
             )
+            apply_links(application, self._palette)
         if rerender and self._month_view is not None:
             self._apply_month(self._month_view)
 
