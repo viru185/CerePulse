@@ -195,3 +195,39 @@ def test_link_text_keeps_its_links_and_its_role(qapp: QApplication) -> None:
     label = kit.LinkText('<a href="https://example.com">Example</a> credit')
     assert label.openExternalLinks()
     assert label.property("role") == "caption"
+
+
+def test_the_daily_viewer_never_reads_remote_text_as_markup(qapp: QApplication, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The quote, the title and the copyright line all come from remote services. A label
+    left to guess its format reads "<b>" as bold; one fed straight into a link reads it as
+    the rest of the page."""
+    from datetime import date
+
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QLabel
+
+    from cerepulse.daily.models import Picture, Quote
+    from cerepulse.services.daily import DailyView
+    from cerepulse.ui.daily_viewer import DailyViewer
+
+    path = tmp_path / "day.png"
+    QImage(4, 4, QImage.Format.Format_RGB32).save(str(path))
+    viewer = DailyViewer(
+        DailyView(
+            quote=Quote("Be <b>bold</b>", "Someone", date(2026, 11, 24)),
+            picture=Picture(
+                path,
+                "A <i>lake</i>",
+                "© <img src=x> Getty",
+                "https://example.com",
+                date(2026, 11, 24),
+            ),
+        )
+    )
+    texts = [label.text() for label in viewer.findChildren(QLabel)]
+    assert any(text.startswith("“Be <b>bold</b>”") for text in texts), "shown as typed"
+    assert "A <i>lake</i>" in texts
+    assert any("&lt;img src=x&gt;" in text for text in texts), "escaped inside the link"
+    for label in viewer.findChildren(QLabel):
+        if "bold" in label.text() or "lake" in label.text():
+            assert label.textFormat() == Qt.TextFormat.PlainText

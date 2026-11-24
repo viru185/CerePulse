@@ -13,24 +13,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QUrl, Signal
+from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from cerepulse import __about__ as about
 from cerepulse.core import paths
 from cerepulse.core.diagnostics import Diagnostics, collect, human_size
 from cerepulse.intelligence.insights import Severity
 from cerepulse.ui import formatting as fmt
+from cerepulse.ui import kit
 from cerepulse.ui.theme import Space
-from cerepulse.ui.widgets import Banner, Card, SectionTitle, card_row, data_table
+from cerepulse.ui.widgets import Banner, FlowLayout, card_row
 from cerepulse.update import UpdateEvent, rollback_candidates, update_history
 
 #: Update events shown on this page. The store keeps twenty; nobody reads twenty.
@@ -51,43 +45,32 @@ class AboutView(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(scroll.horizontalScrollBarPolicy().ScrollBarAlwaysOff)
-        outer.addWidget(scroll)
+        page = kit.ScrollArea(spacing=Space.GAP)
+        outer.addWidget(page)
+        layout = page.body
 
-        content = QWidget()
-        scroll.setWidget(content)
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(Space.SECTION, 20, Space.SECTION, Space.SECTION)
-        layout.setSpacing(Space.GAP)
+        layout.addLayout(self._build_identity())
 
         self.banner = Banner()
         layout.addWidget(self.banner)
 
-        layout.addLayout(self._build_identity())
-        layout.addWidget(SectionTitle("This build"))
+        layout.addWidget(kit.SectionHeader("This build"))
         layout.addWidget(self._build_cards())
-        self._paths = QLabel()
-        self._paths.setObjectName("CardCaption")
-        self._paths.setTextInteractionFlags(
-            self._paths.textInteractionFlags().TextSelectableByMouse
-        )
-        self._paths.setWordWrap(True)
+        self._paths = kit.Text(role="caption", tone="muted", wrap=True)
+        self._paths.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self._paths)
 
-        layout.addWidget(SectionTitle("Updates"))
-        layout.addLayout(self._build_update_buttons())
-        self.history = data_table(HISTORY_COLUMNS, fit_rows=True)
+        layout.addWidget(kit.SectionHeader("Updates"))
+        layout.addWidget(self._build_update_buttons())
+        self.history = kit.TableWidget(HISTORY_COLUMNS, fit_rows=True)
         layout.addWidget(self.history)
-        self._history_note = QLabel()
-        self._history_note.setObjectName("CardCaption")
+        self._history_note = kit.Text(role="caption", tone="muted", wrap=True)
         layout.addWidget(self._history_note)
 
-        layout.addWidget(SectionTitle("Diagnostics"))
-        layout.addLayout(self._build_diagnostic_buttons())
+        layout.addWidget(kit.SectionHeader("Diagnostics"))
+        layout.addWidget(self._build_diagnostic_buttons())
 
-        layout.addWidget(SectionTitle("Developer"))
+        layout.addWidget(kit.SectionHeader("Developer"))
         layout.addLayout(self._build_credits())
 
         layout.addStretch(1)
@@ -98,110 +81,88 @@ class AboutView(QWidget):
     def _build_identity(self) -> QVBoxLayout:
         column = QVBoxLayout()
         column.setSpacing(2)
-
-        title = QLabel(about.NAME)
-        title.setStyleSheet("font-size: 30px; font-weight: 700;")
-        tagline = QLabel(about.TAGLINE)
-        tagline.setObjectName("HeroCaption")
-        summary = QLabel(about.SUMMARY)
-        summary.setWordWrap(True)
-        summary.setObjectName("CardCaption")
-
-        column.addWidget(title)
-        column.addWidget(tagline)
-        column.addWidget(summary)
+        column.addWidget(kit.Text(about.NAME, role="title"))
+        column.addWidget(kit.Text(about.TAGLINE, role="subtitle", tone="muted"))
+        column.addSpacing(Space.TIGHT)
+        column.addWidget(kit.Text(about.SUMMARY, tone="muted", wrap=True))
         return column
 
     def _build_cards(self) -> QWidget:
-        self.version_card = Card("Version")
-        self.channel_card = Card("Channel")
-        self.storage_card = Card("Local data")
-        self.checked_card = Card("Last checked")
+        self.version_card = kit.StatCard("Version")
+        self.channel_card = kit.StatCard("Channel")
+        self.storage_card = kit.StatCard("Local data")
+        self.checked_card = kit.StatCard("Last checked")
         return card_row(self.version_card, self.channel_card, self.storage_card, self.checked_card)
 
-    def _build_update_buttons(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(Space.SNUG)
-
-        check = QPushButton("Check for updates")
-        check.setObjectName("Primary")
-        check.clicked.connect(self.update_check_requested)
-        row.addWidget(check)
-
-        whats_new = QPushButton("What's new")
-        whats_new.clicked.connect(self._show_whats_new)
-        row.addWidget(whats_new)
-
-        changelog = QPushButton("Full changelog")
-        changelog.clicked.connect(self._show_changelog)
-        row.addWidget(changelog)
-
-        # Only offered when there is genuinely something to go back to — a button that
-        # explains it cannot do anything is worse than no button.
-        self._rollback = QPushButton("Roll back")
-        self._rollback.clicked.connect(self._request_rollback)
-        row.addWidget(self._rollback)
-
-        row.addStretch(1)
+    def _build_update_buttons(self) -> QWidget:
+        # A flow, so the row wraps rather than pushing the page sideways at 175%.
+        row = kit.Box()
+        flow = FlowLayout(row, spacing=Space.SNUG)
+        flow.addWidget(
+            kit.Button(
+                "Check for updates", variant="primary", on_click=self.update_check_requested.emit
+            )
+        )
+        flow.addWidget(kit.Button("What's new", on_click=self._show_whats_new))
+        flow.addWidget(kit.Button("Full changelog", on_click=self._show_changelog))
+        # Never disabled: see :meth:`refresh`.
+        self._rollback = kit.Button("Roll back", variant="quiet", on_click=self._request_rollback)
+        flow.addWidget(self._rollback)
         return row
 
-    def _build_diagnostic_buttons(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(Space.SNUG)
-
-        copy = QPushButton("Copy diagnostics")
-        copy.setToolTip("Version, sizes and platform. Nothing identifying.")
-        copy.clicked.connect(self._copy_diagnostics)
-        row.addWidget(copy)
-
-        test = QPushButton("Test connection")
-        test.clicked.connect(self.test_connection_requested)
-        row.addWidget(test)
-
-        row.addWidget(_folder_button("Open data folder", str(paths.data_root())))
-
-        logs = QPushButton("Open logs")
-        logs.setToolTip(f"Opens the newest log in {paths.logs_dir()}")
-        logs.clicked.connect(open_logs)
-        row.addWidget(logs)
-
-        row.addStretch(1)
+    def _build_diagnostic_buttons(self) -> QWidget:
+        row = kit.Box()
+        flow = FlowLayout(row, spacing=Space.SNUG)
+        flow.addWidget(
+            kit.Button(
+                "Copy diagnostics",
+                tooltip="Version, sizes and platform. Nothing identifying.",
+                on_click=self._copy_diagnostics,
+            )
+        )
+        flow.addWidget(kit.Button("Test connection", on_click=self.test_connection_requested.emit))
+        flow.addWidget(_folder_button("Open data folder", str(paths.data_root())))
+        flow.addWidget(
+            kit.Button(
+                "Open logs",
+                tooltip=f"Opens the newest log in {paths.logs_dir()}",
+                on_click=open_logs,
+            )
+        )
         return row
 
     def _build_credits(self) -> QVBoxLayout:
         column = QVBoxLayout()
         column.setSpacing(Space.SNUG)
+        column.addWidget(kit.Text(about.AUTHOR, role="subtitle"))
 
-        developer = QLabel(about.AUTHOR)
-        developer.setStyleSheet("font-size: 15px; font-weight: 600;")
-        column.addWidget(developer)
+        links = kit.Box()
+        flow = FlowLayout(links, spacing=Space.SNUG)
+        flow.addWidget(_link("GitHub", about.GITHUB_URL))
+        flow.addWidget(_link("LinkedIn", about.LINKEDIN_URL))
+        flow.addWidget(_link("Repository", about.REPO_URL))
+        flow.addWidget(_link("Report an issue", f"{about.REPO_URL}/issues"))
+        column.addWidget(links)
 
-        links = QHBoxLayout()
-        links.setSpacing(Space.SNUG)
-        links.addWidget(_link("GitHub", about.GITHUB_URL))
-        links.addWidget(_link("LinkedIn", about.LINKEDIN_URL))
-        links.addWidget(_link("Repository", about.REPO_URL))
-        links.addWidget(_link("Report an issue", f"{about.REPO_URL}/issues"))
-        links.addStretch(1)
-        column.addLayout(links)
-
-        built_on = QLabel("Built on " + ", ".join(name for name, _url, _why in about.CREDITS))
-        built_on.setObjectName("CardCaption")
-        column.addWidget(built_on)
+        column.addWidget(
+            kit.Text(
+                "Built on " + ", ".join(name for name, _url, _why in about.CREDITS),
+                role="caption",
+                tone="muted",
+                wrap=True,
+            )
+        )
 
         # The credits the providers ask for. They used to sit in the sidebar under the
         # picture of the day; this is where paperwork belongs.
-        data_from = QLabel("Data from")
-        data_from.setObjectName("CardCaption")
-        column.addWidget(data_from)
-        providers = QHBoxLayout()
-        providers.setSpacing(Space.SNUG)
+        column.addWidget(kit.Text("Data from", role="caption", tone="muted"))
+        providers = kit.Box()
+        flow = FlowLayout(providers, spacing=Space.SNUG)
         for name, url, why in about.PROVIDERS:
             button = _link(name, url)
             button.setToolTip(f"{why} — {url}")
-            providers.addWidget(button)
-        providers.addStretch(1)
-        column.addLayout(providers)
+            flow.addWidget(button)
+        column.addWidget(providers)
         return column
 
     # --- rendering --------------------------------------------------------------------
@@ -306,18 +267,16 @@ class AboutView(QWidget):
         dialog.exec()
 
 
-def _link(text: str, url: str) -> QPushButton:
-    button = QPushButton(text)
-    button.setToolTip(url)
-    button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
-    return button
+def _link(text: str, url: str) -> kit.Button:
+    return kit.Button(
+        text, variant="quiet", tooltip=url, on_click=lambda: QDesktopServices.openUrl(QUrl(url))
+    )
 
 
-def _folder_button(text: str, path: str) -> QPushButton:
-    button = QPushButton(text)
-    button.setToolTip(path)
-    button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(path)))
-    return button
+def _folder_button(text: str, path: str) -> kit.Button:
+    return kit.Button(
+        text, tooltip=path, on_click=lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+    )
 
 
 def newest_log() -> Path | None:

@@ -38,12 +38,7 @@ RAW = frozenset(
 ALLOWED: dict[str, tuple[int, int]] = {
     # The application sheet itself, set once at launch and again on a theme change.
     "app.py": (0, 1),
-    "daily_viewer.py": (2, 0),
-    "login_dialog.py": (5, 1),
     "main_window.py": (3, 1),
-    "views/about.py": (9, 2),
-    "views/sync_panel.py": (3, 2),
-    "whats_new.py": (6, 2),
     "widgets.py": (5, 14),
 }
 

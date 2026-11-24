@@ -17,15 +17,14 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
-    QLabel,
     QProgressBar,
-    QPushButton,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
 from cerepulse import __about__ as about
+from cerepulse.ui import kit
 from cerepulse.update.checker import Release
 from cerepulse.update.mode import BuildMode
 
@@ -57,14 +56,22 @@ class WhatsNewDialog(QDialog):
         layout.setContentsMargins(24, 22, 24, 20)
         layout.setSpacing(12)
 
-        heading = QLabel(release.display_name if release else f"Version {shown_version}")
-        heading.setStyleSheet("font-size: 19px; font-weight: 700;")
+        # Plain text: a release name comes from GitHub, and a label left to guess would
+        # read one with a "<" in it as markup.
+        heading = kit.Text(
+            release.display_name if release else f"Version {shown_version}", self, role="title"
+        )
         layout.addWidget(heading)
 
         if release is not None and release.published_at is not None:
-            published = QLabel(release.published_at.strftime("Released %d %B %Y"))
-            published.setObjectName("CardCaption")
-            layout.addWidget(published)
+            layout.addWidget(
+                kit.Text(
+                    release.published_at.strftime("Released %d %B %Y"),
+                    self,
+                    role="caption",
+                    tone="muted",
+                )
+            )
 
         self._heading = heading
         self._notes = QTextBrowser()
@@ -78,23 +85,23 @@ class WhatsNewDialog(QDialog):
         layout.addWidget(self._notes, 1)
 
         buttons = QHBoxLayout()
+        buttons.setSpacing(8)
         if release is not None:
-            releases = QPushButton("View on GitHub")
-            releases.clicked.connect(lambda: _open(release.url))
-            buttons.addWidget(releases)
+            buttons.addWidget(
+                kit.Button(
+                    "View on GitHub", self, variant="quiet", on_click=lambda: _open(release.url)
+                )
+            )
 
         # The whole history, not just this version. It ships in the build already — the
         # per-version section is cut out of it — so showing everything costs nothing and
         # answers "what changed since the version I skipped from".
-        self._full = QPushButton("Full changelog")
-        self._full.clicked.connect(self.show_full_changelog)
+        self._full = kit.Button("Full changelog", self, on_click=self.show_full_changelog)
         buttons.addWidget(self._full)
         buttons.addStretch(1)
 
-        close = QPushButton("Close")
-        close.setObjectName("Primary")
+        close = kit.Button("Close", self, variant="primary", on_click=self.accept)
         close.setDefault(True)
-        close.clicked.connect(self.accept)
         buttons.addWidget(close)
         layout.addLayout(buttons)
 
@@ -142,13 +149,12 @@ class UpdateAvailableDialog(QDialog):
         # appended to "You are running …", describing the installed build with a fact about
         # a different one; and with plain version numbers the flag is the only way to tell.
         channel = " (beta)" if release.prerelease else ""
-        heading = QLabel(f"{release.display_name}{channel} is available")
-        heading.setStyleSheet("font-size: 19px; font-weight: 700;")
-        layout.addWidget(heading)
-
-        current = QLabel(f"You are running {about.VERSION}.")
-        current.setObjectName("CardCaption")
-        layout.addWidget(current)
+        layout.addWidget(
+            kit.Text(f"{release.display_name}{channel} is available", self, role="title", wrap=True)
+        )
+        layout.addWidget(
+            kit.Text(f"You are running {about.VERSION}.", self, role="caption", tone="muted")
+        )
 
         notes = QTextBrowser()
         notes.setOpenExternalLinks(True)
@@ -161,25 +167,19 @@ class UpdateAvailableDialog(QDialog):
         self._progress.setVisible(False)
         layout.addWidget(self._progress)
 
-        self._status = QLabel()
-        self._status.setObjectName("CardCaption")
-        self._status.setWordWrap(True)
+        self._status = kit.Text(parent=self, role="caption", tone="muted", wrap=True)
         layout.addWidget(self._status)
 
         buttons = QHBoxLayout()
-        later = QPushButton("Later")
-        later.clicked.connect(self.reject)
-        buttons.addWidget(later)
-
-        site = QPushButton("View on GitHub")
-        site.clicked.connect(lambda: _open(release.url))
-        buttons.addWidget(site)
+        buttons.setSpacing(8)
+        buttons.addWidget(kit.Button("Later", self, variant="quiet", on_click=self.reject))
+        buttons.addWidget(
+            kit.Button("View on GitHub", self, variant="quiet", on_click=lambda: _open(release.url))
+        )
         buttons.addStretch(1)
 
-        self._action = QPushButton()
-        self._action.setObjectName("Primary")
+        self._action = kit.Button("", self, variant="primary", on_click=self._act)
         self._action.setDefault(True)
-        self._action.clicked.connect(self._act)
         buttons.addWidget(self._action)
         layout.addLayout(buttons)
 

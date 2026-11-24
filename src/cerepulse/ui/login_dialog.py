@@ -11,19 +11,10 @@ user opts in.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (
-    QCheckBox,
-    QDialog,
-    QFormLayout,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QDialog, QFormLayout, QHBoxLayout, QLineEdit, QVBoxLayout, QWidget
 
 from cerepulse import __about__ as about
+from cerepulse.ui import kit
 from cerepulse.ui.widgets import add_reveal_toggle
 
 
@@ -48,45 +39,39 @@ class LoginDialog(QDialog):
         layout.setContentsMargins(24, 22, 24, 20)
         layout.setSpacing(14)
 
-        heading = QLabel(f"Sign in to {about.NAME}")
-        heading.setStyleSheet("font-size: 17px; font-weight: 700;")
-        subtitle = QLabel("Use your SpineHR portal credentials.")
-        subtitle.setObjectName("CardCaption")
-        layout.addWidget(heading)
-        layout.addWidget(subtitle)
+        layout.addWidget(kit.Text(f"Sign in to {about.NAME}", self, role="subtitle"))
+        layout.addWidget(
+            kit.Text("Use your SpineHR portal credentials.", self, role="caption", tone="muted")
+        )
 
         form = QFormLayout()
         form.setSpacing(10)
-        self._username = QLineEdit(username)
-        self._username.setPlaceholderText("Employee code")
-        self._password = QLineEdit()
+        self._username = kit.LineEdit(username, self, placeholder="Employee code")
+        self._password = kit.LineEdit(parent=self, placeholder="Password")
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
-        self._password.setPlaceholderText("Password")
         add_reveal_toggle(self._password)
-        form.addRow("Username", self._username)
-        form.addRow("Password", self._password)
+        form.addRow(kit.Text("Username", self), self._username)
+        form.addRow(kit.Text("Password", self), self._password)
         layout.addLayout(form)
 
-        self._remember = QCheckBox("Remember me on this device")
+        self._remember = kit.CheckBox("Remember me on this device")
         self._remember.setChecked(remember)
         self._remember.setToolTip(
             "Stores the password in the Windows Credential Manager, never in a file."
         )
         layout.addWidget(self._remember)
 
-        self._error = QLabel()
-        self._error.setWordWrap(True)
+        self._error = kit.Text(parent=self, tone="bad", wrap=True)
         self._error.setVisible(False)
         layout.addWidget(self._error)
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        self._cancel = QPushButton("Cancel")
-        self._cancel.clicked.connect(self.reject)
-        self._submit = QPushButton("Sign in")
-        self._submit.setObjectName("Primary")
+        buttons.setSpacing(8)
+        self._cancel = kit.Button("Cancel", self, variant="quiet", on_click=self.reject)
+        self._submit = kit.Button("Sign in", self, variant="primary", on_click=self._on_submit)
+        # Enter signs in from either field; the kit turns auto-default off, so it is said here.
         self._submit.setDefault(True)
-        self._submit.clicked.connect(self._on_submit)
         buttons.addWidget(self._cancel)
         buttons.addWidget(self._submit)
         layout.addLayout(buttons)

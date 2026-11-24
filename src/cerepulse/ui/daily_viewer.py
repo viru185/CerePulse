@@ -1,12 +1,20 @@
-"""The picture of the day at full size, with its title, credit and the day's quote."""
+"""The picture of the day at full size, with its title, credit and the day's quote.
+
+Everything here but the button labels came from a remote service, so it is plain text, and
+the two credit lines that carry a link have the remote part escaped before it goes into
+markup: a QLabel left to guess reads a quote with a "<" in it as HTML.
+"""
 
 from __future__ import annotations
 
+from html import escape
+
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QPixmap, QScreen
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from cerepulse.services.daily import DailyView
+from cerepulse.ui import kit
 
 MAX_WIDTH = 880
 MAX_HEIGHT = 560
@@ -32,42 +40,51 @@ class DailyViewer(QDialog):
                 image.setPixmap(_fitted(pixmap, self.screen() or QGuiApplication.primaryScreen()))
             layout.addWidget(image, 0, Qt.AlignmentFlag.AlignHCenter)
             if picture.title:
-                title = QLabel(picture.title)
-                title.setObjectName("CardValue")
-                layout.addWidget(title)
+                layout.addWidget(kit.Text(picture.title, self, role="subtitle", wrap=True))
             if picture.copyright:
-                credit = QLabel(
-                    f'<a href="{picture.copyright_url}">{picture.copyright}</a>'
-                    if picture.copyright_url
-                    else picture.copyright
-                )
-                credit.setObjectName("CardCaption")
-                credit.setOpenExternalLinks(True)
-                credit.setWordWrap(True)
-                layout.addWidget(credit)
+                if picture.copyright_url:
+                    layout.addWidget(
+                        kit.LinkText(
+                            f'<a href="{escape(picture.copyright_url, quote=True)}">'
+                            f"{escape(picture.copyright)}</a>",
+                            self,
+                        )
+                    )
+                else:
+                    layout.addWidget(
+                        kit.Text(picture.copyright, self, role="caption", tone="muted", wrap=True)
+                    )
 
         if view.quote is not None:
-            quote = QLabel(
-                f"“{view.quote.text}”"
-                + (f" — {view.quote.attribution}" if view.quote.attribution else "")
+            layout.addWidget(
+                kit.Text(
+                    f"“{view.quote.text}”"
+                    + (f" — {view.quote.attribution}" if view.quote.attribution else ""),
+                    self,
+                    wrap=True,
+                )
             )
-            quote.setWordWrap(True)
-            layout.addWidget(quote)
-            credit = QLabel(f'<a href="{view.quote.credit_url}">{view.quote.credit}</a>')
-            credit.setObjectName("CardCaption")
-            credit.setOpenExternalLinks(True)
-            layout.addWidget(credit)
+            layout.addWidget(
+                kit.LinkText(
+                    f'<a href="{escape(view.quote.credit_url, quote=True)}">'
+                    f"{escape(view.quote.credit)}</a>",
+                    self,
+                )
+            )
 
         buttons = QHBoxLayout()
+        buttons.setSpacing(8)
         buttons.addStretch(1)
         if picture is not None:
-            use = QPushButton("Use as background")
-            use.setToolTip("Sets this picture as the window's background, dimmed by the theme")
-            use.clicked.connect(lambda: self.use_as_background.emit(str(picture.path)))
-            buttons.addWidget(use)
-        close = QPushButton("Close")
-        close.clicked.connect(self.accept)
-        buttons.addWidget(close)
+            buttons.addWidget(
+                kit.Button(
+                    "Use as background",
+                    self,
+                    tooltip="Sets this picture as the window's background, dimmed by the theme",
+                    on_click=lambda: self.use_as_background.emit(str(picture.path)),
+                )
+            )
+        buttons.addWidget(kit.Button("Close", self, variant="quiet", on_click=self.accept))
         layout.addLayout(buttons)
 
 
