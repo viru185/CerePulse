@@ -44,7 +44,6 @@ from cerepulse.ui.widgets import (
     InsightStrip,
     NextActionCard,
     Skeleton,
-    TargetBar,
     card_row,
 )
 
@@ -285,7 +284,7 @@ class TodayView(QWidget):
         layout.addWidget(self._hero_caption)
         layout.addSpacing(Space.SNUG)
 
-        self._progress = TargetBar(self._palette)
+        self._progress = kit.Progress(self._palette)
         layout.addWidget(self._progress)
         return host
 

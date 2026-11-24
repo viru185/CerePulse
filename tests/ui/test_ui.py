@@ -28,7 +28,7 @@ from cerepulse.ui.theme import (
     stylesheet,
 )
 from cerepulse.ui.views.today import TodayView, summary_text
-from cerepulse.ui.widgets import Banner, Card, DayTimeline, InsightStrip, SegmentBar
+from cerepulse.ui.widgets import Banner, DayTimeline, InsightStrip
 from cerepulse.ui.workers import TaskRunner
 
 DAY = date(2026, 7, 28)
@@ -153,14 +153,6 @@ def test_named_themes_resolve() -> None:
 # --- widgets --------------------------------------------------------------------------
 
 
-def test_card_updates(qapp: QApplication) -> None:
-    card = Card("Worked", value="0:00")
-    card.set_value("9:03", accent=DARK.work)
-    card.set_caption("vs 8:00 target")
-    assert card._value.text() == "9:03"
-    assert card._caption.isVisible() or not card.isVisible()
-
-
 def test_banner_shows_and_clears(qapp: QApplication) -> None:
     banner = Banner()
     assert not banner.isVisible()
@@ -247,19 +239,6 @@ def test_insight_strip_rebuilds(qapp: QApplication) -> None:
 
     strip.set_insights([])
     assert strip._layout.count() == 0
-
-
-def test_segment_bar_accepts_an_empty_day(qapp: QApplication) -> None:
-    bar = SegmentBar(DARK)
-    bar.set_segments(())
-    assert "No punches" in bar.toolTip()
-
-
-def test_segment_bar_summarizes_the_span(qapp: QApplication) -> None:
-    analysis = analyze_day(punches(("09:21", "in"), ("18:31", "out")), day=DAY)
-    bar = SegmentBar(DARK)
-    bar.set_segments(analysis.segments)
-    assert "9.2h" in bar.toolTip()
 
 
 # --- today summary --------------------------------------------------------------------
@@ -394,7 +373,7 @@ def test_the_progress_bar_says_what_leaving_now_would_cost(qapp: QApplication) -
     view = TodayView(DARK)
     view.show_analysis(analysis, is_today=True)
 
-    caption = view._progress._caption.text()
+    caption = view._progress.caption.text()
     assert "% of the" in caption
     assert "leave now" in caption
 
@@ -750,6 +729,15 @@ def test_the_heatmap_lays_the_month_out_as_a_calendar(qapp: QApplication) -> Non
 
     assert positions["1"] == (1, 2)  # row 0 is the weekday headings
     assert positions["6"] == (2, 0)  # the following Monday
+
+
+def test_every_calendar_cell_paints_itself(qapp: QApplication) -> None:
+    """The cells are painted, not styled per cell; one class that forgot its paint method
+    drew the month's remaining days as bare numbers in full-strength text."""
+    from cerepulse.ui.widgets import _FutureCell, _HeatCell
+
+    for cls in (_HeatCell, _FutureCell):
+        assert "paintEvent" in cls.__dict__, cls.__name__
 
 
 # --- insights view ----------------------------------------------------------------------

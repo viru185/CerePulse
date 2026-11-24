@@ -400,6 +400,11 @@ def _kit_rules(palette: Palette) -> str:
     tones = "\n".join(
         f'QLabel[tone="{tone}"] {{ color: {tone_colour(palette, tone)}; }}' for tone in TONES
     )
+    callouts = "\n".join(
+        f'QFrame[variant="callout"][tone="{tone}"] {{ border-left-color: '
+        f"{tone_colour(palette, tone)}; }}"
+        for tone in TONES
+    )
     pills = "\n".join(
         f'QLabel[variant="pill"][tone="{tone}"] {{ color: {tone_colour(palette, tone)}; '
         f"background-color: {tint(tone_colour(palette, tone), 0.14)}; }}"
@@ -436,6 +441,13 @@ def _kit_rules(palette: Palette) -> str:
         border: 1px solid transparent;
         border-radius: {Radius.CARD}px;
     }}
+    QFrame[variant="callout"] {{
+        background-color: {palette.elevated};
+        border: 1px solid {palette.border};
+        border-left: 3px solid {palette.work};
+        border-radius: {Radius.CARD}px;
+    }}
+    {callouts}
     QFrame[variant="divider"] {{
         background-color: {palette.border};
         border: none;
@@ -608,30 +620,6 @@ def stylesheet(palette: Palette, *, wallpaper: bool = False) -> str:
     #SidebarScroll, #SidebarScroll > QWidget, #SidebarContent {{
         background: transparent;
     }}
-    #SidebarButton {{
-        background: transparent;
-        border: none;
-        border-radius: 8px;
-        padding: 10px 14px;
-        text-align: left;
-        color: {palette.text_muted};
-        font-size: 13px;
-    }}
-    #SidebarButton:hover {{
-        background-color: {palette.overlay};
-        color: {palette.text};
-    }}
-    #SidebarButton:checked {{
-        background-color: {palette.overlay};
-        color: {palette.text};
-        font-weight: 600;
-    }}
-    #SidebarBrand {{
-        color: {palette.text};
-        font-size: 17px;
-        font-weight: 700;
-        padding: 4px 14px 2px 14px;
-    }}
     #DailyPicture {{
         border-radius: 8px;
         background: {palette.overlay};
@@ -641,47 +629,6 @@ def stylesheet(palette: Palette, *, wallpaper: bool = False) -> str:
         color: {palette.text_faint};
         font-size: 11px;
         padding: 0 14px 12px 14px;
-    }}
-
-    /* --- cards ------------------------------------------------------------- */
-
-    #Card {{
-        background-color: {palette.elevated};
-        border: 1px solid {palette.border};
-        border-radius: 12px;
-    }}
-    #CardTitle {{
-        color: {palette.text_muted};
-        font-size: 11px;
-        font-weight: 600;
-        letter-spacing: 0.6px;
-    }}
-    #CardValue {{
-        color: {palette.text};
-        font-size: 26px;
-        font-weight: 700;
-        font-variant-numeric: tabular-nums;
-    }}
-    #CardCaption {{
-        color: {palette.text_faint};
-        font-size: 11px;
-    }}
-
-    /* --- hero -------------------------------------------------------------- */
-
-    #HeroLabel {{
-        color: {palette.text_muted};
-        font-size: 13px;
-    }}
-    #HeroValue {{
-        color: {palette.text};
-        font-size: 44px;
-        font-weight: 700;
-        font-variant-numeric: tabular-nums;
-    }}
-    #HeroCaption {{
-        color: {palette.text_faint};
-        font-size: 12px;
     }}
 
     /* --- banners ----------------------------------------------------------- */
@@ -728,23 +675,8 @@ def stylesheet(palette: Palette, *, wallpaper: bool = False) -> str:
         border-radius: 8px;
         padding: 7px 14px;
     }}
-    /* The ◀ ▶ steppers. The default 7px/14px padding plus a 1px border is 30px of chrome,
-       and these were set to a fixed 30px wide — leaving exactly zero pixels for the glyph,
-       which is why they drew as empty rounded squares. They are square by design, so they
-       get padding that fits inside one. */
-    QPushButton#StepButton {{
-        padding: 4px 0px;
-        font-size: 14px;
-    }}
     QPushButton:hover  {{ border-color: {palette.work}; }}
     QPushButton:disabled {{ color: {palette.text_faint}; border-color: {palette.border}; }}
-    QPushButton#Primary {{
-        background-color: {palette.work};
-        color: {palette.surface};
-        border: none;
-        font-weight: 600;
-    }}
-    QPushButton#Primary:disabled {{ background-color: {palette.text_faint}; }}
 
     QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTimeEdit, QDateEdit {{
         background-color: {palette.surface};

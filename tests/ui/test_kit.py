@@ -231,3 +231,21 @@ def test_the_daily_viewer_never_reads_remote_text_as_markup(qapp: QApplication, 
     for label in viewer.findChildren(QLabel):
         if "bold" in label.text() or "lake" in label.text():
             assert label.textFormat() == Qt.TextFormat.PlainText
+
+
+def test_a_callout_takes_a_tone_and_nothing_else(qapp: QApplication) -> None:
+    note = kit.Callout(tone="rest")
+    assert (note.property("variant"), note.property("tone")) == ("callout", "rest")
+    note.set_tone("bad")
+    assert note.property("tone") == "bad"
+    with pytest.raises(ValueError, match="tone"):
+        note.set_tone("#ff0000")
+
+
+def test_progress_fills_in_the_good_tone_once_the_target_is_met(qapp: QApplication) -> None:
+    bar = kit.Progress(DARK)
+    bar.set_progress(0.5, "half")
+    assert bar.meter.parts == ((0.5, "work", 1.0),)
+    bar.set_progress(1.4, "")
+    assert bar.meter.parts == ((1.0, "good", 1.0),)
+    assert not bar.caption.isVisibleTo(bar)

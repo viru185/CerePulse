@@ -486,6 +486,22 @@ the light palette failed it for months because the accent test ran on dark alone
 `_palette`; `_apply_theme` finds every widget that has one and hands it the new palette in one
 place, then re-renders. Adding a painted widget needs nothing beyond storing `self._palette`.
 
+**Every widget comes from the kit, and the look lives in one sheet.** `ui/kit` has one configured
+class per kind (Button, ComboBox, Text, Pill, StatCard, Callout, Meter…). Each class sets only
+a `variant`, `role` or `tone` property. `theme._kit_rules` turns those properties into
+appearance; it is the only place that does. A screen that needs something different gets a new
+variant, never its own `setStyleSheet`, and `tests/ui/test_kit_usage.py` fails on a raw
+`QPushButton`, `QComboBox` and the like, or on a stylesheet call, anywhere outside the kit. The
+application sheet itself is the one exception. Before the kit, the same figure came out three
+sizes on three screens, and every hand-coloured label had to be found again on a theme change.
+A Qt-palette colour, such as a rich-text link, is the one thing a sheet cannot reach; it is set
+by `apply_links` wherever the sheet is applied.
+
+**Text from anywhere but the app is plain text.** `kit.Text` is `PlainText` on purpose.
+`kit.LinkText` renders rich text and is only for the app's own sentences. Remote text inside a
+link is escaped first. A `QLabel` left to guess its format reads a quote, a release name or a
+Bing copyright line containing "<" as HTML.
+
 **With a wallpaper the plain widget background is transparent, and dialogs must be told.**
 `stylesheet(palette, wallpaper=True)` makes `QWidget` transparent so the `_Backdrop` shows
 through; cards, the sidebar, tables and inputs keep their own opaque rules, and `QDialog`,

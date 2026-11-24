@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from cerepulse.core.config import AppConfig
 from cerepulse.intelligence.insights import Severity
-from cerepulse.ui.theme import DARK, PALETTES
+from cerepulse.ui.theme import DARK, PALETTES, stylesheet
 from cerepulse.ui.widgets import Toast, ToastStack
 
 
@@ -70,10 +70,14 @@ def test_text_is_shown_as_text_never_as_markup(stack: ToastStack) -> None:
 
 
 def test_a_theme_change_reaches_a_toast_already_up(stack: ToastStack) -> None:
+    """A toast is a kit callout: the application sheet colours it, so the sheet a theme
+    change applies restyles one already on screen, and it carries no sheet of its own."""
     stack.show_message("Settings saved")
     toast = stack.findChildren(Toast)[0]
     toast._palette = PALETTES["light"]  # what `_apply_theme`'s walk does
-    assert PALETTES["light"].elevated in toast.styleSheet()
+    assert (toast.property("variant"), toast.property("tone")) == ("callout", "good")
+    assert toast.styleSheet() == ""
+    assert 'QFrame[variant="callout"][tone="good"]' in stylesheet(PALETTES["light"])
 
 
 # --- every action answers -----------------------------------------------------------------

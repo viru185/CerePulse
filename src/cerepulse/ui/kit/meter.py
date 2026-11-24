@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPaintEvent
-from PySide6.QtWidgets import QSizePolicy, QWidget
+from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
+from cerepulse.ui.kit.text import Text
 from cerepulse.ui.theme import TONES, Palette, tone_colour
 
 #: (share of the whole, tone, opacity). Parts are laid end to end from the left.
@@ -64,3 +65,26 @@ class Meter(QWidget):
             painter.fillRect(QRectF(x, track.top(), width, track.height()), colour)
             x += width
         painter.end()
+
+
+class Progress(QWidget):
+    """A meter and the sentence under it: how far through a target, and what that means.
+
+    Past the target the whole bar is filled in the good tone rather than clamped silently at
+    full in the working one, so a day that is done reads as done.
+    """
+
+    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self.meter = Meter(palette, self)
+        self.caption = Text(parent=self, role="caption", tone="muted", wrap=True)
+        layout.addWidget(self.meter)
+        layout.addWidget(self.caption)
+
+    def set_progress(self, fraction: float, caption: str = "") -> None:
+        self.meter.set_fraction(min(1.0, fraction), "good" if fraction >= 1.0 else "work")
+        self.caption.setText(caption)
+        self.caption.setVisible(bool(caption))

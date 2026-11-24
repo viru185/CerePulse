@@ -32,10 +32,8 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
     QHBoxLayout,
-    QLabel,
     QMainWindow,
     QMessageBox,
-    QPushButton,
     QScrollArea,
     QStackedWidget,
     QVBoxLayout,
@@ -63,6 +61,7 @@ from cerepulse.services.leave import LeaveView as LeaveData
 from cerepulse.services.scopes import Scope
 from cerepulse.transport import pages
 from cerepulse.ui import formatting as fmt
+from cerepulse.ui import kit
 from cerepulse.ui.assets import app_icon
 from cerepulse.ui.controllers import NavigationController, SyncController, UpdateController
 from cerepulse.ui.controllers.sync import YearBackfill
@@ -134,10 +133,10 @@ OPENING_MAXIMUM = (1320, 900)
 #: Where the window's size and position are kept between launches.
 GEOMETRY_KEY = "window_geometry"
 #: Room the sidebar status button actually has for text: the sidebar, less its 8px margins,
-#: less the 14px padding and 1px border each side that ``#SidebarButton`` carries. Taken
+#: less the kit nav variant's 3px rule, 9px and 10px padding and a pixel of slack. Taken
 #: from the geometry rather than read off the widget, because the first status is set before
 #: the layout has ever run and ``width()`` would still be reporting a default.
-STATUS_TEXT_WIDTH = SIDEBAR_WIDTH - 16 - 30
+STATUS_TEXT_WIDTH = SIDEBAR_WIDTH - 16 - 23
 #: A minute timer that finds this much time has passed has woken from sleep.
 WAKE_GAP_SECONDS = 180
 
@@ -367,20 +366,18 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 16, 8, 0)
         layout.setSpacing(2)
 
-        brand = QLabel(about.NAME)
-        brand.setObjectName("SidebarBrand")
-        tagline = QLabel(about.TAGLINE)
-        tagline.setObjectName("SidebarTagline")
-        tagline.setWordWrap(True)
+        brand = kit.Text(about.NAME, role="subtitle")
+        brand.setContentsMargins(12, 4, 12, 2)
+        tagline = kit.Text(about.TAGLINE, role="caption", tone="faint", wrap=True)
+        tagline.setContentsMargins(12, 0, 12, 12)
         layout.addWidget(brand)
         layout.addWidget(tagline)
 
         self._nav = QButtonGroup(self)
         self._nav.setExclusive(True)
         for index, name in enumerate(SCREENS):
-            button = QPushButton(name)
-            button.setObjectName("SidebarButton")
-            button.setCheckable(True)
+            # Each screen with its icon, so the list can be found by shape as well as read.
+            button = kit.NavButton(name, name.lower(), self._palette)
             button.setChecked(index == 0)
             # Ctrl+1..8, in sidebar order. The app had no keyboard route to anything but
             # Escape, and no accessible names for a screen reader to speak.
@@ -408,8 +405,8 @@ class MainWindow(QMainWindow):
         # from two buttons buried in a day drawer and a Records header — places you find
         # only if you already know they are there. The sidebar is the one surface visible
         # from every screen, so it is where "take me to the portal" belongs.
-        self._portal = QPushButton("Open SpineHR")
-        self._portal.setObjectName("SidebarButton")
+        self._portal = kit.NavButton("Open SpineHR", "external", self._palette)
+        self._portal.setCheckable(False)
         self._portal.setToolTip(
             "Opens the portal in your browser, already signed in.\n"
             "CerePulse pauses while you have it — press Refresh when you are done."
@@ -420,9 +417,7 @@ class MainWindow(QMainWindow):
         # The status is the way in to per-scope sync, so it is a button rather than a
         # label: the one place that says how fresh things are should also be where you go
         # to do something about it.
-        self._status = QPushButton("Starting…")
-        self._status.setObjectName("SidebarButton")
-        self._status.clicked.connect(self._open_sync_panel)
+        self._status = kit.Button("Starting…", variant="nav", on_click=self._open_sync_panel)
         layout.addWidget(self._status)
         self._set_status("Starting…")
         return sidebar

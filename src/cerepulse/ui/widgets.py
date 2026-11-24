@@ -8,7 +8,7 @@ where work happened, where breaks fell, which stretches were inferred from a mis
 from __future__ import annotations
 
 from calendar import monthrange
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from datetime import date, datetime, time, timedelta
 from html import escape
 from pathlib import Path
@@ -33,6 +33,7 @@ from PySide6.QtGui import (
     QFont,
     QFontMetricsF,
     QIcon,
+    QLinearGradient,
     QMouseEvent,
     QPainter,
     QPainterPath,
@@ -41,19 +42,15 @@ from PySide6.QtGui import (
     QResizeEvent,
 )
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QFrame,
     QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLayout,
     QLayoutItem,
     QLineEdit,
-    QPushButton,
     QSizePolicy,
-    QTableWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -63,7 +60,17 @@ from cerepulse.intelligence.month import DayRollup
 from cerepulse.intelligence.next_action import NextAction
 from cerepulse.intelligence.segments import WorkedGap, WorkSegment
 from cerepulse.models.values import Duration
+from cerepulse.ui import kit
+from cerepulse.ui.kit.text import font_for
 from cerepulse.ui.theme import Palette, Space
+
+#: The tone each insight severity is drawn in, everywhere a severity is shown.
+SEVERITY_TONES = {
+    Severity.SUCCESS: "good",
+    Severity.INFO: "work",
+    Severity.WARNING: "rest",
+    Severity.CRITICAL: "bad",
+}
 
 if TYPE_CHECKING:  # Imported for the annotation only; widgets must not depend on services.
     from cerepulse.services.commute import CommuteView
@@ -324,76 +331,7 @@ class FlowLayout(QLayout):
         return y + line - rect.y() + margins.bottom()
 
 
-class Card(QFrame):
-    """A titled metric with an optional caption, and an optional click target.
-
-    Clicking opens the "why this number?" explanation, so every number on screen can show
-    the punches and arithmetic behind it.
-    """
-
-    clicked = Signal()
-
-    def __init__(
-        self,
-        title: str,
-        *,
-        value: str = "—",
-        caption: str = "",
-        accent: str | None = None,
-        clickable: bool = False,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setObjectName("Card")
-        self._clickable = clickable
-        if clickable:
-            self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(4)
-
-        self._title = QLabel(title.upper())
-        self._title.setObjectName("CardTitle")
-
-        self._value = QLabel(value)
-        self._value.setObjectName("CardValue")
-        if accent:
-            self._value.setStyleSheet(f"color: {accent};")
-
-        # Parented now, not when the layout adopts it: shown while parentless, a label is a
-        # top-level window for that moment, and five of them flashed open at every launch.
-        self._caption = QLabel(caption, self)
-        self._caption.setObjectName("CardCaption")
-        self._caption.setWordWrap(True)
-        self._caption.setVisible(bool(caption))
-
-        layout.addWidget(self._title)
-        layout.addWidget(self._value)
-        layout.addWidget(self._caption)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-
-    def set_value(self, value: str, *, accent: str | None = None) -> None:
-        self._value.setText(value)
-        self._value.setStyleSheet(f"color: {accent};" if accent else "")
-
-    def set_caption(self, caption: str) -> None:
-        self._caption.setText(caption)
-        self._caption.setVisible(bool(caption))
-
-    def add_detail(self, widget: QWidget) -> None:
-        """Append a widget below the caption — a per-item list under a headline figure."""
-        layout = self.layout()
-        if layout is not None:
-            layout.addWidget(widget)
-
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 — Qt override
-        if self._clickable and event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-        super().mouseReleaseEvent(event)
-
-
-class Toast(QFrame):
+class Toast(kit.Callout):
     """A short note that something was done, which fades away by itself.
 
     The app had no way to say "done": a Settings save changed one line of text beside the
@@ -425,10 +363,8 @@ class Toast(QFrame):
         self.severity = severity
         self.text = text
         self._palette = palette
-        self._label = QLabel(text, self)
-        # Portal text reaches these, and it is not trusted markup.
-        self._label.setTextFormat(Qt.TextFormat.PlainText)
-        self._label.setWordWrap(True)
+        # Plain text: portal text reaches these, and it is not trusted markup.
+        self._label = kit.Text(text, self, wrap=True)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(Space.GAP, Space.ROW, Space.GAP, Space.ROW)
         layout.addWidget(self._label)
@@ -516,24 +452,10 @@ class Toast(QFrame):
 
     @_palette.setter
     def _palette(self, palette: Palette) -> None:
-        # A property, because the theme walk in `_apply_theme` only assigns `_palette`: a
-        # toast already on screen restyles the moment it is handed the new one.
+        # The application sheet colours a callout, so a toast on screen follows a theme
+        # change by itself; this only remembers the palette for anything painted later.
         self._theme = palette
-        self._restyle()
-
-    def _restyle(self) -> None:
-        palette = self._theme
-        edge = {
-            Severity.SUCCESS: palette.good,
-            Severity.INFO: palette.work,
-            Severity.WARNING: palette.rest,
-            Severity.CRITICAL: palette.bad,
-        }.get(self.severity, palette.work)
-        self.setStyleSheet(
-            f"#Toast {{ background-color: {palette.elevated}; border: 1px solid {palette.border};"
-            f" border-left: 4px solid {edge}; border-radius: 10px; }}"
-            f"#Toast QLabel {{ color: {palette.text}; background: transparent; }}"
-        )
+        self.set_tone(SEVERITY_TONES.get(self.severity, "work"))
 
 
 class ToastStack(QWidget):
@@ -731,48 +653,38 @@ class Banner(QLabel):
         self.setVisible(True)
 
 
-class InsightChip(QFrame):
+class InsightChip(kit.Callout):
     """One insight, with its action button when it has one."""
 
     action_triggered = Signal(object)  # the Insight
 
     def __init__(self, insight: Insight, palette: Palette, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("Card")
+        tone = SEVERITY_TONES[insight.severity]
+        super().__init__(parent, tone=tone)
         self._insight = insight
-
-        colour = {
-            Severity.SUCCESS: palette.good,
-            Severity.INFO: palette.work,
-            Severity.WARNING: palette.rest,
-            Severity.CRITICAL: palette.bad,
-        }[insight.severity]
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(10)
 
-        stripe = QFrame()
-        stripe.setFixedWidth(3)
-        stripe.setStyleSheet(f"background-color: {colour}; border-radius: 2px;")
-        layout.addWidget(stripe)
-
         text = QVBoxLayout()
         text.setSpacing(1)
-        title = QLabel(insight.title)
-        title.setStyleSheet(f"color: {colour}; font-weight: 600;")
-        text.addWidget(title)
+        text.addWidget(kit.Text(insight.title, self, role="body-strong", tone=tone, wrap=True))
         if insight.detail:
-            detail = QLabel(insight.detail)
-            detail.setObjectName("CardCaption")
-            detail.setWordWrap(True)
-            text.addWidget(detail)
+            text.addWidget(kit.Text(insight.detail, self, role="caption", tone="muted", wrap=True))
         layout.addLayout(text, 1)
 
         if insight.action is not None:
-            button = QPushButton(insight.action.label)
-            button.clicked.connect(lambda: self.action_triggered.emit(insight))
-            layout.addWidget(button)
+            layout.addWidget(
+                kit.Button(
+                    insight.action.label,
+                    self,
+                    small=True,
+                    on_click=lambda: self.action_triggered.emit(insight),
+                ),
+                0,
+                Qt.AlignmentFlag.AlignVCenter,
+            )
 
 
 class InsightStrip(QWidget):
@@ -795,91 +707,6 @@ class InsightStrip(QWidget):
             chip.action_triggered.connect(self.action_triggered)
             self._layout.addWidget(chip)
         self.setVisible(bool(insights))
-
-
-class SegmentBar(QWidget):
-    """The day drawn to scale: work in aqua, breaks in amber, inferred stretches hatched.
-
-    Ported from ninetofive's segmented bar. Hovering a band shows what it is; the hatch is
-    what tells a user a stretch was reconstructed rather than recorded.
-    """
-
-    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._palette = palette
-        self._segments: tuple[WorkSegment, ...] = ()
-        self._start: datetime | None = None
-        self._end: datetime | None = None
-        self.setMinimumHeight(34)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-    def set_segments(self, segments: tuple[WorkSegment, ...]) -> None:
-        self._segments = segments
-        if segments:
-            self._start = segments[0].start
-            self._end = segments[-1].end
-            span = (self._end - self._start).total_seconds() / 3600
-            self.setToolTip(f"{span:.1f}h from first in to last out")
-        else:
-            self._start = self._end = None
-            self.setToolTip("No punches recorded")
-        self.update()
-
-    def paintEvent(self, event: object) -> None:  # noqa: N802 — Qt override
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        rect = QRectF(self.rect()).adjusted(0, 6, 0, -6)
-        radius = rect.height() / 2
-
-        track = QPainterPath()
-        track.addRoundedRect(rect, radius, radius)
-        painter.fillPath(track, QColor(self._palette.border))
-
-        if not self._segments or self._start is None or self._end is None:
-            painter.setPen(QColor(self._palette.text_faint))
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "No punches recorded")
-            return
-
-        total = (self._end - self._start).total_seconds()
-        if total <= 0:
-            return
-
-        painter.setClipPath(track)
-        # Breaks are the gaps, so painting the track amber and work over it in aqua draws
-        # both without computing the gaps separately.
-        painter.fillRect(rect, QColor(self._palette.rest))
-
-        for segment in self._segments:
-            offset = (segment.start - self._start).total_seconds() / total
-            width = (segment.end - segment.start).total_seconds() / total
-            band = QRectF(
-                rect.left() + offset * rect.width(),
-                rect.top(),
-                max(1.0, width * rect.width()),
-                rect.height(),
-            )
-            painter.fillRect(band, QColor(self._palette.work))
-            if segment.end_inferred:
-                self._hatch(painter, band)
-
-        painter.setClipping(False)
-        painter.setPen(QPen(QColor(self._palette.border), 1))
-        painter.drawPath(track)
-
-    def _hatch(self, painter: QPainter, band: QRectF) -> None:
-        """Diagonal hatching marks a stretch whose end was inferred, not punched."""
-        painter.save()
-        painter.setClipRect(band)
-        pen = QPen(QColor(self._palette.surface))
-        pen.setWidth(1)
-        painter.setPen(pen)
-        step = 6
-        x = band.left() - band.height()
-        while x < band.right():
-            painter.drawLine(int(x), int(band.bottom()), int(x + band.height()), int(band.top()))
-            x += step
-        painter.restore()
 
 
 class DayTimeline(QWidget):
@@ -1677,7 +1504,7 @@ class BarChart(QWidget):
                 )
 
 
-class NextActionCard(QFrame):
+class NextActionCard(kit.Callout):
     """The instruction, above everything that merely describes.
 
     Today reports a dozen true things and instructs on none of them. This is the one line
@@ -1689,7 +1516,6 @@ class NextActionCard(QFrame):
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setObjectName("Card")
         self._palette = palette
         self._action: Action | None = None
 
@@ -1697,41 +1523,29 @@ class NextActionCard(QFrame):
         layout.setContentsMargins(Space.GAP, Space.ROW, Space.GAP, Space.ROW)
         layout.setSpacing(Space.ROW)
 
-        self._stripe = QFrame()
-        self._stripe.setFixedWidth(4)
-        layout.addWidget(self._stripe)
-
         text = QVBoxLayout()
         text.setSpacing(Space.TIGHT // 2)
-        self._headline = QLabel()
-        self._headline.setWordWrap(True)
-        self._detail = QLabel()
-        self._detail.setObjectName("CardCaption")
-        self._detail.setWordWrap(True)
+        self._headline = kit.Text(parent=self, role="subtitle", wrap=True)
+        self._detail = kit.Text(parent=self, role="caption", tone="muted", wrap=True)
         text.addWidget(self._headline)
         text.addWidget(self._detail)
         layout.addLayout(text, 1)
 
-        self._button = QPushButton()
+        self._button = kit.Button(
+            "", self, on_click=lambda: self.action_triggered.emit(self._action)
+        )
         self._button.setVisible(False)
-        self._button.clicked.connect(lambda: self.action_triggered.emit(self._action))
-        layout.addWidget(self._button)
+        layout.addWidget(self._button, 0, Qt.AlignmentFlag.AlignVCenter)
 
     def set_action(self, action: NextAction | None) -> None:
         if action is None:
             self.setVisible(False)
             return
 
-        colour = {
-            Severity.SUCCESS: self._palette.good,
-            Severity.INFO: self._palette.work,
-            Severity.WARNING: self._palette.rest,
-            Severity.CRITICAL: self._palette.bad,
-        }[action.severity]
-
-        self._stripe.setStyleSheet(f"background-color: {colour}; border-radius: 2px;")
+        tone = SEVERITY_TONES[action.severity]
+        self.set_tone(tone)
         self._headline.setText(action.headline)
-        self._headline.setStyleSheet(f"color: {colour}; font-size: 17px; font-weight: 600;")
+        self._headline.set_tone(tone)
         self._detail.setText(action.detail)
 
         self._action = action.action
@@ -1739,60 +1553,6 @@ class NextActionCard(QFrame):
         if self._action is not None:
             self._button.setText(self._action.label)
         self.setVisible(True)
-
-
-class TargetBar(QWidget):
-    """How much of the day's target is done, as one bar and one percentage.
-
-    Four durations state the same fact between them and none of them answers "how far
-    through am I" without arithmetic. Overtime is drawn past the target in its own colour
-    rather than clamped at full, because a bar pinned at 100% cannot distinguish a day that
-    finished on time from one that ran three hours over.
-    """
-
-    HEIGHT = 8
-
-    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._palette = palette
-        self._fraction = 0.0
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Space.TIGHT)
-
-        self._bar = QWidget()
-        self._bar.setFixedHeight(self.HEIGHT)
-        self._caption = QLabel()
-        self._caption.setObjectName("CardCaption")
-        self._caption.setWordWrap(True)
-        layout.addWidget(self._bar)
-        layout.addWidget(self._caption)
-
-    def set_progress(self, fraction: float, caption: str = "") -> None:
-        self._fraction = max(0.0, fraction)
-        self._caption.setText(caption)
-        self._caption.setVisible(bool(caption))
-        self._bar.setStyleSheet(self._style())
-
-    def _style(self) -> str:
-        radius = f"border-radius: {self.HEIGHT // 2}px;"
-        track = self._palette.border
-        if self._fraction <= 0.0:
-            return f"background: {track}; {radius}"
-        if self._fraction >= 1.0:
-            # Past the target the whole bar is met; overtime shows as the brighter fill
-            # rather than as extra length there is no room for.
-            return f"background: {self._palette.good}; {radius}"
-
-        # The two stops have to straddle the boundary; landing both on one offset makes Qt
-        # interpolate across the whole width and the bar reads as a wash.
-        stop = min(max(self._fraction, 0.0001), 0.9999)
-        return (
-            f"background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
-            f" stop:0 {self._palette.work}, stop:{stop:.4f} {self._palette.work},"
-            f" stop:{min(stop + 0.0001, 1.0):.4f} {track}, stop:1 {track}); {radius}"
-        )
 
 
 class MonthHeatmap(QWidget):
@@ -1851,9 +1611,8 @@ class MonthHeatmap(QWidget):
         flagged = attention or set()
 
         for column, initial in enumerate(self.HEADINGS):
-            heading = QLabel(initial)
+            heading = kit.Text(initial, role="caption", tone="faint")
             heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            heading.setStyleSheet(f"color: {self._palette.text_faint}; font-size: 10px;")
             self._grid.addWidget(heading, 0, column)
 
         known = {entry.day: entry for entry in days}
@@ -1921,16 +1680,17 @@ class _HeatCell(QLabel):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         fill, ink = _heat_colours(entry, target, palette)
-        border = f"1px solid {palette.bad}" if flagged else "1px solid transparent"
+        self._fill, self._ink = _colour(fill), _colour(ink)
+        self._edge: QColor | None = QColor(palette.bad) if flagged else None
+        # Outdoor duty has no hours to tint by, so without its own mark it renders as the
+        # same grey as a day nobody worked — which is how a week away disappeared.
+        self._dashed = entry.on_duty
         if entry.on_duty:
-            # Outdoor duty has no hours to tint by, so without its own mark it renders as
-            # the same grey as a day nobody worked — which is how a week away disappeared.
-            border = f"1px dashed {palette.adjust}"
-        self.setStyleSheet(
-            f"background-color: {fill}; color: {ink}; border: {border};"
-            f" border-radius: 6px; font-size: 11px;"
-        )
+            self._edge = QColor(palette.adjust)
         self.setToolTip(_heat_tooltip(entry, flagged))
+
+    def paintEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        _paint_cell(self, self._fill, self._ink, self._edge, dashed=self._dashed)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 — Qt override
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1957,15 +1717,42 @@ class _FutureCell(QLabel):
         # letterbox, and a bigger void than the layout change that was meant to close one.
         self.setMaximumSize(MonthHeatmap.MAX_CELL, MonthHeatmap.MAX_CELL)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setStyleSheet(
-            f"background: transparent; color: {palette.text_faint};"
-            f" border: 1px solid {palette.border}; border-radius: 6px; font-size: 11px;"
-        )
+        self._ink, self._edge = QColor(palette.text_faint), QColor(palette.border)
         self.setToolTip(
             f"{when:%A, %d %B} — not yet".replace(" 0", " ")
             if ahead
             else f"{when:%A, %d %B} — no record".replace(" 0", " ")
         )
+
+    def paintEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        _paint_cell(self, None, self._ink, self._edge)
+
+
+def _colour(css: str) -> QColor:
+    """A colour from ``#rrggbb`` or the ``rgba(r, g, b, a)`` the heat scale is written in."""
+    if css.startswith("rgba("):
+        red, green, blue, alpha = (int(part) for part in css[5:-1].split(","))
+        return QColor(red, green, blue, alpha)
+    return QColor(css)
+
+
+def _paint_cell(
+    cell: QLabel, fill: QColor | None, ink: QColor, edge: QColor | None, *, dashed: bool = False
+) -> None:
+    """One calendar cell: a rounded square, an optional outline, and its day number."""
+    painter = QPainter(cell)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    box = QRectF(cell.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+    pen = QPen(edge if edge is not None else Qt.GlobalColor.transparent, 1)
+    if dashed:
+        pen.setStyle(Qt.PenStyle.DashLine)
+    painter.setPen(pen if edge is not None else Qt.PenStyle.NoPen)
+    painter.setBrush(fill if fill is not None else Qt.BrushStyle.NoBrush)
+    painter.drawRoundedRect(box, 6, 6)
+    painter.setPen(ink)
+    painter.setFont(font_for("caption"))
+    painter.drawText(box, Qt.AlignmentFlag.AlignCenter, cell.text())
+    painter.end()
 
 
 def _heat_colours(entry: DayRollup, target: Duration, palette: Palette) -> tuple[str, str]:
@@ -2015,17 +1802,6 @@ def _rgba(hex_colour: str, alpha: int) -> str:
     return f"rgba({colour.red()}, {colour.green()}, {colour.blue()}, {alpha})"
 
 
-class SectionTitle(QLabel):
-    """A heading above a group of widgets."""
-
-    def __init__(self, text: str, parent: QWidget | None = None) -> None:
-        super().__init__(text, parent)
-        font = QFont()
-        font.setPointSize(11)
-        font.setWeight(QFont.Weight.DemiBold)
-        self.setFont(font)
-
-
 class Skeleton(QWidget):
     """Placeholder bars shaped like the content that is coming.
 
@@ -2053,18 +1829,8 @@ class Skeleton(QWidget):
         self._palette = palette
         self._phase = 0
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Space.SNUG)
-
-        self._bars: list[QWidget] = []
-        for index in range(rows):
-            bar = QWidget()
-            bar.setFixedHeight(height)
-            # Ragged widths read as text; equal ones read as a table that failed to load.
-            bar.setMaximumWidth(420 - (index % 3) * 90)
-            layout.addWidget(bar)
-            self._bars.append(bar)
+        self._rows, self._bar_height = rows, height
+        self.setFixedHeight(rows * height + (rows - 1) * Space.SNUG)
 
         self._timer = QTimer(self)
         self._timer.setInterval(self.TICK_MS)
@@ -2082,51 +1848,35 @@ class Skeleton(QWidget):
 
     def _tick(self) -> None:
         self._phase = (self._phase + 1) % self.PERIOD
-        for index, bar in enumerate(self._bars):
-            offset = ((self._phase + index * 6) % self.PERIOD) / self.PERIOD
-            bar.setStyleSheet(_shimmer(self._palette, offset))
+        self.update()
+
+    def paintEvent(self, event: object) -> None:  # noqa: N802 — Qt override
+        """Each bar with a soft highlight travelling left to right across it."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        base, glow = QColor(self._palette.border), QColor(self._palette.overlay)
+        for index in range(self._rows):
+            # Ragged widths read as text; equal ones read as a table that failed to load.
+            width = min(self.width(), 420 - (index % 3) * 90)
+            top = index * (self._bar_height + Space.SNUG)
+            bar = QRectF(0, top, width, self._bar_height)
+            peak = ((self._phase + index * 6) % self.PERIOD) / self.PERIOD
+            sweep = QLinearGradient(bar.left(), 0, bar.right(), 0)
+            sweep.setColorAt(0.0, base)
+            sweep.setColorAt(max(peak - 0.18, 0.0), base)
+            sweep.setColorAt(min(max(peak, 0.001), 0.999), glow)
+            sweep.setColorAt(min(peak + 0.18, 1.0), base)
+            sweep.setColorAt(1.0, base)
+            painter.setBrush(sweep)
+            painter.drawRoundedRect(bar, 6, 6)
+        painter.end()
 
     def hideEvent(self, event: object) -> None:  # noqa: N802 — Qt override
         # A timer ticking behind a hidden widget is pure waste, and this one can sit on a
         # screen the user never opens.
         self._timer.stop()
         super().hideEvent(event)  # type: ignore[arg-type]
-
-
-def _shimmer(palette: Palette, offset: float) -> str:
-    """A soft highlight travelling left to right across the placeholder."""
-    peak = min(max(offset, 0.001), 0.999)
-    return (
-        f"background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
-        f" stop:0 {palette.border},"
-        f" stop:{max(peak - 0.18, 0.0):.3f} {palette.border},"
-        f" stop:{peak:.3f} {palette.overlay},"
-        f" stop:{min(peak + 0.18, 1.0):.3f} {palette.border},"
-        f" stop:1 {palette.border});"
-        f" border-radius: 6px;"
-    )
-
-
-class StatusChip(QLabel):
-    """A short state word on a tinted pill — present, pending, rejected.
-
-    Coloured text alone was doing this job in three different screens, each with its own
-    palette mapping. A chip reads as a state rather than as emphasis, and one definition
-    means "approved" is the same green everywhere it appears.
-    """
-
-    def __init__(self, text: str, colour: str, parent: QWidget | None = None) -> None:
-        super().__init__(text, parent)
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.set_state(text, colour)
-
-    def set_state(self, text: str, colour: str) -> None:
-        """Change what the chip says. Long-lived chips outnumber throwaway ones now."""
-        self.setText(text)
-        self.setStyleSheet(
-            f"color: {colour}; background-color: {_tint(colour, 38)};"
-            f" border-radius: 8px; padding: 2px 8px; font-size: 11px; font-weight: 600;"
-        )
 
 
 class EmptyState(QWidget):
@@ -2147,11 +1897,10 @@ class EmptyState(QWidget):
         layout.setContentsMargins(0, Space.GAP, 0, Space.GAP)
         layout.setSpacing(Space.TIGHT)
 
-        self._headline = QLabel(headline)
-        self._headline.setStyleSheet("font-weight: 600;")
-        self._detail = QLabel(detail, self)  # parented first; see Card
-        self._detail.setObjectName("CardCaption")
-        self._detail.setWordWrap(True)
+        self._headline = kit.Text(headline, self, role="body-strong")
+        # Parented at construction: a label shown before it has a parent is a top-level
+        # window for that moment, and these once flashed open at every launch.
+        self._detail = kit.Text(detail, self, role="caption", tone="muted", wrap=True)
         self._detail.setVisible(bool(detail))
 
         layout.addWidget(self._headline)
@@ -2161,47 +1910,6 @@ class EmptyState(QWidget):
         self._headline.setText(headline)
         self._detail.setText(detail)
         self._detail.setVisible(bool(detail))
-
-
-def data_table(
-    columns: Sequence[str],
-    *,
-    stretch_last: bool = True,
-    fit_rows: bool = False,
-    selectable: bool = False,
-) -> QTableWidget:
-    """The one table style.
-
-    There were four of these, one per screen, differing in resize mode, grid lines and
-    scroll policy — so the same data looked like it came from three different applications.
-
-    ``fit_rows`` shows every row instead of scrolling, for the short tables that sit inside
-    an already-scrolling page: a scrollbar within a scrollbar is unusable with a wheel.
-    """
-    table = QTableWidget(0, len(columns))
-    table.setHorizontalHeaderLabels(list(columns))
-    table.verticalHeader().setVisible(False)
-    table.setAlternatingRowColors(True)
-    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-    table.setSelectionMode(
-        QAbstractItemView.SelectionMode.SingleSelection
-        if selectable
-        else QAbstractItemView.SelectionMode.NoSelection
-    )
-    table.setShowGrid(False)
-
-    header = table.horizontalHeader()
-    header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-    header.setStretchLastSection(stretch_last)
-    # Headers stay put while the rows move, so a long month never leaves the reader
-    # guessing which column is which.
-    header.setFixedHeight(34)
-
-    if fit_rows:
-        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        table.setSizeAdjustPolicy(QAbstractItemView.SizeAdjustPolicy.AdjustToContents)
-    return table
 
 
 def card_row(*cards: QWidget) -> QWidget:
@@ -2327,28 +2035,6 @@ def _tint(colour: str, alpha: int) -> str:
     return f"rgba({value.red()}, {value.green()}, {value.blue()}, {alpha})"
 
 
-def link_button(text: str, on_click: Callable[[], None]) -> QPushButton:
-    button = QPushButton(text)
-    button.clicked.connect(on_click)
-    return button
-
-
 #: Width of a step button. Wide enough that the glyph is not clipped by the stylesheet's
 #: own padding, which is what made these render as blank squares at 30px.
 STEP_BUTTON_WIDTH = 34
-
-
-def step_button(glyph: str, tooltip: str, on_click: Callable[[], None]) -> QPushButton:
-    """A square ◀ / ▶ stepper.
-
-    Shared rather than repeated at four call sites because the thing that broke them is
-    invisible locally: the width and the stylesheet's padding have to be chosen together,
-    and setting one without knowing the other is how every one of them ended up with no
-    room to draw in.
-    """
-    button = QPushButton(glyph)
-    button.setObjectName("StepButton")
-    button.setFixedWidth(STEP_BUTTON_WIDTH)
-    button.setToolTip(tooltip)
-    button.clicked.connect(on_click)
-    return button

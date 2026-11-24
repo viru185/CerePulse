@@ -12,9 +12,10 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QSizePolicy, QVBoxLayout, QWidget
 
+from cerepulse.ui.kit.buttons import repolish
 from cerepulse.ui.kit.icons import IconLabel
 from cerepulse.ui.kit.text import Pill, Text
-from cerepulse.ui.theme import Palette, Space
+from cerepulse.ui.theme import TONES, Palette, Space
 
 
 class Surface(QFrame):
@@ -22,9 +23,26 @@ class Surface(QFrame):
 
     def __init__(self, parent: QWidget | None = None, *, variant: str = "card") -> None:
         super().__init__(parent)
-        if variant not in ("card", "panel", "row"):
+        if variant not in ("card", "panel", "row", "callout"):
             raise ValueError(f"unknown surface variant {variant!r}")
         self.setProperty("variant", variant)
+
+
+class Callout(Surface):
+    """A raised note with a rule down its left edge in a tone: an insight, an instruction, a
+    toast. The tone is the state; what the note says is its own text."""
+
+    def __init__(self, parent: QWidget | None = None, *, tone: str = "work") -> None:
+        super().__init__(parent, variant="card")
+        self.setProperty("variant", "callout")
+        self.set_tone(tone)
+
+    def set_tone(self, tone: str) -> None:
+        if tone not in TONES:
+            raise ValueError(f"unknown tone {tone!r}")
+        if self.property("tone") != tone:
+            self.setProperty("tone", tone)
+            repolish(self)
 
 
 class Divider(QFrame):

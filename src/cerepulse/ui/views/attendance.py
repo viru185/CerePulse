@@ -48,7 +48,6 @@ from cerepulse.ui.widgets import (
     FlowLayout,
     MonthHeatmap,
     card_row,
-    data_table,
 )
 
 COLUMNS = ("Date", "Day", "Status", "In", "Out", "Worked", "Late", "Swipe", "Remarks")
@@ -247,7 +246,7 @@ class AttendanceView(QWidget):
         # Sized to content with Remarks taking the slack. Stretching every column equally
         # gave a clock time the same width as a sentence, so Remarks truncated to
         # "Attendance ..." while In and Out sat in a sea of padding.
-        table = data_table(COLUMNS, selectable=True)
+        table = kit.TableWidget(COLUMNS, selectable=True)
         table.cellDoubleClicked.connect(self._emit_day)
         table.itemSelectionChanged.connect(self._on_selection)
         return table

@@ -34,14 +34,22 @@ from cerepulse.ui.kit.inputs import (
     TimeEdit,
 )
 from cerepulse.ui.kit.legend import LegendItem, Swatch
-from cerepulse.ui.kit.meter import Meter
-from cerepulse.ui.kit.surfaces import Divider, ListRow, SectionHeader, StatCard, Surface
+from cerepulse.ui.kit.meter import Meter, Progress
+from cerepulse.ui.kit.surfaces import (
+    Callout,
+    Divider,
+    ListRow,
+    SectionHeader,
+    StatCard,
+    Surface,
+)
 from cerepulse.ui.kit.text import LinkText, Pill, Text
 from cerepulse.ui.kit.views import Box, ScrollArea, TableWidget
 
 __all__ = [
     "Box",
     "Button",
+    "Callout",
     "CheckBox",
     "ComboBox",
     "DateEdit",
@@ -56,6 +64,7 @@ __all__ = [
     "Meter",
     "NavButton",
     "Pill",
+    "Progress",
     "ScrollArea",
     "SectionHeader",
     "SegmentButton",
