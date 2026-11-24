@@ -16,16 +16,27 @@ from dataclasses import replace
 from datetime import date, datetime
 
 from loguru import logger
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QColor, QKeyEvent, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtCore import QByteArray, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QCloseEvent,
+    QColor,
+    QGuiApplication,
+    QKeyEvent,
+    QKeySequence,
+    QPainter,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -67,7 +78,7 @@ from cerepulse.ui.views.settings import SettingsView
 from cerepulse.ui.views.sync_panel import SyncPanel
 from cerepulse.ui.views.today import TodayView
 from cerepulse.ui.views.week import WeekView
-from cerepulse.ui.widgets import Banner, DailyTile, ToastStack
+from cerepulse.ui.widgets import Banner, DailyTile, ToastStack, cover_pixmap
 from cerepulse.ui.workers import TaskRunner
 from cerepulse.update import Channel
 
@@ -113,6 +124,15 @@ SETTINGS_SCREEN = SCREENS.index("Settings")
 KEY_GUIDE_URL = "https://developer.tomtom.com/how-to-get-tomtom-api-key"
 
 SIDEBAR_WIDTH = 196
+#: The smallest the window may be made. A maximised window on a 1920x1080 laptop at 175% is
+#: 1097x537 logical pixels; the old 900x600 minimum was taller than that, so Windows placed
+#: the window's bottom edge — and the Settings save bar — under the taskbar.
+MINIMUM_SIZE = (940, 520)
+#: How much of the screen a first launch opens on, and the most it will take.
+OPENING_SHARE = 0.85
+OPENING_MAXIMUM = (1320, 900)
+#: Where the window's size and position are kept between launches.
+GEOMETRY_KEY = "window_geometry"
 #: Room the sidebar status button actually has for text: the sidebar, less its 8px margins,
 #: less the 14px padding and 1px border each side that ``#SidebarButton`` carries. Taken
 #: from the geometry rather than read off the widget, because the first status is set before
@@ -188,8 +208,8 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(about.NAME)
         self.setWindowIcon(app_icon())
-        self.resize(1120, 760)
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(*MINIMUM_SIZE)
+        self._restore_geometry()
 
         self._build_ui()
         self._tray = self._build_tray()
@@ -318,12 +338,33 @@ class MainWindow(QMainWindow):
         )
 
     def _build_sidebar(self) -> QWidget:
+        """Brand, screens and the daily tile above; the portal and the status pinned below.
+
+        The upper part scrolls when the window is too short for it. A maximised window on a
+        1080p laptop at 175% is 537 logical pixels tall, the column needed about 600, and Qt
+        squeezed the difference out of the daily tile until its quote was drawn over its
+        picture. The portal button and the status stay put, because they are what the
+        sidebar is for when something needs doing.
+        """
         sidebar = QWidget()
         sidebar.setObjectName("Sidebar")
         sidebar.setFixedWidth(SIDEBAR_WIDTH)
+        column = QVBoxLayout(sidebar)
+        column.setContentsMargins(0, 0, 0, 12)
+        column.setSpacing(2)
 
-        layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(8, 16, 8, 12)
+        scroll = QScrollArea()
+        scroll.setObjectName("SidebarScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content = QWidget()
+        content.setObjectName("SidebarContent")
+        scroll.setWidget(content)
+        column.addWidget(scroll, 1)
+
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(8, 16, 8, 0)
         layout.setSpacing(2)
 
         brand = QLabel(about.NAME)
@@ -357,6 +398,11 @@ class MainWindow(QMainWindow):
         self._daily.setVisible(False)
         layout.addWidget(self._daily)
         layout.addStretch(1)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(8, 4, 8, 0)
+        layout.setSpacing(2)
+        column.addLayout(layout)
 
         # Signing a browser in without a password has worked since 0.9 and was reachable
         # from two buttons buried in a day drawer and a Records header — places you find
@@ -622,8 +668,55 @@ class MainWindow(QMainWindow):
             return
         super().keyPressEvent(event)
 
+    # --- size and place ----------------------------------------------------------------
+
+    def _restore_geometry(self) -> None:
+        """Open where the window was last left, or sized to the screen it is opening on.
+
+        It opened at a fixed 1120x760, which at 175% is taller than a 1080p laptop's whole
+        working area: the title bar sat above the top of the screen on some machines and the
+        bottom edge under the taskbar on the rest.
+        """
+        saved = app_state.get(GEOMETRY_KEY)
+        if isinstance(saved, str) and saved:
+            if self.restoreGeometry(QByteArray.fromBase64(saved.encode("ascii"))):
+                if self._title_bar_is_on_a_screen():
+                    return
+        self._fit_to_screen()
+
+    def _fit_to_screen(self) -> None:
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(1120, 760)
+            return
+        room = screen.availableGeometry()
+        width = min(room.width(), max(MINIMUM_SIZE[0], round(room.width() * OPENING_SHARE)))
+        height = min(room.height(), max(MINIMUM_SIZE[1], round(room.height() * OPENING_SHARE)))
+        width, height = min(width, OPENING_MAXIMUM[0]), min(height, OPENING_MAXIMUM[1])
+        self.setGeometry(
+            QRect(
+                room.x() + (room.width() - width) // 2,
+                room.y() + (room.height() - height) // 2,
+                width,
+                height,
+            )
+        )
+
+    def _title_bar_is_on_a_screen(self) -> bool:
+        """Whether the top of the window can be grabbed — a monitor may have gone since."""
+        frame = self.frameGeometry()
+        grip = QRect(frame.x(), frame.y(), max(1, frame.width()), 32)
+        return any(
+            screen.availableGeometry().intersected(grip).width() >= 120
+            for screen in QGuiApplication.screens()
+        )
+
+    def _save_geometry(self) -> None:
+        app_state.put(GEOMETRY_KEY, bytes(self.saveGeometry().toBase64().data()).decode("ascii"))
+
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 — Qt override
         """Close to the tray when running in tray mode; otherwise actually exit."""
+        self._save_geometry()
         if self._closes_to_tray and not getattr(self, "_quitting", False):
             event.ignore()
             self.hide()
@@ -1988,20 +2081,28 @@ class _Backdrop(QWidget):
         self._scaled = None
         super().resizeEvent(event)  # type: ignore[arg-type]
 
+    def _stale(self, ratio: float) -> bool:
+        """Whether the cached picture no longer matches the window's size or pixel ratio."""
+        if self._scaled is None:
+            return True
+        return (
+            self._scaled.deviceIndependentSize().toSize() != self.size()
+            or abs(self._scaled.devicePixelRatio() - ratio) > 1e-6
+        )
+
     def paintEvent(self, event: object) -> None:  # noqa: N802 — Qt override
         painter = QPainter(self)
         if self._source is None:
             painter.fillRect(self.rect(), QColor(self._palette.surface))
             return
-        if self._scaled is None or self._scaled.size() != self.size():
-            self._scaled = self._source.scaled(
-                self.size(),
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        x = (self._scaled.width() - self.width()) // 2
-        y = (self._scaled.height() - self.height()) // 2
-        painter.drawPixmap(0, 0, self._scaled, x, y, self.width(), self.height())
+        # At the screen's pixel ratio: scaled to the logical size, a wallpaper at 175% was a
+        # 1097-pixel image stretched across 1920 real ones.
+        ratio = self.devicePixelRatioF() or 1.0
+        wanted = cover_pixmap(self._source, self.size(), ratio) if self._stale(ratio) else None
+        if wanted is not None:
+            self._scaled = wanted
+        if self._scaled is not None:
+            painter.drawPixmap(0, 0, self._scaled)
         tint = QColor(self._palette.surface)
         tint.setAlphaF(self._strength / 100)
         painter.fillRect(self.rect(), tint)

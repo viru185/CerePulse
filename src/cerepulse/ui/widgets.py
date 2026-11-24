@@ -17,8 +17,10 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import (
     QEvent,
     QObject,
+    QPoint,
     QPointF,
     QPropertyAnimation,
+    QRect,
     QRectF,
     QSize,
     Qt,
@@ -36,6 +38,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QResizeEvent,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -47,6 +50,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLayout,
+    QLayoutItem,
     QLineEdit,
     QPushButton,
     QSizePolicy,
@@ -112,8 +116,21 @@ def add_reveal_toggle(field: QLineEdit, *, colour: str = "#8A8F98") -> QAction:
 
 
 def _eye_icon(colour: str, *, crossed: bool) -> QIcon:
-    """A sixteen-pixel eye, struck through when the field is being shown."""
-    pixmap = QPixmap(16, 16)
+    """A sixteen-pixel eye, struck through when the field is being shown.
+
+    Drawn once per common pixel ratio, so Qt picks a sharp one at 125%, 150% and 175% rather
+    than stretching a 16-pixel bitmap.
+    """
+    icon = QIcon()
+    for ratio in (1.0, 1.25, 1.5, 1.75, 2.0, 3.0):
+        icon.addPixmap(_eye_pixmap(colour, crossed=crossed, ratio=ratio))
+    return icon
+
+
+def _eye_pixmap(colour: str, *, crossed: bool, ratio: float) -> QPixmap:
+    side = round(16 * ratio)
+    pixmap = QPixmap(side, side)
+    pixmap.setDevicePixelRatio(ratio)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -132,7 +149,26 @@ def _eye_icon(colour: str, *, crossed: bool) -> QIcon:
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawLine(QPointF(3, 13), QPointF(13, 3))
     painter.end()
-    return QIcon(pixmap)
+    return pixmap
+
+
+def cover_pixmap(source: QPixmap, frame: QSize, ratio: float) -> QPixmap:
+    """``source`` cropped to cover ``frame`` logical pixels, drawn at ``ratio`` device pixels.
+
+    Scaling to the logical size and letting Qt stretch it is what made a picture soft at
+    175%: 180 pixels of image spread over 315 of screen.
+    """
+    target = QSize(round(frame.width() * ratio), round(frame.height() * ratio))
+    scaled = source.scaled(
+        target,
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    x = (scaled.width() - target.width()) // 2
+    y = (scaled.height() - target.height()) // 2
+    cropped = scaled.copy(x, y, target.width(), target.height())
+    cropped.setDevicePixelRatio(ratio)
+    return cropped
 
 
 class DailyTile(QWidget):
@@ -140,8 +176,9 @@ class DailyTile(QWidget):
 
     Lives in the one region of the window that was empty — between the navigation and the
     portal button — so it is visible from every screen without displacing anything the
-    screens are for. The picture is cropped to cover a fixed frame; the quote wraps beneath
-    it in the tagline's style. Nothing else: the picture's title and copyright are its
+    screens are for. The picture is cropped to cover a 16:9 frame as wide as the sidebar gives
+    it, rendered at the screen's pixel ratio so it stays sharp at 175%; the quote wraps
+    beneath it in the tagline's style. Nothing else: the picture's title and copyright are its
     tooltip and the viewer's caption, and the providers' credits live in Settings and
     About, so the sidebar carries the picture and the words and not the paperwork.
     Clicking the picture opens the viewer.
@@ -159,8 +196,13 @@ class DailyTile(QWidget):
         layout.setSpacing(4)
 
         self._image = QLabel()
-        self._image.setFixedSize(self.FRAME)
+        # A floor rather than a fixed size: a fixed 180 px would hold the sidebar's content
+        # wider than its viewport once the scrollbar takes its 10 px.
+        self._image.setMinimumSize(1, self.FRAME.height())
+        self._image.setMaximumSize(self.FRAME)
+        self._rendered: QSize | None = None
         self._image.setObjectName("DailyPicture")
+        self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._image.setCursor(Qt.CursorShape.PointingHandCursor)
         self._image.setToolTip("Picture of the day — click for the full picture")
         self._image.setVisible(False)
@@ -179,15 +221,7 @@ class DailyTile(QWidget):
         self._pixmap = QPixmap(str(picture)) if picture is not None else None
         if self._pixmap is not None and self._pixmap.isNull():
             self._pixmap = None
-        if self._pixmap is not None:
-            scaled = self._pixmap.scaled(
-                self.FRAME,
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            x = (scaled.width() - self.FRAME.width()) // 2
-            y = (scaled.height() - self.FRAME.height()) // 2
-            self._image.setPixmap(scaled.copy(x, y, self.FRAME.width(), self.FRAME.height()))
+        self._render_picture()
         self._image.setVisible(self._pixmap is not None)
         self._image.setToolTip(
             f"{caption}\nClick for the full picture" if caption else "Click for the full picture"
@@ -200,10 +234,96 @@ class DailyTile(QWidget):
 
         self.setVisible(self._pixmap is not None or bool(quote_text))
 
+    def _frame(self) -> QSize:
+        """The picture's size: the tile's width, up to :attr:`FRAME`, at 16:9."""
+        room = self.contentsRect().width() if self.width() > 0 else self.FRAME.width()
+        width = max(80, min(self.FRAME.width(), room))
+        return QSize(width, round(width * self.FRAME.height() / self.FRAME.width()))
+
+    def _render_picture(self) -> None:
+        frame = self._frame()
+        self._rendered = frame
+        self._image.setMinimumSize(1, frame.height())
+        self._image.setMaximumSize(frame)
+        if self._pixmap is None:
+            return
+        self._image.setPixmap(cover_pixmap(self._pixmap, frame, self.devicePixelRatioF() or 1.0))
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 — Qt override
+        super().resizeEvent(event)
+        if self._rendered != self._frame():
+            self._render_picture()
+
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 — Qt override
         if event.button() == Qt.MouseButton.LeftButton and self._image.isVisible():
             self.clicked.emit()
         super().mousePressEvent(event)
+
+
+class FlowLayout(QLayout):
+    """Lays its items out left to right and wraps them onto the next line when it runs out.
+
+    For rows of buttons whose total width is set by their labels — and so by the font and the
+    display scale — rather than by the window: Settings' jump list needed 1,050 px in one
+    line, which pushed the whole page sideways off a laptop at 175%.
+    """
+
+    def __init__(self, parent: QWidget | None = None, *, spacing: int = 8) -> None:
+        super().__init__(parent)
+        self._items: list[QLayoutItem] = []
+        self._gap = spacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item: QLayoutItem) -> None:  # noqa: N802 — Qt override
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int) -> QLayoutItem | None:  # noqa: N802 — Qt override
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int) -> QLayoutItem | None:  # noqa: N802 — Qt override
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self) -> Qt.Orientation:  # noqa: N802 — Qt override
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802 — Qt override
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 — Qt override
+        return self._arrange(QRect(0, 0, width, 0), apply=False)
+
+    def setGeometry(self, rect: QRect) -> None:  # noqa: N802 — Qt override
+        super().setGeometry(rect)
+        self._arrange(rect, apply=True)
+
+    def sizeHint(self) -> QSize:  # noqa: N802 — Qt override
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:  # noqa: N802 — Qt override
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+
+    def _arrange(self, rect: QRect, *, apply: bool) -> int:
+        margins = self.contentsMargins()
+        area = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
+        x, y, line = area.x(), area.y(), 0
+        for item in self._items:
+            if item.isEmpty():
+                continue
+            hint = item.sizeHint()
+            if x > area.x() and x + hint.width() > area.right() + 1:
+                x, y, line = area.x(), y + line + self._gap, 0
+            if apply:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x += hint.width() + self._gap
+            line = max(line, hint.height())
+        return y + line - rect.y() + margins.bottom()
 
 
 class Card(QFrame):

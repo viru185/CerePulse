@@ -359,6 +359,11 @@ def stylesheet(palette: Palette, *, wallpaper: bool = False) -> str:
         background-color: {palette.elevated};
         border-right: 1px solid {palette.border};
     }}
+    /* The sidebar's scrolling part, its viewport and its content: plain widgets, which the
+       QWidget rule would otherwise paint in the page's surface over the sidebar's own. */
+    #SidebarScroll, #SidebarScroll > QWidget, #SidebarContent {{
+        background: transparent;
+    }}
     #SidebarButton {{
         background: transparent;
         border: none;

@@ -15,7 +15,7 @@ from dataclasses import replace
 from functools import partial
 
 from PySide6.QtCore import QRectF, Qt, QTime, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen, QResizeEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -40,7 +40,13 @@ from cerepulse.core.config import AppConfig, CommuteConfig
 from cerepulse.core.config.models import THEMES
 from cerepulse.intelligence.sandwich import SandwichRule
 from cerepulse.ui.theme import THEME_LABELS, Palette, palette_for
-from cerepulse.ui.widgets import Banner, SectionTitle, add_reveal_toggle, link_button
+from cerepulse.ui.widgets import (
+    Banner,
+    FlowLayout,
+    SectionTitle,
+    add_reveal_toggle,
+    link_button,
+)
 
 #: Control widths, so nothing stretches to fill the card. Spin boxes need room for their
 #: suffix *and* their stepper buttons, or the arrows sit on top of the number.
@@ -59,6 +65,11 @@ TIME_WIDTH = 108
 #: extra space and the other column's cards are clipped, since setColumnStretch only shares
 #: out what is left *after* minimum sizes are met.
 COLUMN_MIN_WIDTH = 380
+#: Space between cards, the page's left and right margins together, and what a vertical
+#: scrollbar takes — the arithmetic deciding between one column and two.
+GRID_GAP = 14
+PAGE_MARGINS = 48
+SCROLLBAR_ROOM = 12
 
 
 class AddressField(QWidget):
@@ -252,9 +263,14 @@ class SettingsView(QWidget):
         # two-column grid — so a tall card stretches only its neighbour, never a stranger
         # three rows down — with a jump list at the top so nothing is more than a click away.
         self._sections: list[SectionTitle] = []
-        jump = QHBoxLayout()
-        jump.setSpacing(8)
-        page.addLayout(jump)
+        # Wraps rather than running in one line: eight buttons sized by their labels needed
+        # 1,050 px, which pushed the whole page sideways off a laptop at 175%.
+        jump_host = QWidget()
+        jump = FlowLayout(jump_host, spacing=8)
+        page.addWidget(jump_host)
+        #: Every section's grid and the cards in it, for re-laying out at a new width.
+        self._grids: list[tuple[QGridLayout, tuple[tuple[QWidget, int, int, int], ...]]] = []
+        self._columns = 2
 
         def section(title: str, *cards: tuple[QWidget, int, int, int]) -> None:
             heading = SectionTitle(title)
@@ -265,14 +281,10 @@ class SettingsView(QWidget):
             page.addSpacing(6)
             page.addWidget(heading)
             grid = QGridLayout()
-            grid.setHorizontalSpacing(14)
-            grid.setVerticalSpacing(14)
-            grid.setColumnStretch(0, 1)
-            grid.setColumnStretch(1, 1)
-            grid.setColumnMinimumWidth(0, COLUMN_MIN_WIDTH)
-            grid.setColumnMinimumWidth(1, COLUMN_MIN_WIDTH)
-            for card, row, column, span in cards:
-                grid.addWidget(card, row, column, 1, span)
+            grid.setHorizontalSpacing(GRID_GAP)
+            grid.setVerticalSpacing(GRID_GAP)
+            self._grids.append((grid, cards))
+            _place(grid, cards, columns=2)
             page.addLayout(grid)
 
         section("Account", (self._build_account(), 0, 0, 1), (self._build_cache(), 0, 1, 1))
@@ -285,13 +297,46 @@ class SettingsView(QWidget):
         section("Journey home", (self._build_commute(), 0, 0, 2))
         section("Daily & Pay", (self._build_daily(), 0, 0, 1), (self._build_pay(), 0, 1, 1))
         section("Updates", (self._build_updates(), 0, 0, 2))
-        jump.addStretch(1)
 
         page.addStretch(1)
 
         # The save bar stays out of the scroll area so it is always reachable.
         outer.addWidget(self._build_save_bar())
         self._load(config)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 — Qt override
+        """Two columns where two fit, one where they do not.
+
+        Two 380 px columns are 774 px of cards; at the window's minimum width, or a laptop
+        at 150% and up with the window not maximised, the page is narrower than that, and a
+        grid that will not narrow is one that is cut off at the right.
+        """
+        super().resizeEvent(event)
+        room = self.width() - PAGE_MARGINS - SCROLLBAR_ROOM
+        columns = 2 if self._two_columns_fit(room) else 1
+        if columns != self._columns:
+            self._columns = columns
+            for grid, cards in self._grids:
+                _place(grid, cards, columns=columns)
+
+    def _two_columns_fit(self, room: int) -> bool:
+        """Whether every section's two columns fit, measured from the cards themselves.
+
+        Not from the 380 px floor alone: Appearance needs nearer 600 for its picture row,
+        and a test of the floor said two columns fit at 175% while the page was 149 px too
+        wide for its window.
+        """
+        for _grid, cards in self._grids:
+            columns, full = [COLUMN_MIN_WIDTH, COLUMN_MIN_WIDTH], 0
+            for card, _row, column, span in cards:
+                need = card.minimumSizeHint().width()
+                if span == 2:
+                    full = max(full, need)
+                else:
+                    columns[column] = max(columns[column], need)
+            if max(sum(columns) + GRID_GAP, full) > room:
+                return False
+        return True
 
     # --- cards ----------------------------------------------------------------------
 
@@ -376,7 +421,7 @@ class SettingsView(QWidget):
         self._wallpaper_path = QLineEdit()
         self._wallpaper_path.setPlaceholderText("No picture — the theme's plain surface")
         self._wallpaper_path.setReadOnly(True)
-        self._wallpaper_path.setMinimumWidth(260)
+        self._wallpaper_path.setMinimumWidth(200)
         choose = QPushButton("Choose…")
         choose.clicked.connect(self._choose_wallpaper)
         clear = QPushButton("Clear")
@@ -963,3 +1008,24 @@ def _time_field() -> QTimeEdit:
 def _to_qtime(text: str) -> QTime:
     parsed = QTime.fromString(text, "HH:mm")
     return parsed if parsed.isValid() else QTime(0, 0)
+
+
+def _place(
+    grid: QGridLayout, cards: tuple[tuple[QWidget, int, int, int], ...], *, columns: int
+) -> None:
+    """Lay a section's cards out in two columns as designed, or stacked in one."""
+    for card, *_rest in cards:
+        grid.removeWidget(card)
+    if columns == 2:
+        for card, row, column, span in cards:
+            grid.addWidget(card, row, column, 1, span)
+        for column in (0, 1):
+            grid.setColumnStretch(column, 1)
+            grid.setColumnMinimumWidth(column, COLUMN_MIN_WIDTH)
+        return
+    for index, (card, *_rest) in enumerate(cards):
+        grid.addWidget(card, index, 0, 1, 1)
+    grid.setColumnStretch(0, 1)
+    grid.setColumnStretch(1, 0)
+    grid.setColumnMinimumWidth(0, 0)
+    grid.setColumnMinimumWidth(1, 0)

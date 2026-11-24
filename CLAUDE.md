@@ -370,6 +370,20 @@ reaches the top-level context. This shipped in 0.11 and was caught by a user, no
 because it was verified with an HTTP client — which cannot reproduce the one behaviour that
 matters. `tests/auth/test_handover.py` asserts the absence of the iframe for that reason.
 
+**Every screen fits a maximised 1080p laptop at 175% — 1097x537 logical pixels.** The
+window's minimum is 940x520 (it was 900x600, taller than the screen, so the save bar sat
+under the taskbar); a first launch opens at 85% of the screen it is on, and the size and
+place are kept in `state.json` and only reused while the title bar is on a screen. What is
+taller than the room scrolls rather than squeezes — the sidebar's upper part (the portal
+button and status stay pinned), Attendance, Records, Settings — because a squeezed layout
+draws its parts into each other. Settings decides one column or two from its cards'
+measured minimums, not the 380 px floor: Appearance needs nearly 600. A row of buttons
+sized by its labels goes in a `FlowLayout`. Pictures are drawn at the screen's pixel ratio
+(`cover_pixmap`), and since `QLabel` converts a pixmap to its own ratio — 1 offscreen — a
+test checks the drawing, never `label.pixmap()`. `tests/ui/test_layout_qc.py` holds the
+result at four scales with an empty `KNOWN` list, and `tools/qc_screens.py` takes the
+pictures a person judges.
+
 **Removing a widget from a layout does not stop it drawing.** `takeAt` detaches the layout
 item but leaves the widget parented, painting at its last geometry until `deleteLater` is
 serviced — which happens when the event loop next drains, not when you asked. The Records
@@ -626,6 +640,11 @@ links to the portal; it never files one.
   a scan of `attendance_day` that once failed while point reads worked). Per-thread
   connections have since landed, and the cache read on 24 Nov 2026 was at schema 9 with
   `quick_check` clean and every table scanning. Quarantine still runs only at open.
+- **Windows text scaling is not covered.** The QC lays out at each display scale, where Qt
+  scales text and pixels together. "Make text bigger" in Accessibility scales text alone,
+  and the many fixed pixel widths (Today's header, week columns, chips, step buttons) are
+  sized for the default; font sizes are pixels too. Both move to font-derived sizes with
+  the design system's type ramp.
 - **No traffic baseline.** The commute card reports what the journey costs now, not whether
   that is worse than usual. A baseline needs estimates stored over time, and TomTom's terms
   restrict caching results beyond their own headers — so it says what it knows and no more.

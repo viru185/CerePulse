@@ -29,15 +29,11 @@ SCREENS_AT_SCALE = (
     ("175%", 1097, 537),
 )
 
-#: Defects this suite found on its first run, each with the change that removes it. Strict,
-#: so the fix fails here until its entry is deleted — the list can only shrink honestly.
-KNOWN: dict[tuple[str, str], str] = {
-    ("minimum", "175%"): "the window's 900x600 minimum is taller than 537",
-    ("settings", "175%"): "Settings' two 380px columns need more width than 1097",
-    # Every screen, because the sidebar is on every screen.
-    ("*", "150%"): "the sidebar cannot scroll, so a short window squeezes the daily tile",
-    ("*", "175%"): "the sidebar cannot scroll, so a short window squeezes the daily tile",
-}
+#: Defects found and not yet fixed, each with the change that removes it. Strict, so a fix
+#: fails here until its entry is deleted — the list can only shrink honestly. Empty since
+#: the scaling work: the sidebar scrolls, Settings drops to one column, Attendance scrolls,
+#: and the window's minimum fits a maximised 1080p window at 175%.
+KNOWN: dict[tuple[str, str], str] = {}
 
 
 def _expect_known(request: pytest.FixtureRequest, *key: str) -> None:
@@ -125,3 +121,21 @@ def test_every_screen_lays_out_without_cropping(
     qc_app.settle(built, at_least=0.05)
     issues = [str(issue) for issue in layout.find_issues(built)]
     assert issues == [], f"{screen} at {scale}:\n" + "\n".join(issues)
+
+
+@pytest.mark.parametrize("screen", qc_app.SCREENS)
+def test_every_screen_lays_out_at_the_windows_minimum(
+    built: Any, request: pytest.FixtureRequest, screen: str
+) -> None:
+    """The minimum is a size someone can drag the window to, so every screen must fit it.
+
+    Logical pixels, so one size covers every display scale. Attendance and Pay were each
+    under 30 px too wide for the old 900 px minimum, which nothing here measured.
+    """
+    _expect_known(request, screen, "minimum")
+    minimum = built.minimumSize()
+    built.resize(minimum)
+    built._navigation.select(qc_app.SCREENS.index(screen))
+    qc_app.settle(built, at_least=0.05)
+    issues = [str(issue) for issue in layout.find_issues(built)]
+    assert issues == [], f"{screen} at the minimum size:\n" + "\n".join(issues)

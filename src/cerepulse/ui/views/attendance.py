@@ -26,9 +26,11 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -57,6 +59,8 @@ from cerepulse.ui.widgets import (
 )
 
 COLUMNS = ("Date", "Day", "Status", "In", "Out", "Worked", "Late", "Swipe", "Remarks")
+#: The day table's floor: a few rows, however short the window. Past it the page scrolls.
+TABLE_MIN_HEIGHT = 180
 
 
 class _Row:
@@ -124,7 +128,20 @@ class AttendanceView(QWidget):
         self._view: MonthView | None = None
         self._rows: list[_Row] = []
 
-        layout = QVBoxLayout(self)
+        # The page scrolls when the window is short rather than squeezing its parts: at 175%
+        # on a 1080p laptop the window is 537 px tall, and the calendar's rows were drawn
+        # three pixels into each other to fit.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+        content = QWidget()
+        scroll.setWidget(content)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(Space.SECTION, 20, Space.SECTION, Space.SECTION)
         layout.setSpacing(Space.ROW + 2)
 
@@ -165,6 +182,8 @@ class AttendanceView(QWidget):
 
         left.addWidget(SectionTitle("Days"))
         self.table = self._build_table()
+        # Enough for a few rows however short the window; past that the page scrolls.
+        self.table.setMinimumHeight(TABLE_MIN_HEIGHT)
         left.addWidget(self.table, 1)
         body.addLayout(left, 3)
 
