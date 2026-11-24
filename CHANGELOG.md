@@ -2,6 +2,41 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.17.0] - 2026-11-24
+
+### Bug Fixes
+- Detach rebuilt widgets before deleting them, everywhere
+- Judge eviction between answers, and stop treating a lost session as a layout change
+- Every fetch button ends a pause, and the app catches up after waking
+- Find postbacks written with escaped quotes
+- Stop windows flashing open at launch, and toasts arriving in bursts
+- Every screen fits a 1080p laptop at 175%, and pictures stay sharp
+
+### CI/CD
+- Betas are plain version numbers, bumped by what changed
+
+### Chores
+- Bump to 0.17.0
+
+### Features
+- Walk every portal link read-only, and index what each page holds
+- Nine hours from arrival completes the shift, and the timeline has room at its edges
+- Anime quotes, a tile that refreshes every day, and switches that apply now
+- A short note that fades away whenever something you asked for is done
+- Comp-off credit by credit, with the balance the portal actually enforces
+- Download the whole year in the background, punch logs included
+- A component kit and design tokens, the foundation of the redesign
+- Three views behind tabs, what happened first, built from the kit
+- The finish and its countdown lead, and the punches show the time between them
+- The week's lanes on one clock, and the month on the kit
+- Arrivals by weekday as a spread, and pay behind three tabs
+- Built from the kit, with Save in the title row
+- About, the sync panel and every dialog built from the kit
+- The sidebar and the shared widgets on the kit, and the allowlist down to the sheet
+
+### Tests
+- Screenshot every screen at every scale and theme, and assert the layout
+
 ## [0.16.0-beta.2] - 2026-09-06
 
 ### Chores
