@@ -1233,10 +1233,13 @@ def test_the_theme_names_the_loader_accepts_are_the_palettes_that_exist() -> Non
 
 
 def test_a_wallpaper_makes_the_plain_background_transparent_but_not_the_dialogs() -> None:
+    plain = "QWidget {{\n        background-color: {};"
     sheet = stylesheet(DARK, wallpaper=True)
-    assert "background-color: transparent;\n        color:" in sheet
+    assert plain.format("transparent") in sheet
     assert "QDialog, QMessageBox" in sheet
-    assert "background-color: transparent" not in stylesheet(DARK)
+    # Quiet buttons and list rows are transparent in every sheet; the plain widget is not.
+    assert plain.format("transparent") not in stylesheet(DARK)
+    assert plain.format(DARK.surface) in stylesheet(DARK)
 
 
 def test_a_fault_that_repeats_shows_one_crash_dialog(qapp, monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -133,6 +133,58 @@ class Space:
     ROW = 12
     GAP = 16
     SECTION = 24
+    PAGE = 32
+
+
+class Type:
+    """The type ramp, in points — Windows 11's own (Fluent 2).
+
+    Points rather than the pixels the sheet used to hard-code: a point follows the screen's
+    logical DPI, so the ramp is one set of numbers at every display scale, and a size the
+    sheet names in points is one the design can reason about. At 96 DPI each is the pixel
+    size in the comment.
+    """
+
+    CAPTION = 9.0  # 12 px — captions, legends, the line under a number
+    BODY = 10.5  # 14 px — everything else
+    SUBTITLE = 15.0  # 20 px — section headings
+    TITLE = 21.0  # 28 px — page titles, the figure on a card
+    LARGE_TITLE = 30.0  # 40 px — a screen's one headline figure
+    DISPLAY = 51.0  # 68 px — "you can leave at", and nothing else
+
+
+class Radius:
+    """Corner radii: controls are the tightest, the larger a surface the rounder."""
+
+    CONTROL = 4
+    CARD = 8
+    PANEL = 12
+
+
+#: The palette roles a kit widget can be drawn in, by name. A widget asks for a tone — never
+#: a hex value — so a theme change restyles it through the one sheet, with no walk needed.
+TONES = ("text", "muted", "faint", "work", "rest", "good", "bad", "adjust")
+
+
+def tone_colour(palette: Palette, tone: str) -> str:
+    """The colour a tone names in a palette."""
+    return {
+        "text": palette.text,
+        "muted": palette.text_muted,
+        "faint": palette.text_faint,
+        "work": palette.work,
+        "rest": palette.rest,
+        "good": palette.good,
+        "bad": palette.bad,
+        "adjust": palette.adjust,
+    }[tone]
+
+
+def tint(colour: str, alpha: float) -> str:
+    """A colour at partial opacity, for the wash behind a pill or a selected row."""
+    value = colour.lstrip("#")
+    red, green, blue = (int(value[index : index + 2], 16) for index in (0, 2, 4))
+    return f"rgba({red}, {green}, {blue}, {round(alpha * 255)})"
 
 
 def contrast_ratio(foreground: str, background: str) -> float:
@@ -318,6 +370,181 @@ def _arrow_rules(palette: Palette) -> str:
     """
 
 
+#: Text roles, as the type ramp names them: (size in points, weight).
+ROLES: dict[str, tuple[float, int]] = {
+    "caption": (Type.CAPTION, 400),
+    "body": (Type.BODY, 400),
+    "body-strong": (Type.BODY, 600),
+    "subtitle": (Type.SUBTITLE, 600),
+    "title": (Type.TITLE, 600),
+    "large-title": (Type.LARGE_TITLE, 600),
+    "display": (Type.DISPLAY, 600),
+}
+
+#: Button variants the kit offers; each has its rules in `_kit_rules`, and a test holds the
+#: two lists together so a variant cannot exist without a look.
+BUTTON_VARIANTS = ("secondary", "primary", "quiet", "danger", "segment", "nav", "step")
+
+
+def _kit_rules(palette: Palette) -> str:
+    """The kit's whole look: every variant, role and tone, from the palette's tokens.
+
+    Widgets carry a ``variant``, ``role`` or ``tone`` property and nothing else; what those
+    look like lives here and only here, so a change made once is made on every screen, and a
+    theme change is one sheet rather than a walk over every widget that coloured itself.
+    """
+    roles = "\n".join(
+        f'QLabel[role="{name}"] {{ font-size: {size}pt; font-weight: {weight}; }}'
+        for name, (size, weight) in ROLES.items()
+    )
+    tones = "\n".join(
+        f'QLabel[tone="{tone}"] {{ color: {tone_colour(palette, tone)}; }}' for tone in TONES
+    )
+    pills = "\n".join(
+        f'QLabel[variant="pill"][tone="{tone}"] {{ color: {tone_colour(palette, tone)}; '
+        f"background-color: {tint(tone_colour(palette, tone), 0.14)}; }}"
+        for tone in TONES
+    )
+    on_accent = palette.surface
+    return f"""
+    /* --- kit: text ---------------------------------------------------------- */
+    {roles}
+    {tones}
+    QLabel[variant="pill"] {{
+        border-radius: 9px;
+        padding: 2px 10px;
+        font-size: {Type.CAPTION}pt;
+        font-weight: 600;
+    }}
+    {pills}
+
+    /* --- kit: surfaces ------------------------------------------------------ */
+    QFrame[variant="card"] {{
+        background-color: {palette.elevated};
+        border: 1px solid {palette.border};
+        border-radius: {Radius.CARD}px;
+    }}
+    QFrame[variant="panel"] {{
+        background-color: {palette.elevated};
+        border: 1px solid {palette.border};
+        border-radius: {Radius.PANEL}px;
+    }}
+    QFrame[variant="card"][clickable="true"]:hover,
+    QFrame[variant="row"][clickable="true"]:hover {{ border-color: {palette.text_faint}; }}
+    QFrame[variant="row"] {{
+        background-color: transparent;
+        border: 1px solid transparent;
+        border-radius: {Radius.CARD}px;
+    }}
+    QFrame[variant="divider"] {{
+        background-color: {palette.border};
+        border: none;
+        max-height: 1px;
+        min-height: 1px;
+    }}
+    QFrame[variant="tabs"] {{
+        background-color: {palette.elevated};
+        border: 1px solid {palette.border};
+        border-radius: {Radius.CARD}px;
+    }}
+
+    /* --- kit: buttons ------------------------------------------------------- */
+    QPushButton[variant="secondary"] {{
+        background-color: {palette.overlay};
+        color: {palette.text};
+        border: 1px solid {palette.border};
+        border-radius: {Radius.CONTROL}px;
+        padding: 6px 14px;
+    }}
+    QPushButton[variant="secondary"]:hover {{ border-color: {palette.text_faint}; }}
+    QPushButton[variant="primary"] {{
+        background-color: {palette.work};
+        color: {on_accent};
+        border: 1px solid {palette.work};
+        border-radius: {Radius.CONTROL}px;
+        padding: 6px 16px;
+        font-weight: 600;
+    }}
+    QPushButton[variant="primary"]:hover {{ border-color: {palette.text}; }}
+    QPushButton[variant="primary"]:disabled {{
+        background-color: {palette.overlay};
+        border-color: {palette.border};
+        color: {palette.text_faint};
+    }}
+    QPushButton[variant="quiet"] {{
+        background-color: transparent;
+        color: {palette.work};
+        border: 1px solid transparent;
+        border-radius: {Radius.CONTROL}px;
+        padding: 6px 8px;
+    }}
+    QPushButton[variant="quiet"]:hover {{ background-color: {palette.overlay}; }}
+    QPushButton[variant="danger"] {{
+        background-color: transparent;
+        color: {palette.bad};
+        border: 1px solid {palette.border};
+        border-radius: {Radius.CONTROL}px;
+        padding: 6px 14px;
+    }}
+    QPushButton[variant="danger"]:hover {{
+        border-color: {palette.bad};
+        background-color: {tint(palette.bad, 0.12)};
+    }}
+    QPushButton[variant="segment"] {{
+        background-color: transparent;
+        color: {palette.text_muted};
+        border: none;
+        border-radius: 6px;
+        padding: 6px 14px;
+    }}
+    QPushButton[variant="segment"]:hover {{ color: {palette.text}; }}
+    QPushButton[variant="segment"]:checked {{
+        background-color: {palette.overlay};
+        color: {palette.text};
+        font-weight: 600;
+    }}
+    QPushButton[variant="nav"] {{
+        background-color: transparent;
+        color: {palette.text_muted};
+        border: none;
+        border-left: 3px solid transparent;
+        border-radius: 6px;
+        padding: 8px 10px 8px 9px;
+        text-align: left;
+    }}
+    QPushButton[variant="nav"]:hover {{
+        background-color: {palette.overlay};
+        color: {palette.text};
+    }}
+    QPushButton[variant="nav"]:checked {{
+        background-color: {palette.overlay};
+        color: {palette.text};
+        border-left: 3px solid {palette.work};
+        font-weight: 600;
+    }}
+    QPushButton[variant="step"] {{
+        background-color: {palette.overlay};
+        color: {palette.text};
+        border: 1px solid {palette.border};
+        border-radius: {Radius.CONTROL}px;
+        padding: 4px 0px;
+    }}
+    QPushButton[variant="step"]:hover {{ border-color: {palette.text_faint}; }}
+    QPushButton[variant]:disabled {{ color: {palette.text_faint}; }}
+    QPushButton[small="true"] {{ padding: 3px 10px; font-size: {Type.CAPTION}pt; }}
+    QToolButton[variant="icon"] {{
+        background-color: transparent;
+        border: 1px solid transparent;
+        border-radius: {Radius.CONTROL}px;
+        padding: 4px;
+    }}
+    QToolButton[variant="icon"]:hover {{
+        background-color: {palette.overlay};
+        border-color: {palette.border};
+    }}
+    """
+
+
 def stylesheet(palette: Palette, *, wallpaper: bool = False) -> str:
     """Build the application stylesheet for a palette.
 
@@ -343,7 +570,7 @@ def stylesheet(palette: Palette, *, wallpaper: bool = False) -> str:
     QWidget {{
         background-color: {surface};
         color: {palette.text};
-        font-size: 13px;
+        font-size: {Type.BODY}pt;
     }}
     {dialogs}
 
@@ -640,4 +867,5 @@ def stylesheet(palette: Palette, *, wallpaper: bool = False) -> str:
         border: 1px solid {palette.border};
         padding: 6px;
     }}
+    {_kit_rules(palette)}
     """
