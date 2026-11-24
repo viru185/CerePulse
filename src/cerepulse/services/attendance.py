@@ -93,6 +93,24 @@ class HistoryReport:
 
 
 @dataclass(frozen=True, slots=True)
+class BackfillStep:
+    """One unit of the full-year download: a month's grid, or a few days' punch logs."""
+
+    #: The month worked on. ``None`` once nothing is left to fetch.
+    period: tuple[int, int] | None
+    #: This step fetched the month's grid.
+    grid: bool = False
+    #: Days whose punch log was fetched.
+    days: tuple[date, ...] = ()
+    #: Days asked for that did not come back; skipped for the rest of the run.
+    missed: tuple[date, ...] = ()
+
+    @property
+    def finished(self) -> bool:
+        return self.period is None
+
+
+@dataclass(frozen=True, slots=True)
 class TrendsView:
     """The Insights screen's payload: the report, plus how much history backs it."""
 
@@ -566,6 +584,51 @@ class AttendanceService:
         logger.info("History backfill: {} of {} month(s) fetched", report.fetched, report.planned)
         return report
 
+    def year_backfill_step(
+        self,
+        employee_code: str,
+        periods: list[tuple[int, int]],
+        *,
+        today: date,
+        skip: frozenset[date] = frozenset(),
+        regrid: frozenset[tuple[int, int]] = frozenset(),
+    ) -> BackfillStep:
+        """Do the next small piece of downloading the whole year, newest month first.
+
+        One unit per call — a month's grid if it was never fetched (or is in ``regrid``), else
+        up to :data:`DEFAULT_DETAIL_BATCH` days of punch detail — so the caller can space the
+        units out and let anything the user asks for take the single runner slot between
+        them. A year is about three hundred requests; done in one task it would hold the
+        portal session, and every click, for ten minutes.
+
+        Nothing is remembered here. What is left is read off the cache each time — months
+        not synced, days still missing detail — which is what makes a stopped download pick
+        up where it was at the next launch. ``skip`` is the caller's memory of days that
+        failed in this run, so one bad day cannot be asked for forever. Today is left to the
+        ordinary sync, which keeps it fresh.
+        """
+        synced = self.synced_months()
+        for year, month in periods:
+            if (year, month) not in synced or (year, month) in regrid:
+                self.refresh_month(employee_code, year, month)
+                return BackfillStep((year, month), grid=True)
+
+            passed = skip | {today}
+            pending = [
+                day
+                for day in self._attendance.days_missing_detail(
+                    employee_code, year, month, today=today
+                )
+                if day not in passed
+            ]
+            if not pending:
+                continue
+            batch = sorted(pending, reverse=True)[:DEFAULT_DETAIL_BATCH]
+            fetched = self._backfill_days(employee_code, year, month, skip=frozenset(passed))
+            missed = tuple(day for day in batch if day not in fetched)
+            return BackfillStep((year, month), days=tuple(fetched), missed=missed)
+        return BackfillStep(None)
+
     # --- refreshing -----------------------------------------------------------------
 
     def refresh_month(self, employee_code: str, year: int, month: int) -> AttendanceMonth:
@@ -598,11 +661,13 @@ class AttendanceService:
         return stored
 
     def prune_history(self, employee_code: str, *, today: date | None = None) -> int:
-        """Drop cached days older than the configured history window.
+        """Drop cached days older than the configured history window — never this year's.
 
         Bounded by ``sync.history_months``, the same setting that decides how far a backfill
-        reaches — so the cache holds what the app is willing to fetch and nothing beyond it.
-        Nothing here is irreplaceable; every pruned day can be fetched again.
+        reaches, except that the current calendar year is always kept. The full-year download
+        fetches every month the portal serves, which is the running year, and a window set to
+        three months would otherwise delete in the next sync what the download had spent ten
+        minutes fetching — and fetch it again at the next launch.
         """
         months = max(1, self._config.sync.history_months)
         now = today or date.today()
@@ -611,7 +676,8 @@ class AttendanceService:
         year, month = now.year, now.month - months
         while month < 1:
             year, month = year - 1, month + 12
-        return self._attendance.prune_before(employee_code, date(year, month, 1))
+        cutoff = min(date(year, month, 1), date(now.year, 1, 1))
+        return self._attendance.prune_before(employee_code, cutoff)
 
     def refresh_day_detail(
         self, employee_code: str, day: date, *, fetched_at: datetime | None = None

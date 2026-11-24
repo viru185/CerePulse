@@ -121,3 +121,9 @@ def test_sends_a_browser_user_agent(client: HttpClient) -> None:
     route = respx.get(f"{BASE}/x.aspx").mock(return_value=httpx.Response(200))
     client.get("/x.aspx")
     assert "Mozilla/5.0" in route.calls.last.request.headers["user-agent"]
+
+
+def test_no_test_can_reach_a_real_server() -> None:
+    """The root conftest refuses real connections; this proves it is still doing so."""
+    with pytest.raises(httpx.ConnectError, match="tests never reach the network"):
+        httpx.get("https://cerebulb.spinehr.in/login.aspx")

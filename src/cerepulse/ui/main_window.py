@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from cerepulse import __about__ as about
 from cerepulse.app import AppContext
+from cerepulse.core import app_state
 from cerepulse.core.errors import (
     AuthenticationError,
     CerePulseError,
@@ -53,6 +54,7 @@ from cerepulse.transport import pages
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui.assets import app_icon
 from cerepulse.ui.controllers import NavigationController, SyncController, UpdateController
+from cerepulse.ui.controllers.sync import YearBackfill
 from cerepulse.ui.daily_viewer import DailyViewer
 from cerepulse.ui.login_dialog import LoginDialog
 from cerepulse.ui.theme import Palette, palette_for, stylesheet
@@ -68,6 +70,38 @@ from cerepulse.ui.views.week import WeekView
 from cerepulse.ui.widgets import Banner, DailyTile, ToastStack
 from cerepulse.ui.workers import TaskRunner
 from cerepulse.update import Channel
+
+#: How long after a clean sync the full-year download starts.
+YEAR_BACKFILL_DELAY_MS = 120_000
+#: Where its state lives in ``state.json``: started, complete, finished_at, months, days.
+YEAR_BACKFILL_KEY = "history_backfill"
+
+
+def _year_backfill_state() -> dict[str, object]:
+    found = app_state.get(YEAR_BACKFILL_KEY)
+    return dict(found) if isinstance(found, dict) else {}
+
+
+def _year_backfill_text(state: dict[str, object]) -> str:
+    """Settings' one line on the full-year download."""
+    if not state.get("complete"):
+        return (
+            "This year's attendance and punch logs download in the background a couple of "
+            "minutes after a sync, a few requests at a time."
+        )
+    when = str(state.get("finished_at", ""))[:10]
+    try:
+        day = date.fromisoformat(when).strftime("%d %b").lstrip("0")
+    except ValueError:
+        day = "earlier"
+    months = state.get("months")
+    count = f" — {_count(int(months), 'month')}" if isinstance(months, int) else ""
+    return f"This year is downloaded{count}, finished {day}. New days keep arriving with each sync."
+
+
+def _count(amount: int, noun: str) -> str:
+    return f"{amount} {noun}{'' if amount == 1 else 's'}"
+
 
 SCREENS = ("Today", "Week", "Attendance", "Insights", "Records", "Pay", "Settings", "About")
 TODAY_SCREEN = SCREENS.index("Today")
@@ -124,6 +158,13 @@ class MainWindow(QMainWindow):
         self._announce_sync = False
         #: Records' own Refresh is in flight; the leave data landing gets a note.
         self._announce_records = False
+        #: The full-year download waiting out its delay after a sync. Owned by the window, so
+        #: it dies with it rather than firing later into a window that has gone.
+        self._year_timer = QTimer(self)
+        self._year_timer.setSingleShot(True)
+        self._year_timer.timeout.connect(lambda: self._start_year_backfill())
+        #: The user pressed Stop: no automatic restart until the next launch.
+        self._year_backfill_held = False
         self._scopes: list[object] = []
         self._busy_scope: Scope | None = None
         #: The two record sources that arrive on their own schedules, kept so the
@@ -260,8 +301,9 @@ class MainWindow(QMainWindow):
         self.settings.config_saved.connect(self._save_config)
         self.settings.sign_out_requested.connect(self._sign_out)
         self.settings.clear_cache_requested.connect(self._clear_cache)
-        self.settings.sync_history_requested.connect(self.sync_history)
+        self.settings.sync_history_requested.connect(self._download_year_again)
         self.settings.cancel_history_requested.connect(self.cancel_history)
+        self.settings.show_year_backfill(_year_backfill_text(_year_backfill_state()))
         self.settings.test_notification_requested.connect(self._test_notification)
         self.settings.address_lookup_requested.connect(self._find_address)
         self.settings.place_picked.connect(self._place_chosen)
@@ -408,7 +450,8 @@ class MainWindow(QMainWindow):
         self._sync.scopes_ready.connect(self._on_scopes_ready)
         self._sync.scope_started.connect(self._on_scope_started)
         self._sync.scope_finished.connect(self._on_scope_finished)
-        self._sync.history_finished.connect(self._history_finished)
+        self._sync.year_backfill_progress.connect(self._year_backfill_progress)
+        self._sync.year_backfill_ended.connect(self._year_backfill_ended)
         self._sync.failed.connect(self._on_error)
         self._sync.degraded.connect(self._on_degraded)
 
@@ -731,10 +774,10 @@ class MainWindow(QMainWindow):
         return (self.today.banner, self.records.banner, self.attendance.banner)
 
     def sync_history(self) -> None:
+        """Fill in the year now rather than waiting for the background download to start."""
         self._asked_for_the_portal()
-        self.settings.banner.show_message("Fetching history…", Severity.INFO)
-        self.notify_action("Fetching past months in the background", Severity.INFO)
-        self._sync.sync_history()
+        self._year_backfill_held = False
+        self._start_year_backfill(asked=True)
 
     def _sync_scope(self, scope: Scope) -> None:
         """One thing, fetched now — from the sync panel or a screen's own button."""
@@ -742,14 +785,86 @@ class MainWindow(QMainWindow):
         self._sync.sync_scope(scope)
 
     def cancel_history(self) -> None:
-        self._sync.cancel_history()
-        self.notify_action("Stopping the history sync after the current month", Severity.INFO)
+        """Stop the download for this session. It carries on at the next launch."""
+        self._year_backfill_held = True
+        if self._sync.year_backfill is None:
+            return
+        self._sync.stop_year_backfill()
+        self.notify_action("Stopping the download after the current step", Severity.INFO)
 
-    def _history_finished(self, summary: str) -> None:
-        # Both: the banner keeps the full report on Settings, and the note says it is done
-        # wherever the user is — it was started from Insights as often as from Settings.
-        self.settings.banner.show_message(summary, Severity.SUCCESS)
-        self.notify_action(summary)
+    # --- the full year, in the background ------------------------------------------------
+
+    def _schedule_year_backfill(self) -> None:
+        """After a clean sync, download the rest of the year if it never has been.
+
+        Two minutes later rather than at once: the first sync of a launch is the one the
+        user is waiting on, and three hundred more requests behind it would hold the single
+        runner slot through every click they make next.
+        """
+        if self._year_timer.isActive() or self._year_backfill_held:
+            return
+        if self._sync.year_backfill is not None or _year_backfill_state().get("complete"):
+            return
+        self._year_timer.start(YEAR_BACKFILL_DELAY_MS)
+
+    def _start_year_backfill(self, *, asked: bool = False, force: bool = False) -> None:
+        self._year_timer.stop()
+        if not asked and (self._paused or self._year_backfill_held):
+            return
+        if not asked and _year_backfill_state().get("complete"):
+            return
+        state = _year_backfill_state()
+        if not self._sync.start_year_backfill(force=force):
+            if asked:
+                self.notify_action("This year is already downloading in the background")
+            return
+        self.settings.show_year_backfill("Downloading this year in the background…")
+        if asked or not state.get("started"):
+            # Said once, when it first starts — not again each time it resumes.
+            self.notify_action(
+                "Downloading this year's attendance and punches in the background",
+                Severity.INFO,
+            )
+        app_state.put(YEAR_BACKFILL_KEY, {**state, "started": True, "complete": False})
+
+    def _download_year_again(self) -> None:
+        """Settings' Download again: every month's grid afresh, and any punches missing."""
+        self._asked_for_the_portal()
+        self._year_backfill_held = False
+        self._start_year_backfill(asked=True, force=True)
+
+    def _year_backfill_progress(self, run: YearBackfill) -> None:
+        total = len(run.periods or [])
+        punches = f", {_count(run.days, 'day')} of punches so far" if run.days else ""
+        self.settings.show_year_backfill(
+            f"Downloading this year — month {run.month_number} of {total}{punches}."
+        )
+
+    def _year_backfill_ended(self, run: YearBackfill, finished: bool) -> None:
+        if not finished:
+            self.settings.show_year_backfill(
+                "Stopped part-way. It carries on after the next sync"
+                + (" once CerePulse is restarted." if self._year_backfill_held else ".")
+            )
+            return
+        months = len(run.periods or [])
+        state = {
+            "started": True,
+            "complete": True,
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "months": months,
+            "days": run.days,
+        }
+        app_state.put(YEAR_BACKFILL_KEY, state)
+        self.settings.show_year_backfill(_year_backfill_text(state))
+        if run.grids or run.days:
+            self.notify_action(
+                f"This year is downloaded: {_count(months, 'month')}, "
+                f"{_count(run.days, 'day')} of punches"
+            )
+            self._sync.load_fetchable_months()
+            self._sync.reload_month()
+            self._sync.refresh_trends()
 
     def _open_sync_panel(self) -> None:
         """Show what is fresh and what is not, with a button per thing."""
@@ -1688,6 +1803,8 @@ class MainWindow(QMainWindow):
         )
 
     def _sign_out(self, forget: bool) -> None:
+        self._sync.stop_year_backfill()
+
         def done(_result: object) -> None:
             self.notify_action("Signed out" + (" and the saved password removed" if forget else ""))
             self.prompt_sign_in()
@@ -1706,6 +1823,9 @@ class MainWindow(QMainWindow):
 
         def cleared(_result: object) -> None:
             self.notify_action("Cached data cleared — fetching it again")
+            # The year went with the cache; the next clean sync downloads it again.
+            app_state.put(YEAR_BACKFILL_KEY, {"started": True, "complete": False})
+            self.settings.show_year_backfill(_year_backfill_text({}))
             self.refresh(force=True)
 
         self._sync.clear_cache(on_success=cleared)
@@ -1740,6 +1860,7 @@ class MainWindow(QMainWindow):
         ):
             for key in _FETCH_PROBLEMS:
                 banner.clear_message(key)
+        self._schedule_year_backfill()
 
     def _on_busy_changed(self, busy: bool) -> None:
         self.today.set_loading(busy)

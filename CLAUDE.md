@@ -251,6 +251,18 @@ them today fell back to its grid row and counted as a finished, short day.
 **An empty punch log is "loaded", not "unfetched".** Those two states drive different
 decisions and the sync backlog depends on telling them apart.
 
+**The year downloads itself, one small unit at a time.** Five months of punch logs were
+missing from the user's cache because nothing ever went back for days nobody opened. Two
+minutes after a clean sync, `SyncController.start_year_backfill` walks every month the portal
+serves, newest first: one unit is a month's grid or five days' punches
+(`AttendanceService.year_backfill_step`), each its own runner task through `sync.run`, 2 s
+apart so a click gets the single slot in between. Nothing about progress lives in memory —
+what is left is read off the cache every unit — so a stop or a restart resumes where it
+was; `state.json`'s `history_backfill` only says whether the year is in. It stops while
+paused, on sign-out and on Stop (held for the session), and `prune_history` never drops the
+current year, or the next sync would delete what the download had just fetched. Today is
+left to the ordinary sync. "Sync history" and Settings' Download again start the same run.
+
 **Today's punch log is never finished.** `days_missing_detail` asked which days were
 *missing* detail, and today needs asking whether its detail is *stale*: the 08:30 fetch
 stores the arrival, one punch row satisfies "has detail", and today drops out of the backlog
@@ -563,6 +575,13 @@ records and live session cookies, and stay in gitignored `Research/captures/`.
 
 Qt tests run with `QT_QPA_PLATFORM=offscreen` (set in `tests/ui/conftest.py`) so they need no
 display and work unchanged in CI.
+
+**No test opens a socket.** The root conftest refuses httpcore's `connect_tcp`, beneath
+respx and `MockTransport`, so a mocked request still answers and a real one fails. It exists
+because a window built in a test schedules a sign-in, a sync and an update check, and a test
+that spins the event loop lets them run: one did, and its sync went looking for the live
+portal. A test that waits on a window's event loop also lets the startup sign-in raise a
+modal dialog — drive controllers with a fake context instead (`tests/ui/test_year_download.py`).
 
 ## Security
 

@@ -188,7 +188,7 @@ def test_every_fetch_button_ends_a_pause(window, monkeypatch, control) -> None: 
     from cerepulse.services.scopes import Scope
 
     _silence_sync(window, monkeypatch)
-    for name in ("sync_scope", "sync_history"):
+    for name in ("sync_scope", "start_year_backfill"):
         monkeypatch.setattr(window._sync, name, lambda *a, **k: None)
     window._on_error(SessionTakenError("signed in elsewhere"))
 

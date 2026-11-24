@@ -125,6 +125,12 @@ def test_fetching_a_day_reports_where_the_user_is(window) -> None:  # type: igno
     assert window.toasts.messages == ["Fetched punch detail for 1 day"]
 
 
-def test_a_history_sync_finishing_is_said_on_any_screen(window) -> None:  # type: ignore[no-untyped-def]
-    window._history_finished("Fetched 3 of 3 month(s).")
-    assert "Fetched 3 of 3 month(s)." in window.toasts.messages
+def test_the_year_download_finishing_is_said_on_any_screen(window, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from cerepulse.ui.controllers.sync import YearBackfill
+
+    for name in ("load_fetchable_months", "reload_month", "refresh_trends"):
+        monkeypatch.setattr(window._sync, name, lambda: None)
+
+    run = YearBackfill(periods=[(2026, 11), (2026, 10), (2026, 9)], grids=2, days=41)
+    window._year_backfill_ended(run, True)
+    assert "This year is downloaded: 3 months, 41 days of punches" in window.toasts.messages

@@ -14,14 +14,16 @@ while a history backfill is running will genuinely wait.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
 from loguru import logger
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from cerepulse.app import AppContext
 from cerepulse.core.errors import AuthenticationError
+from cerepulse.services.attendance import BackfillStep
 from cerepulse.services.scopes import Scope
 from cerepulse.ui.workers import TaskRunner
 
@@ -29,6 +31,45 @@ from cerepulse.ui.workers import TaskRunner
 #: close, a prompt to raise. Everything else comes back as a signal.
 Success = Callable[[Any], None]
 Failure = Callable[[BaseException], None]
+
+
+#: Pause between units of the full-year download, so anything the user asks for gets the
+#: single runner slot in between rather than waiting behind ten minutes of postbacks.
+YEAR_BACKFILL_GAP_MS = 2000
+
+
+@dataclass(slots=True)
+class YearBackfill:
+    """Where one run of the full-year download has got to. Lives only as long as the run.
+
+    What is left is always read off the cache, so nothing here needs to survive a restart;
+    this only counts, and remembers the days that failed so they are not asked for again.
+    """
+
+    force: bool = False
+    periods: list[tuple[int, int]] | None = None
+    regrid: set[tuple[int, int]] = field(default_factory=set)
+    skip: set[date] = field(default_factory=set)
+    current: tuple[int, int] | None = None
+    grids: int = 0
+    days: int = 0
+    stopped: bool = False
+
+    def record(self, step: BackfillStep) -> None:
+        self.current = step.period
+        if step.grid and step.period is not None:
+            self.grids += 1
+            self.regrid.discard(step.period)
+        self.days += len(step.days)
+        self.skip.update(step.days)
+        self.skip.update(step.missed)
+
+    @property
+    def month_number(self) -> int:
+        """Which month, counting from the newest, the run is working on."""
+        if not self.periods or self.current not in self.periods:
+            return 0
+        return self.periods.index(self.current) + 1
 
 
 class SyncController(QObject):
@@ -57,7 +98,10 @@ class SyncController(QObject):
 
     #: A sync finished but some scopes failed. Empty list means everything succeeded.
     sync_finished = Signal(object)  # list[str]
-    history_finished = Signal(str)
+    #: The full-year download moved on by one unit.
+    year_backfill_progress = Signal(object)  # YearBackfill
+    #: It ended: ran out of work (True), or stopped before the end (False).
+    year_backfill_ended = Signal(object, bool)  # YearBackfill, finished
     #: Something the user needs to know about, rather than a debug line.
     failed = Signal(object)  # BaseException
     #: Non-fatal: the screen still works, but a part of it is missing.
@@ -76,7 +120,6 @@ class SyncController(QObject):
         self._runner = runner
         self.employee_code = employee_code
         self.period = (date.today().year, date.today().month)
-        self._history_cancelled = False
         self._detail_cancelled = False
         #: Set by the window while the portal session is someone else's. Reads that would
         #: fetch when the cache is stale serve the cache instead; only the user asking for
@@ -84,6 +127,7 @@ class SyncController(QObject):
         self.paused = False
         #: A full sync is queued or running. See :meth:`refresh`.
         self._syncing = False
+        self._year: YearBackfill | None = None
 
     # --- months -----------------------------------------------------------------------
 
@@ -374,33 +418,78 @@ class SyncController(QObject):
             on_error=lambda exc: self.degraded.emit("insights", exc),
         )
 
-    # --- history ----------------------------------------------------------------------
+    # --- the full year, in the background --------------------------------------------
 
-    def sync_history(self) -> None:
-        """Fetch past months in the background, one paced request at a time."""
-        employee = self.employee_code
-        self._history_cancelled = False
+    @property
+    def year_backfill(self) -> YearBackfill | None:
+        """The download in progress, if one is."""
+        return self._year
 
-        def run() -> object:
-            return self._context.attendance.backfill_history(
-                employee, on_progress=self._history_progress
+    def start_year_backfill(self, *, force: bool = False) -> bool:
+        """Download every month the portal serves, grids and punch logs, a piece at a time.
+
+        ``force`` fetches each month's grid again even where one is held — "Download again".
+        Returns False when a run is already going.
+        """
+        if self._year is not None:
+            return False
+        self._year = YearBackfill(force=force)
+        self._year_unit()
+        return True
+
+    def stop_year_backfill(self) -> None:
+        """Stop after the unit in flight. Whatever it fetched stays; the rest waits."""
+        if self._year is not None:
+            self._year.stopped = True
+
+    def _year_unit(self) -> None:
+        run = self._year
+        if run is None:
+            return
+        if run.stopped or self.paused:
+            # Paused means the session is someone else's; taking it back for a background
+            # download is exactly what the pause exists to prevent.
+            self._year = None
+            self.year_backfill_ended.emit(run, False)
+            return
+
+        employee, today = self.employee_code, date.today()
+        attendance = self._context.attendance
+
+        def unit() -> BackfillStep:
+            if run.periods is None:
+                run.periods = attendance.fetchable_months(today=today)
+                if run.force:
+                    run.regrid = set(run.periods)
+            return attendance.year_backfill_step(
+                employee,
+                run.periods,
+                today=today,
+                skip=frozenset(run.skip),
+                regrid=frozenset(run.regrid),
             )
 
-        def done(report: object) -> None:
-            self._history_cancelled = False
-            self.load_fetchable_months()
-            self.reload_month()
-            self.history_finished.emit(str(getattr(report, "summary", "History sync finished.")))
+        def done(step: BackfillStep) -> None:
+            run.record(step)
+            if step.finished:
+                self._year = None
+                self.year_backfill_ended.emit(run, True)
+                return
+            self.year_backfill_progress.emit(run)
+            QTimer.singleShot(YEAR_BACKFILL_GAP_MS, self._year_unit)
 
-        self._runner.submit("history", run, on_success=done, on_error=self.failed.emit)
+        def failed(exc: BaseException) -> None:
+            self._year = None
+            self.year_backfill_ended.emit(run, False)
+            # Through the window's one error path, so a taken session still pauses the app.
+            self.failed.emit(exc)
 
-    def cancel_history(self) -> None:
-        self._history_cancelled = True
-
-    def _history_progress(self, done: int, total: int, period: tuple[int, int]) -> bool:
-        # Runs on the worker thread, so it only reads a flag and writes no widgets.
-        logger.info("History {}/{}: {:04d}-{:02d}", done, total, *period)
-        return not self._history_cancelled
+        self._runner.submit(
+            "year-backfill",
+            lambda: self._context.sync.run(unit),
+            on_success=done,
+            on_error=failed,
+        )
 
     # --- account and cache ------------------------------------------------------------
 

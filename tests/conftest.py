@@ -48,6 +48,24 @@ def no_daily_network(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(module, "fetch_today", offline)
 
 
+@pytest.fixture(autouse=True)
+def no_real_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may reach a real server — the employer's HR portal least of all.
+
+    A window built in a test schedules a sign-in, a sync and an update check, and any test
+    that spins the event loop lets them run: one did, and its sync went looking for the live
+    portal. Tests that talk HTTP use respx, a ``MockTransport`` or replace ``get`` and
+    ``post``, all of which answer above the socket; only opening a real connection is refused.
+    """
+    import httpcore
+    from httpcore._backends import sync as backend
+
+    def refused(self: object, host: str, port: int, *_args: object, **_kwargs: object) -> object:
+        raise httpcore.ConnectError(f"tests never reach the network ({host}:{port})")
+
+    monkeypatch.setattr(backend.SyncBackend, "connect_tcp", refused)
+
+
 @pytest.fixture(scope="session")
 def qapp() -> Iterator[object]:
     """One QApplication for the whole session; Qt forbids a second.

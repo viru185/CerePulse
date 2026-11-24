@@ -625,21 +625,29 @@ class SettingsView(QWidget):
     def _build_history(self) -> Card:
         card = Card(
             "History",
-            "Pulls past months so trends and month-over-month comparisons have something "
-            "to work with. The portal only serves the current year, so history stops at "
-            "that January.",
+            "Every month the portal serves — the current year, back to January — with each "
+            "day's punch log, so trends and month-over-month comparisons have something to "
+            "work with. Download again fetches every month afresh.",
         )
+        self._year_status = QLabel()
+        self._year_status.setObjectName("CardCaption")
+        self._year_status.setWordWrap(True)
+        card.body.addWidget(self._year_status)
         row = QHBoxLayout()
         row.setSpacing(8)
-        sync = QPushButton("Sync history")
-        sync.clicked.connect(self.sync_history_requested)
+        again = QPushButton("Download again")
+        again.clicked.connect(self.sync_history_requested)
         cancel = QPushButton("Stop")
         cancel.clicked.connect(self.cancel_history_requested)
-        row.addWidget(sync)
+        row.addWidget(again)
         row.addWidget(cancel)
         row.addStretch(1)
         card.body.addLayout(row)
         return card.finish()
+
+    def show_year_backfill(self, text: str) -> None:
+        """Where the full-year download stands, in one line."""
+        self._year_status.setText(text)
 
     def _build_updates(self) -> Card:
         card = Card(

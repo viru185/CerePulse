@@ -77,6 +77,7 @@ TASK_LABELS = {
     "trends": "Building insights",
     "periods": "Asking which months are available",
     "history": "Fetching history",
+    "year-backfill": "Downloading this year in the background",
     "scopes": "Checking what is up to date",
     "sync-day": "Fetching that day",
     "sign-in": "Signing in",
