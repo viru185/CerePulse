@@ -27,6 +27,7 @@ from cerepulse.ui.kit.icons import IconLabel, icon, toned
 from cerepulse.ui.kit.inputs import (
     CheckBox,
     ComboBox,
+    DateEdit,
     DoubleSpinBox,
     LineEdit,
     SpinBox,
@@ -41,6 +42,7 @@ __all__ = [
     "Button",
     "CheckBox",
     "ComboBox",
+    "DateEdit",
     "Divider",
     "DoubleSpinBox",
     "IconButton",

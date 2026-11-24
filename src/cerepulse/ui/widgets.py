@@ -42,7 +42,6 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QComboBox,
     QFrame,
     QGraphicsOpacityEffect,
     QGridLayout,
@@ -55,7 +54,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QTableWidget,
-    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -1420,251 +1418,6 @@ class HourAxis(QWidget):
         painter.end()
 
 
-class DayJourney(QWidget):
-    """The day's punches as a list of events, breaks included.
-
-    Replaces a four-column table of In / Out / Duration / Note. That table had one row per
-    *work segment*, so the gaps between them — the thing anyone scanning a punch log is
-    actually looking for — were not rows at all; you had to subtract one row's In from the
-    previous row's Out to find your own lunch. It also stranded three narrow time columns on
-    the left and gave the whole remaining width to a Note column that was empty on almost
-    every row.
-
-    Here every event is a row in the order it happened, work and break alike, and a repaired
-    punch is marked on its own row rather than in a column that exists only for it.
-    """
-
-    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._palette = palette
-        self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(0)
-
-    #: (gap start, whether it is now work). The window owns the storage; this only reports
-    #: the click.
-    gap_flagged = Signal(object, bool, str)
-
-    #: A gap at or under this is an ordinary break. Past it, the day has a hole in it and
-    #: the row says so rather than calling four hours "Break".
-    LONG_BREAK = 90
-
-    def set_segments(
-        self,
-        segments: Sequence[WorkSegment],
-        *,
-        worked_spans: Sequence[WorkedGap] = (),
-        can_flag: bool = False,
-    ) -> None:
-        """Render the day. ``can_flag`` offers each break a "this was work" action.
-
-        Offered only where it can mean something — a real gap on a day the app can store a
-        flag against — because a button that silently does nothing is worse than no button.
-        """
-        empty_layout(self._layout)
-
-        self.setVisible(bool(segments))
-        rows: list[_JourneyRow] = []
-        previous: WorkSegment | None = None
-        for segment in segments:
-            if previous is not None:
-                gap = _gap_between(previous, segment)
-                if gap.minutes > 0:
-                    long_break = gap.minutes > self.LONG_BREAK
-                    row = _JourneyRow(
-                        self._palette,
-                        when=f"{_clock_short(previous.end)} – {_clock_short(segment.start)}",
-                        title=f"{'Away' if long_break else 'Break'} · {gap}",
-                        detail="",
-                        colour=self._palette.bad if long_break else self._palette.rest,
-                        primary=False,
-                    )
-                    if can_flag:
-                        row.offer_worked_flag(previous.end.time(), self.gap_flagged)
-                    rows.append(row)
-            inside = [span for span in worked_spans if _within(span, segment)]
-            work_row = _JourneyRow(
-                self._palette,
-                when=f"{_clock_short(segment.start)} – {_clock_short(segment.end)}",
-                title=f"Worked · {segment.duration}",
-                detail=_segment_detail(segment, worked_spans),
-                # Violet is the palette's "adjustment" accent, and this stretch is one.
-                colour=self._palette.adjust if inside else self._palette.work,
-                muted=segment.end_inferred or segment.start_inferred,
-            )
-            # Merging removed the gap's own row, so the way back has to live here.
-            if can_flag and inside:
-                work_row.offer_undo_flag(inside[0].start.time(), self.gap_flagged)
-            rows.append(work_row)
-            previous = segment
-
-        # The spine has to know where it ends, which is only knowable once every row exists.
-        for index, row in enumerate(rows):
-            row.set_position(first=index == 0, last=index == len(rows) - 1)
-            self._layout.addWidget(row)
-
-
-def _within(span: WorkedGap, segment: WorkSegment) -> bool:
-    """Whether a reclaimed gap lies inside this block.
-
-    Compared as full datetimes rather than clock times, which is what the previous version
-    did — on a shift running past midnight a 23:50 gap has a smaller clock time than a 07:45
-    start, so the comparison quietly excluded exactly the days most likely to need it.
-    """
-    return segment.start <= span.start and span.end <= segment.end
-
-
-def _segment_detail(segment: WorkSegment, worked_spans: Sequence[WorkedGap]) -> str:
-    """Why this row is not simply a measurement, when it is not.
-
-    Every case is stated rather than hidden: an end the app inferred, an arrival taken from
-    the portal's summary, and a stretch that only reads as continuous because the user said a
-    gap inside it was work — named with whatever they said it was, because "a break you
-    marked as work" three weeks later is a fact without a reason attached.
-    """
-    notes = []
-    if segment.start_inferred:
-        notes.append("the in punch is missing, so this start came from the summary")
-    if segment.end_inferred:
-        notes.append("the out punch is missing, so this end was inferred")
-    inside = [span.note or "no note" for span in worked_spans if _within(span, segment)]
-    if inside:
-        notes.append("includes work you marked: " + "; ".join(inside))
-    return "; ".join(notes)
-
-
-class _JourneyRow(QWidget):
-    """One event on the day's spine: a marker, what it was, and when.
-
-    Rows used to carry a short stripe each, separated by their own padding, so the day read
-    as a list of unrelated lines rather than one continuous journey. The spine here is drawn
-    edge to edge and the rows are stacked with no spacing, so the segments join up; the
-    marker is filled for work and hollow for a break, which is the same distinction the
-    colour makes, said twice for anyone who cannot rely on the colour.
-    """
-
-    GUTTER = 18
-    DOT = 7
-
-    def __init__(
-        self,
-        palette: Palette,
-        *,
-        when: str,
-        title: str,
-        detail: str,
-        colour: str,
-        muted: bool = False,
-        primary: bool = True,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self._palette = palette
-        self._colour = colour
-        self._primary = primary
-        self._first = False
-        self._last = False
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(self.GUTTER, Space.TIGHT // 2, 0, Space.TIGHT // 2)
-        layout.setSpacing(Space.ROW)
-        # Kept so a break row can be offered an action after it is built.
-        self._layout = layout
-
-        stamp = QLabel(when)
-        stamp.setFixedWidth(118)
-        stamp.setStyleSheet(
-            f"color: {palette.text if primary else palette.text_muted};"
-            f" font-weight: {600 if primary else 400};"
-            " font-variant-numeric: tabular-nums;"
-        )
-        layout.addWidget(stamp)
-
-        heading = QLabel(title)
-        heading.setStyleSheet(
-            f"color: {colour}; font-weight: {600 if primary else 400};"
-            f" font-size: {13 if primary else 12}px;"
-        )
-        layout.addWidget(heading)
-
-        if detail:
-            note = QLabel(detail)
-            note.setObjectName("CardCaption")
-            note.setWordWrap(True)
-            layout.addWidget(note, 1)
-        else:
-            layout.addStretch(1)
-
-        if muted:
-            stamp.setStyleSheet(f"color: {palette.text_muted}; font-variant-numeric: tabular-nums;")
-
-    def offer_worked_flag(self, gap_start: time, signal: object) -> None:
-        """Add "This was work" to a break row, and ask what the work was.
-
-        The punches call every Out-then-In a break, and so does the portal. Somebody who
-        went downstairs to the other office was working, and nothing in the data can know
-        that — so the row asks, once, rather than the app guessing from the duration.
-
-        The note is asked for at the same moment, because "a break I marked as work" read
-        back three weeks later is a fact with its reason missing, and the reason is the part
-        that survives.
-        """
-        from PySide6.QtWidgets import QInputDialog, QPushButton
-
-        def flag() -> None:
-            note, accepted = QInputDialog.getText(
-                self,
-                "Mark as work",
-                "What was this? (optional)",
-                text="",
-            )
-            if accepted:
-                signal.emit(gap_start, True, note.strip())  # type: ignore[attr-defined]
-
-        button = QPushButton("This was work")
-        button.setToolTip(
-            "Count this gap as work instead of a break. Stored on this device only; it "
-            "does not change anything in SpineHR."
-        )
-        button.clicked.connect(flag)
-        self._layout.addWidget(button)
-
-    def offer_undo_flag(self, gap_start: time, signal: object) -> None:
-        """Take a flag back. Anything the user can set, they must be able to unset."""
-        from PySide6.QtWidgets import QPushButton
-
-        button = QPushButton("Not work")
-        button.setToolTip("Count this as a break again.")
-        button.clicked.connect(
-            lambda: signal.emit(gap_start, False, "")  # type: ignore[attr-defined]
-        )
-        self._layout.addWidget(button)
-
-    def set_position(self, *, first: bool, last: bool) -> None:
-        """Tell the row where it sits, so the spine stops at the ends instead of overhanging."""
-        self._first = first
-        self._last = last
-        self.update()
-
-    def paintEvent(self, event: object) -> None:  # noqa: N802 — Qt override
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        centre = self.GUTTER / 2 - 2
-        middle = self.height() / 2
-        painter.setPen(QPen(QColor(self._palette.border), 2))
-        painter.drawLine(
-            QPointF(centre, 0 if not self._first else middle),
-            QPointF(centre, self.height() if not self._last else middle),
-        )
-
-        radius = self.DOT / 2 if self._primary else self.DOT / 2 - 1
-        painter.setPen(QPen(QColor(self._colour), 2))
-        painter.setBrush(QColor(self._colour) if self._primary else QColor(self._palette.surface))
-        painter.drawEllipse(QPointF(centre, middle), radius, radius)
-        painter.end()
-
-
 def _rounded(rect: QRectF, radius: float) -> QPainterPath:
     path = QPainterPath()
     path.addRoundedRect(rect, radius, radius)
@@ -2384,54 +2137,49 @@ class CommuteCard(QFrame):
     )
 
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+        from cerepulse.ui import kit
+
         super().__init__(parent)
-        self.setObjectName("Card")
+        self.setProperty("variant", "card")
         self._palette = palette
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(4)
+        layout.setContentsMargins(Space.GAP, 14, Space.GAP, 14)
+        layout.setSpacing(2)
 
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
-        head.setSpacing(8)
-        title = QLabel("HOME BY")
-        title.setObjectName("CardTitle")
-        head.addWidget(title)
+        head.setSpacing(Space.SNUG)
+        head.addWidget(kit.Text("Home by", self, role="caption", tone="muted"))
         head.addStretch(1)
 
         # "How long if I leave right now?" is a different question from "when am I home if
         # I work my target?", and both are fair. The choice only changes which departure
         # the service is asked about — every guard behind it still applies.
-        self.departure = QComboBox()
+        self.departure = kit.ComboBox()
         for label, key in self.DEPARTURES:
             self.departure.addItem(label, key)
         self.departure.currentIndexChanged.connect(lambda _index: self._departure_moved())
         head.addWidget(self.departure)
 
-        self.at_time = QTimeEdit()
-        self.at_time.setDisplayFormat("h:mm AP")
+        self.at_time = kit.TimeEdit()
         self.at_time.setVisible(False)
         self.at_time.editingFinished.connect(self.departure_changed)
         head.addWidget(self.at_time)
 
-        self.refresh = QPushButton("Refresh")
-        self.refresh.clicked.connect(self.refresh_requested)
+        self.refresh = kit.Button("Refresh", self, small=True, on_click=self.refresh_requested.emit)
         head.addWidget(self.refresh)
 
-        self.setup = QPushButton("Set up")
-        self.setup.setObjectName("Primary")
-        self.setup.clicked.connect(self.setup_requested)
+        self.setup = kit.Button(
+            "Set up", self, variant="primary", small=True, on_click=self.setup_requested.emit
+        )
         head.addWidget(self.setup)
         layout.addLayout(head)
 
-        self._value = QLabel(EMPTY_VALUE)
-        self._value.setObjectName("CardValue")
+        self._value = kit.Text(EMPTY_VALUE, self, role="title")
         layout.addWidget(self._value)
 
-        self._caption = QLabel()
-        self._caption.setObjectName("CardCaption")
-        self._caption.setWordWrap(True)
+        self._caption = kit.Text(role="caption", tone="muted", wrap=True)
         layout.addWidget(self._caption)
 
     def _departure_moved(self) -> None:

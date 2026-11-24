@@ -18,8 +18,9 @@ from cerepulse.intelligence.day import analyze_day
 from cerepulse.intelligence.segments import WorkSegment
 from cerepulse.models.attendance import Punch, PunchDirection
 from cerepulse.models.values import Duration
+from cerepulse.ui.journey import DayJourney
 from cerepulse.ui.theme import DARK
-from cerepulse.ui.widgets import DayJourney, DayTimeline, _gap_between
+from cerepulse.ui.widgets import DayTimeline, _gap_between
 
 DAY = date(2026, 7, 24)
 
@@ -245,12 +246,14 @@ def test_a_genuinely_empty_day_still_says_so(qapp: QApplication) -> None:
 
 
 def test_breaks_are_rows_of_their_own(qapp: QApplication) -> None:
-    """Four work spans with three gaps between them is seven entries, not four."""
+    """Four work spans with three gaps between them is seven stretches, not four — and every
+    punch is a line of its own between them, eight of them."""
     analysis = analyze_day(punches(*BUSY), day=DAY)
     journey = DayJourney(DARK)
     journey.set_segments(analysis.segments)
 
-    assert journey._layout.count() == 7
+    assert len(journey.stretches) == 7
+    assert journey._layout.count() == 7 + 8
 
 
 def test_the_journey_is_empty_for_a_day_with_no_punches(qapp: QApplication) -> None:
@@ -265,7 +268,7 @@ def test_rebuilding_does_not_accumulate_rows(qapp: QApplication) -> None:
     journey.set_segments(analysis.segments)
     journey.set_segments(analysis.segments)
 
-    assert journey._layout.count() == 7
+    assert len(journey.stretches) == 7
 
 
 def test_an_inferred_end_is_marked_on_its_own_row(qapp: QApplication) -> None:
@@ -287,10 +290,10 @@ def test_every_row_names_what_it_is(qapp: QApplication) -> None:
 
     from PySide6.QtWidgets import QLabel
 
-    wording = " ".join(label.text() for label in journey.findChildren(QLabel))
-    assert wording.count("Worked") == 4
-    assert wording.count("Break") == 3
+    assert [stretch.words for stretch in journey.stretches].count("in the office") == 4
+    assert [stretch.words for stretch in journey.stretches].count("break") == 3
     # And the durations read as durations, not as clock times.
+    wording = " ".join(label.text() for label in journey.findChildren(QLabel))
     assert "8m" in wording
 
 
@@ -339,3 +342,30 @@ def test_the_axis_reaches_the_muted_finish_too(qapp) -> None:  # type: ignore[no
     timeline.set_day((segment_between(start, start + timedelta(hours=3)),), flat_at=later)
 
     assert timeline._end is not None and timeline._end > later
+
+
+def test_each_stretch_between_punches_says_how_long_it_lasted(qapp: QApplication) -> None:
+    """The user asked to see the time between each In and Out, and each Out and In."""
+    analysis = analyze_day(
+        punches(("09:40", "in"), ("13:05", "out"), ("13:40", "in"), ("18:45", "out")), day=DAY
+    )
+    journey = DayJourney(DARK)
+    journey.set_segments(analysis.segments)
+
+    assert [(s.length.text(), s.words) for s in journey.stretches] == [
+        ("3h 25m", "in the office"),
+        ("35m", "break"),
+        ("5h 05m", "in the office"),
+    ]
+
+
+def test_a_day_still_being_worked_ends_on_now(qapp: QApplication) -> None:
+    from PySide6.QtWidgets import QLabel
+
+    analysis = analyze_day(punches(("09:40", "in"), ("13:05", "out"), ("13:40", "in")), day=DAY)
+    journey = DayJourney(DARK)
+    journey.set_segments(analysis.segments, ongoing=True)
+
+    assert journey.stretches[-1].words == "so far, still in"
+    labels = [label.text() for label in journey.findChildren(QLabel)]
+    assert labels[-1] == "now"

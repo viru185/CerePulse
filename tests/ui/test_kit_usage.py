@@ -47,10 +47,9 @@ ALLOWED: dict[str, tuple[int, int]] = {
     "views/pay.py": (5, 4),
     "views/settings.py": (37, 3),
     "views/sync_panel.py": (3, 2),
-    "views/today.py": (5, 0),
     "views/week.py": (3, 6),
     "whats_new.py": (6, 2),
-    "widgets.py": (11, 17),
+    "widgets.py": (5, 14),
 }
 
 

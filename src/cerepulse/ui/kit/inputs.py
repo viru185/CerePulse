@@ -12,8 +12,10 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import (
+    QCalendarWidget,
     QCheckBox,
     QComboBox,
+    QDateEdit,
     QDoubleSpinBox,
     QLineEdit,
     QSpinBox,
@@ -81,6 +83,35 @@ class TimeEdit(QTimeEdit):
         super().__init__(parent)
         _wheel_needs_focus(self)
         self.setDisplayFormat(display)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802 — Qt override
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class DateEdit(QDateEdit):
+    """A date with a calendar popup that fits a week of short day names.
+
+    The popup inherits its width from the field, which is sized for "5 Aug 2026" — so its
+    day-name header had nowhere to draw and elided to "T…". Short names and a width that
+    fits seven of them is the whole fix; the sheet styles the rest.
+    """
+
+    CALENDAR_WIDTH = 268
+
+    def __init__(self, parent: QWidget | None = None, *, display: str = "d MMM yyyy") -> None:
+        super().__init__(parent)
+        _wheel_needs_focus(self)
+        self.setCalendarPopup(True)
+        self.setDisplayFormat(display)
+        calendar = self.calendarWidget()
+        if calendar is not None:
+            calendar.setHorizontalHeaderFormat(QCalendarWidget.HorizontalHeaderFormat.ShortDayNames)
+            calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+            calendar.setGridVisible(False)
+            calendar.setMinimumWidth(self.CALENDAR_WIDTH)
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802 — Qt override
         if self.hasFocus():

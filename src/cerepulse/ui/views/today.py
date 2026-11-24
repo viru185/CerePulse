@@ -20,12 +20,9 @@ from datetime import date, datetime, timedelta
 from PySide6.QtCore import QDate, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QDateEdit,
     QHBoxLayout,
     QLabel,
     QMessageBox,
-    QPushButton,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -37,27 +34,19 @@ from cerepulse.models.attendance import PunchDirection
 from cerepulse.models.values import Duration
 from cerepulse.services.commute import CommuteView
 from cerepulse.ui import formatting as fmt
+from cerepulse.ui import kit
+from cerepulse.ui.journey import DayJourney
 from cerepulse.ui.theme import Palette, Space
 from cerepulse.ui.widgets import (
     Banner,
-    Card,
     CommuteCard,
-    DayJourney,
     DayTimeline,
     InsightStrip,
     NextActionCard,
-    SectionTitle,
     Skeleton,
-    StatusChip,
     TargetBar,
     card_row,
-    step_button,
 )
-
-#: Least width the date popup's calendar may have. Seven columns of "Mon" at the app's font
-#: plus the navigation bar — below this Qt elides the day names to "T…" and the header stops
-#: meaning anything, above it the popup is simply wider than a month of dates needs.
-CALENDAR_WIDTH = 268
 
 #: The date field, sized to its widest content rather than left to stretch across the
 #: header. "25 Aug 2026" measures ~143px at the app's font; the stylesheet then adds 10px of
@@ -88,6 +77,7 @@ class _HeroValue(QLabel):
 
     def __init__(self, text: str) -> None:
         super().__init__(text)
+        self.setProperty("role", "display")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("Why this time?")
 
@@ -124,19 +114,10 @@ class TodayView(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        # Every other scrolling screen sets this; Today was the one that did not, and so it
-        # was the one that grew a horizontal scrollbar. Nothing on this screen is meant to
-        # extend past the window — anything that would should wrap instead.
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        outer.addWidget(scroll)
-
-        content = QWidget()
-        scroll.setWidget(content)
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(Space.SECTION, 20, Space.SECTION, Space.SECTION)
-        layout.setSpacing(Space.GAP)
+        # Never sideways: anything that would extend past the window wraps instead.
+        page = kit.ScrollArea(spacing=Space.GAP)
+        outer.addWidget(page)
+        layout = page.body
 
         self.banner = Banner()
         layout.addWidget(self.banner)
@@ -150,7 +131,7 @@ class TodayView(QWidget):
 
         # Everything below the hero swaps out for the skeleton in one move, rather than
         # each card having to know how to look absent.
-        self._content = QWidget()
+        self._content = kit.Box()
         body = QVBoxLayout(self._content)
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(Space.GAP)
@@ -178,20 +159,24 @@ class TodayView(QWidget):
         self.commute.setup_requested.connect(self.commute_setup_requested)
         body.addWidget(self.commute)
 
-        body.addWidget(SectionTitle("Your day"))
+        body.addSpacing(Space.SNUG)
+        body.addWidget(kit.SectionHeader("Your day"))
         self._timeline = DayTimeline(palette)
         body.addWidget(self._timeline)
-        self._legend = QLabel()
-        self._legend.setObjectName("CardCaption")
-        self._legend.setWordWrap(True)
+        self._legend = kit.Text(role="caption", tone="muted", wrap=True)
         body.addWidget(self._legend)
 
-        body.addWidget(SectionTitle("How the day went"))
+        # The punches, and how long each stretch between them lasted: in the office between
+        # an In and an Out, a break between an Out and an In.
+        body.addSpacing(Space.SNUG)
+        self._punches_header = kit.SectionHeader("Punches")
+        body.addWidget(self._punches_header)
         self._journey = DayJourney(palette)
         self._journey.gap_flagged.connect(self._on_gap_flagged)
         body.addWidget(self._journey)
-        self._no_punches = QLabel("No punches recorded for this day.")
-        self._no_punches.setObjectName("CardCaption")
+        self._no_punches = kit.Text(
+            "No punches recorded for this day.", role="caption", tone="muted"
+        )
         body.addWidget(self._no_punches)
 
         layout.addStretch(1)
@@ -203,99 +188,102 @@ class TodayView(QWidget):
     # --- construction ---------------------------------------------------------------
 
     def _build_hero(self) -> QWidget:
-        host = QWidget()
+        host = kit.Box()
         layout = QVBoxLayout(host)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Space.TIGHT // 2)
+        layout.setSpacing(2)
 
         # Viewing a past day is a distinct mode and has to look like one, with an obvious
         # way out. The button names its actual destination: arriving here by double-clicking
         # a date in Attendance and being offered only "Back to today" is a dead end, because
-        # the thing the user wants back is the month they were reading.
-        #
-        # It rides *in* the header row rather than above it. As its own row it pushed the
-        # whole screen down by a line the moment a past day was opened, which is a lot of
-        # vertical space to spend on a mode that is already obvious from the date in the
-        # picker beside it.
+        # the thing the user wants back is the month they were reading. It rides in the
+        # title row, so opening a past day does not push the whole screen down a line.
         context = QHBoxLayout()
         context.setContentsMargins(0, 0, 0, 0)
         context.setSpacing(Space.SNUG)
-        self._viewing = QLabel()
-        self._viewing.setObjectName("CardCaption")
-        self._back = QPushButton("Back to today")
-        self._back.clicked.connect(self.back_to_today)
+        self._viewing = kit.Text(role="caption", tone="muted")
+        self._back = kit.Button("Back to today", on_click=self.back_to_today.emit)
         # The punch log for a given day arrives one portal request at a time, so a date
         # opened from Attendance may have none yet. This asks for that day and no other.
-        self._sync_day = QPushButton("Sync this day")
-        self._sync_day.clicked.connect(self._request_day_sync)
+        self._sync_day = kit.Button("Sync this day", on_click=self._request_day_sync)
         context.addWidget(self._viewing)
         context.addWidget(self._back)
         context.addWidget(self._sync_day)
-        self._context_bar = QWidget()
+        self._context_bar = kit.Box()
         self._context_bar.setLayout(context)
         self._context_bar.setVisible(False)
 
         top = QHBoxLayout()
         top.setSpacing(Space.SNUG)
-        self._hero_label = QLabel("You can leave at")
-        self._hero_label.setObjectName("HeroLabel")
-        top.addWidget(self._hero_label)
+        top.addWidget(kit.Text("Today", role="title"))
+        top.addSpacing(Space.SNUG)
         top.addWidget(self._context_bar)
         top.addStretch(1)
 
         # Reading back through a week is the common case, and a calendar popup makes it
         # three clicks a day. These make it one.
-        self._previous_day = step_button("◀", "Previous day", lambda: self._step_day(-1))
+        self._previous_day = kit.StepButton(
+            "‹", "Previous day  ([)", on_click=lambda: self._step_day(-1)
+        )
         top.addWidget(self._previous_day)
 
         # Any date, without going via Attendance first. The upper bound is today: the
         # portal has nothing for tomorrow, and offering it invites an empty screen that
         # looks like a failure.
-        self._picker = QDateEdit()
-        self._picker.setCalendarPopup(True)
-        self._picker.setDisplayFormat("d MMM yyyy")
+        self._picker = kit.DateEdit()
         self._picker.setMaximumDate(QDate.currentDate())
         self._picker.setToolTip("Jump to another date")
         self._picker.setFixedWidth(PICKER_WIDTH)
         self._picker.dateChanged.connect(self._on_date_picked)
-        _dress_calendar(self._picker)
         top.addWidget(self._picker)
 
-        self._next_day = step_button("▶", "Next day", lambda: self._step_day(1))
+        self._next_day = kit.StepButton("›", "Next day  (])", on_click=lambda: self._step_day(1))
         # Reading back through a week is the common case; the brackets make it one key.
         QShortcut(QKeySequence("["), self).activated.connect(lambda: self._step_day(-1))
         QShortcut(QKeySequence("]"), self).activated.connect(lambda: self._step_day(1))
-        self._previous_day.setToolTip("Previous day  ([)")
-        self._next_day.setToolTip("Next day  (])")
         top.addWidget(self._next_day)
 
-        self._copy = QPushButton("Copy summary")
-        self._copy.clicked.connect(self._copy_summary)
-        self._refresh = QPushButton("Refresh")
-        self._refresh.clicked.connect(self.refresh_requested)
+        self._copy = kit.Button("Copy summary", variant="quiet", on_click=self._copy_summary)
+        self._refresh = kit.Button("Refresh", on_click=self.refresh_requested.emit)
         top.addWidget(self._copy)
         top.addWidget(self._refresh)
         layout.addLayout(top)
+        layout.addSpacing(Space.ROW)
 
+        self._hero_label = kit.Text("You can leave at", tone="muted")
+        layout.addWidget(self._hero_label)
+
+        # The finish, and beside it how long until then: the two things the screen is
+        # opened to learn, at the two largest sizes on it.
         value_row = QHBoxLayout()
-        value_row.setSpacing(Space.ROW)
+        value_row.setSpacing(Space.SECTION)
         self._hero_value = _HeroValue(fmt.EMPTY)
-        self._hero_value.setObjectName("HeroValue")
         self._hero_value.setAccessibleName("The time you can leave, or left")
         self._hero_value.clicked.connect(lambda: self._explain("expected_out"))
-        value_row.addWidget(self._hero_value)
-        self._presence = StatusChip("", self._palette.text_muted)
+        value_row.addWidget(self._hero_value, 0, Qt.AlignmentFlag.AlignBottom)
+
+        self._countdown_box = kit.Box()
+        countdown = QVBoxLayout(self._countdown_box)
+        countdown.setContentsMargins(0, 0, 0, Space.ROW)
+        countdown.setSpacing(0)
+        self._countdown = kit.Text(role="title", tone="work")
+        self._countdown_note = kit.Text(tone="muted")
+        countdown.addWidget(self._countdown)
+        countdown.addWidget(self._countdown_note)
+        self._countdown_box.setVisible(False)
+        value_row.addWidget(self._countdown_box, 0, Qt.AlignmentFlag.AlignBottom)
+
+        self._presence = kit.Pill(tone="muted")
         self._presence.setVisible(False)
         value_row.addWidget(self._presence, 0, Qt.AlignmentFlag.AlignVCenter)
         value_row.addStretch(1)
         layout.addLayout(value_row)
 
-        self._hero_caption = QLabel()
-        self._hero_caption.setObjectName("HeroCaption")
-        # The awaiting-today sentence runs to 135 characters. Without this it simply pushed
-        # the window wider than the screen rather than taking a second line.
-        self._hero_caption.setWordWrap(True)
+        # The awaiting-today sentence runs to 135 characters; it wraps rather than pushing
+        # the window wider than the screen.
+        self._hero_caption = kit.Text(tone="muted", wrap=True)
         layout.addWidget(self._hero_caption)
+        layout.addSpacing(Space.SNUG)
 
         self._progress = TargetBar(self._palette)
         layout.addWidget(self._progress)
@@ -314,8 +302,8 @@ class TodayView(QWidget):
         # is enough is the caption's job, and it says so for both in the same words.
         # The shift card measures the span, which is what decides the day; net work is its
         # caption. See intelligence.policy for why the span rules.
-        self.worked = Card("Shift", clickable=True)
-        self.break_taken = Card("Break", clickable=True)
+        self.worked = kit.StatCard("Shift", clickable=True)
+        self.break_taken = kit.StatCard("Break", clickable=True)
 
         self.worked.clicked.connect(lambda: self._explain("gross_span"))
         self.break_taken.clicked.connect(lambda: self._explain("break_taken"))
@@ -408,6 +396,7 @@ class TodayView(QWidget):
 
         self._hero_label.setText("Waiting for today")
         self._hero_value.setText(fmt.EMPTY)
+        self._countdown_box.setVisible(False)
         self._presence.setVisible(False)
         self._progress.set_progress(0.0, "")
         synced = f" Last synced {fmt.relative_time(last_synced)}." if last_synced else ""
@@ -466,7 +455,9 @@ class TodayView(QWidget):
             worked_spans=analysis.worked_spans,
         )
         self._legend.setText(self._legend_text(analysis))
-        self._render_punches(analysis)
+        self._render_punches(
+            analysis, ongoing=is_today and analysis.is_ongoing and analysis.clocked_in
+        )
         self._render_hero(analysis, is_today=is_today)
 
         if is_today and analysis.state is DayState.INCOMPLETE:
@@ -475,14 +466,13 @@ class TodayView(QWidget):
             self._clock.stop()
 
     def _render_cards(self, analysis: DayAnalysis) -> None:
-        palette = self._palette
         empty = analysis.state is DayState.EMPTY
 
         # Two cards, one grammar: the value is what has been done, the caption names the
         # target and then says where that leaves you. Remaining and overtime were once
         # separate cards, but they are the same fact read from either side and only one of
         # them is ever non-zero — so they are the verdict, not a figure of their own.
-        self.worked.set_value(fmt.duration(analysis.gross_span), accent=palette.work)
+        self.worked.set_value(fmt.duration(analysis.gross_span), tone="work")
         self.worked.set_caption(
             "nothing logged"
             if empty
@@ -505,8 +495,7 @@ class TodayView(QWidget):
             # actually wants. Colour carries the same judgement as the words.
             over = analysis.break_over
             self.break_taken.set_value(
-                fmt.duration(analysis.break_taken),
-                accent=palette.bad if over else palette.rest,
+                fmt.duration(analysis.break_taken), tone="bad" if over else "rest"
             )
             self.break_taken.set_caption(
                 _verdict(
@@ -525,13 +514,13 @@ class TodayView(QWidget):
             self._presence.setVisible(False)
             return
 
-        colour = {
-            Presence.NOT_STARTED: self._palette.text_muted,
-            Presence.WORKING: self._palette.work,
-            Presence.ON_BREAK: self._palette.rest,
-            Presence.FINISHED: self._palette.good,
+        tone = {
+            Presence.NOT_STARTED: "muted",
+            Presence.WORKING: "work",
+            Presence.ON_BREAK: "rest",
+            Presence.FINISHED: "good",
         }[presence]
-        self._presence.set_state(presence.label, colour)
+        self._presence.set_state(presence.label, tone)
         self._presence.setVisible(True)
 
     def _render_progress(self, analysis: DayAnalysis, *, is_today: bool) -> None:
@@ -552,13 +541,15 @@ class TodayView(QWidget):
         self._progress.set_progress(analysis.completion, caption)
 
     def _render_hero(self, analysis: DayAnalysis, *, is_today: bool) -> None:
+        live = analysis.state is DayState.INCOMPLETE and is_today
+        self._countdown_box.setVisible(live)
         if analysis.state is DayState.EMPTY:
             self._hero_label.setText("Nothing logged")
             self._hero_value.setText(fmt.EMPTY)
             self._hero_caption.setText(fmt.long_day_label(analysis.day))
             return
 
-        if analysis.state is DayState.INCOMPLETE and is_today:
+        if live:
             self._hero_label.setText("You can leave at")
             self._hero_value.setText(fmt.clock(analysis.leave_at))
             self._tick()
@@ -584,19 +575,21 @@ class TodayView(QWidget):
         return f" · {fmt.clock(analysis.expected_out_break_adjusted)} if the extra break is counted"
 
     def _tick(self) -> None:
-        """Update only the caption. Re-analyzing every second would make numbers flicker."""
-        if self._analysis is None or self._analysis.leave_at is None:
+        """Update only the countdown. Re-analysing every second would make numbers flicker."""
+        analysis = self._analysis
+        if analysis is None or analysis.leave_at is None:
             return
-        remaining = fmt.countdown(self._analysis.leave_at, now=datetime.now())
+        remaining = fmt.countdown(analysis.leave_at, now=datetime.now())
         if remaining == "now":
-            self._hero_caption.setText(
-                "Shift complete — you're free to go." + self._break_note(self._analysis)
-            )
+            self._countdown.setText("Shift complete")
+            self._countdown_note.setText("You're free to go.")
         else:
-            self._hero_caption.setText(
-                f"{remaining} to go · in at {fmt.clock(self._analysis.first_in)}"
-                + self._break_note(self._analysis)
+            self._countdown.setText(f"{remaining} to go")
+            self._countdown_note.setText(
+                f"{analysis.policy.day_target} from your {fmt.clock(analysis.first_in)} "
+                "arrival, breaks included"
             )
+        self._hero_caption.setText(self._break_note(analysis).removeprefix(" · "))
 
     def _strip_insights(self, analysis: DayAnalysis, *, is_today: bool) -> list[Insight]:
         """Drop what the hero and the next-action card have already said.
@@ -631,15 +624,21 @@ class TodayView(QWidget):
             parts.append("violet = a break you marked as work")
         return "  ·  ".join(parts)
 
-    def _render_punches(self, analysis: DayAnalysis | None) -> None:
+    def _render_punches(self, analysis: DayAnalysis | None, *, ongoing: bool = False) -> None:
         segments = analysis.segments if analysis is not None else ()
         self._journey.set_segments(
             segments,
             worked_spans=analysis.worked_spans if analysis is not None else (),
             # Only where there is a day to attach a flag to.
             can_flag=analysis is not None,
+            ongoing=ongoing,
         )
         self._no_punches.setVisible(not segments)
+        self._punches_header.set_meta(
+            f"{fmt.duration(analysis.worked)} in · {fmt.duration(analysis.break_taken)} out"
+            if analysis is not None and segments
+            else ""
+        )
 
     # --- interaction ----------------------------------------------------------------
 
@@ -674,25 +673,6 @@ class TodayView(QWidget):
         clipboard.setText(summary_text(self._analysis))
         self._copy.setText("Copied")
         QTimer.singleShot(1500, lambda: self._copy.setText("Copy summary"))
-
-
-def _dress_calendar(picker: QDateEdit) -> None:
-    """Make the date popup's calendar readable.
-
-    The popup inherits its width from the field it hangs off, and the field is sized for
-    "5 Aug 2026" — so the calendar's day-name header had nowhere to draw and elided to
-    "…", "T…", "Fri". Short names plus a width that actually fits seven of them is the
-    whole fix; the theme styles the rest so the popup stops looking like a different app.
-    """
-    from PySide6.QtWidgets import QCalendarWidget
-
-    calendar = picker.calendarWidget()
-    if calendar is None:  # pragma: no cover — only on a platform with no popup
-        return
-    calendar.setHorizontalHeaderFormat(QCalendarWidget.HorizontalHeaderFormat.ShortDayNames)
-    calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
-    calendar.setGridVisible(False)
-    calendar.setMinimumWidth(CALENDAR_WIDTH)
 
 
 def _verdict(

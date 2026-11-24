@@ -322,8 +322,8 @@ def test_both_cards_lead_with_what_has_been_done(qapp: QApplication) -> None:
     view = TodayView(DARK)
     view.show_analysis(analysis, is_today=True)
 
-    assert view.worked._value.text() == fmt.duration(analysis.gross_span)
-    assert view.break_taken._value.text() == fmt.duration(analysis.break_taken)
+    assert view.worked.value.text() == fmt.duration(analysis.gross_span)
+    assert view.break_taken.value.text() == fmt.duration(analysis.break_taken)
 
 
 def test_both_captions_name_their_target_and_then_the_verdict(qapp: QApplication) -> None:
@@ -337,7 +337,7 @@ def test_both_captions_name_their_target_and_then_the_verdict(qapp: QApplication
     view = TodayView(DARK)
     view.show_analysis(analysis, is_today=True)
 
-    shift, allowance = view.worked._caption.text(), view.break_taken._caption.text()
+    shift, allowance = view.worked.caption.text(), view.break_taken.caption.text()
     assert "of 9h shift" in shift
     assert "of 1h allowance" in allowance
     for caption in (shift, allowance):
@@ -355,8 +355,8 @@ def test_an_overrun_break_says_by_how_much(qapp: QApplication) -> None:
     view.show_analysis(analysis, is_today=False)
 
     assert analysis.break_over.minutes > 0, "two hours off against a one-hour allowance"
-    assert "None" not in view.break_taken._value.text()
-    assert f"{fmt.duration(analysis.break_over)} over" in view.break_taken._caption.text()
+    assert "None" not in view.break_taken.value.text()
+    assert f"{fmt.duration(analysis.break_over)} over" in view.break_taken.caption.text()
 
 
 def test_a_break_inside_its_allowance_says_what_is_left(qapp: QApplication) -> None:
@@ -368,7 +368,7 @@ def test_a_break_inside_its_allowance_says_what_is_left(qapp: QApplication) -> N
     view = TodayView(DARK)
     view.show_analysis(analysis, is_today=True)
 
-    assert f"{fmt.duration(analysis.break_remaining)} left" in view.break_taken._caption.text()
+    assert f"{fmt.duration(analysis.break_remaining)} left" in view.break_taken.caption.text()
 
 
 def test_worked_carries_its_own_consequence(qapp: QApplication) -> None:
@@ -378,15 +378,15 @@ def test_worked_carries_its_own_consequence(qapp: QApplication) -> None:
     view = TodayView(DARK)
     view.show_analysis(ongoing, is_today=True)
 
-    assert view.worked._value.text() == fmt.duration(ongoing.gross_span)
-    assert "left" in view.worked._caption.text()
-    assert "net" in view.worked._caption.text(), "net work stays visible, as detail"
+    assert view.worked.value.text() == fmt.duration(ongoing.gross_span)
+    assert "left" in view.worked.caption.text()
+    assert "net" in view.worked.caption.text(), "net work stays visible, as detail"
 
     over = analyze_day(
         punches(("09:00", "in"), ("13:00", "out"), ("14:00", "in"), ("19:30", "out")), day=DAY
     )
     view.show_analysis(over, is_today=False)
-    assert "1h 30m extra" in view.worked._caption.text()
+    assert "1h 30m extra" in view.worked.caption.text()
 
 
 def test_the_progress_bar_says_what_leaving_now_would_cost(qapp: QApplication) -> None:
@@ -916,7 +916,7 @@ def test_the_journey_says_what_the_marked_work_was(qapp: QApplication) -> None:
     missing — and the reason is the part that survives."""
     from PySide6.QtWidgets import QLabel
 
-    from cerepulse.ui.widgets import DayJourney
+    from cerepulse.ui.journey import DayJourney
 
     analysis = _flagged_day()
     journey = DayJourney(DARK)
@@ -929,7 +929,7 @@ def test_the_journey_says_what_the_marked_work_was(qapp: QApplication) -> None:
 def test_a_flag_with_no_note_still_reads_as_marked(qapp: QApplication) -> None:
     from PySide6.QtWidgets import QLabel
 
-    from cerepulse.ui.widgets import DayJourney
+    from cerepulse.ui.journey import DayJourney
 
     analysis = _flagged_day(note="")
     journey = DayJourney(DARK)
@@ -944,7 +944,7 @@ def test_a_marked_stretch_offers_the_way_back(qapp: QApplication) -> None:
     it — anything the user can set they must be able to unset."""
     from PySide6.QtWidgets import QPushButton
 
-    from cerepulse.ui.widgets import DayJourney
+    from cerepulse.ui.journey import DayJourney
 
     analysis = _flagged_day()
     journey = DayJourney(DARK)

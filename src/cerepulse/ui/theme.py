@@ -527,7 +527,9 @@ def _kit_rules(palette: Palette) -> str:
         color: {palette.text};
         border: 1px solid {palette.border};
         border-radius: {Radius.CONTROL}px;
-        padding: 4px 0px;
+        padding: 2px 0px;
+        /* ‹ and › are thin at body size; the step is the glyph, so it is drawn large. */
+        font-size: {Type.SUBTITLE}pt;
     }}
     QPushButton[variant="step"]:hover {{ border-color: {palette.text_faint}; }}
     QPushButton[variant]:disabled {{ color: {palette.text_faint}; }}
