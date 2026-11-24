@@ -225,6 +225,44 @@ def test_it_returns_to_full_when_there_is_room_again(qapp: QApplication) -> None
     assert timeline.sizeHint().height() == DayTimeline.HEIGHT_FULL
 
 
+def test_a_lane_keeps_its_times_far_narrower_than_a_timeline_does(qapp: QApplication) -> None:
+    """On Week at the window's minimum size the lanes are ~350 px, and the compact mode
+    dropped every punch time — most of what a lane is for."""
+    lane = DayTimeline(DARK, lane=True)
+    lane.set_day((segment("09:00", "18:00"),), domain=(9, 19))
+    lane.resize(350, 10)
+
+    assert not lane._compact
+    assert lane.sizeHint().height() == DayTimeline.HEIGHT_LANE
+
+
+def test_a_lane_with_nothing_to_draw_stands_lower(qapp: QApplication) -> None:
+    """A week of leave should not stand as tall as the days that were worked."""
+    lane = DayTimeline(DARK, lane=True)
+    lane.set_day((), status_label="On leave", domain=(9, 19))
+    lane.resize(600, 10)
+
+    assert lane.sizeHint().height() == DayTimeline.HEIGHT_QUIET < DayTimeline.HEIGHT_LANE
+
+
+def test_a_lane_names_now_and_the_finish_below_the_bar(qapp: QApplication) -> None:
+    """Today in a lane: the open block ends on "now", and the stretch still to go runs on
+    to the leave time, both written where the out times go."""
+    lane = DayTimeline(DARK, lane=True)
+    lane.set_day(
+        (segment("09:00", "13:00", inferred=True),),
+        domain=(9, 19),
+        leave_at=datetime(2026, 7, 24, 18, 0),
+        ongoing=True,
+    )
+    lane.resize(700, DayTimeline.HEIGHT_LANE)
+    drawn = [label.text for label in _drawn(lane)]
+
+    assert any(text.startswith("now ") for text in drawn)
+    assert any(text.startswith("leave ") for text in drawn)
+    assert not any(text in ("leave", "now") for text in drawn), "no marker labels in a lane"
+
+
 # --- a day with no punches ------------------------------------------------------------------
 
 

@@ -139,6 +139,29 @@ def test_a_stat_card_takes_a_tone_and_states_its_parts(qapp: QApplication) -> No
     assert not card.caption.isVisibleTo(card)
 
 
+def test_a_stat_card_keeps_its_lines_together_at_the_top(qapp: QApplication) -> None:
+    """Cards in a row share the tallest one's height. Without a stretch the shorter ones
+    spread their lines to fill it, and no two titles sat on the same line."""
+    card = kit.StatCard("Worked", value="9h", caption="across 1 day")
+    extra = kit.Text("detail")
+    card.add_detail(extra)
+    layout = card.layout()
+    assert layout.itemAt(layout.count() - 1).spacerItem() is not None
+    assert layout.indexOf(extra) == layout.count() - 2
+
+
+def test_a_meter_fills_its_parts_end_to_end_in_tones(qapp: QApplication) -> None:
+    meter = kit.Meter(DARK)
+    meter.set_parts((0.5, "good", 1.0), (0.2, "work", 0.45))
+    assert meter.parts == ((0.5, "good", 1.0), (0.2, "work", 0.45))
+    meter.set_fraction(-1.0)
+    assert meter.parts == ((0.0, "work", 1.0),)
+    with pytest.raises(ValueError, match="tone"):
+        meter.set_parts((0.5, "#ff0000", 1.0))
+    meter.resize(200, 8)
+    assert not meter.grab().isNull()
+
+
 def test_a_list_row_hides_what_it_was_not_given(qapp: QApplication) -> None:
     row = kit.ListRow(DARK, icon="leave", title="1 day of comp-off taken", state="Pending")
     assert not row.detail.isVisibleTo(row)

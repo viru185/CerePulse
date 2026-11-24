@@ -22,15 +22,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import date
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QComboBox,
-    QFrame,
+    QApplication,
     QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -39,23 +35,20 @@ from PySide6.QtWidgets import (
 
 from cerepulse.intelligence.attention import Attention, swipe_state
 from cerepulse.intelligence.day import DayAnalysis
-from cerepulse.intelligence.insights import Severity
 from cerepulse.intelligence.month import DayRollup, MonthAnalysis
 from cerepulse.models.attendance import AttendanceDay, DayStatus
 from cerepulse.models.swipe import SwipeRequest, SwipeStatus
 from cerepulse.services.attendance import MonthView
 from cerepulse.ui import formatting as fmt
-from cerepulse.ui.theme import Palette, Space
+from cerepulse.ui import kit
+from cerepulse.ui.theme import Palette, Space, tone_colour
 from cerepulse.ui.widgets import (
     Banner,
-    Card,
     DayTimeline,
+    FlowLayout,
     MonthHeatmap,
-    SectionTitle,
-    StatusChip,
     card_row,
     data_table,
-    step_button,
 )
 
 COLUMNS = ("Date", "Day", "Status", "In", "Out", "Worked", "Late", "Swipe", "Remarks")
@@ -133,121 +126,121 @@ class AttendanceView(QWidget):
         # three pixels into each other to fit.
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        outer.addWidget(scroll)
-        content = QWidget()
-        scroll.setWidget(content)
-
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(Space.SECTION, 20, Space.SECTION, Space.SECTION)
-        layout.setSpacing(Space.ROW + 2)
+        page = kit.ScrollArea(spacing=Space.GAP)
+        outer.addWidget(page)
+        layout = page.body
 
         layout.addLayout(self._build_header())
 
         self.banner = Banner()
         layout.addWidget(self.banner)
 
-        self.bank = Banner()
-        layout.addWidget(self.bank)
+        # The bank is a card beside the others rather than a banner over them: it is the
+        # month's one verdict, and a banner is where errors go.
+        self.worked = kit.StatCard("Worked")
+        self.bank = kit.StatCard("Bank")
+        self.short_days = kit.StatCard("Short days", clickable=True)
+        self.short_days.setToolTip("List them in the table")
+        self.short_days.clicked.connect(lambda: self._select_filter("Short days"))
+        self.average_in = kit.StatCard("Average arrival")
+        layout.addWidget(card_row(self.worked, self.bank, self.short_days, self.average_in))
+        # What the bank leaves out, said once under the figures rather than implied by them.
+        self._bank_notes = kit.Text(role="caption", tone="muted", wrap=True)
+        layout.addWidget(self._bank_notes)
 
-        self.worked = Card("Worked")
-        self.overtime = Card("Overtime")
-        self.short_days = Card("Short days")
-        self.average_in = Card("Average in")
-        layout.addWidget(card_row(self.worked, self.overtime, self.short_days, self.average_in))
-
-        # Two columns that actually divide the width. The calendar used to sit at a fixed
-        # 222 px beside an addStretch, so several hundred pixels to its right were simply
-        # void while the day drawer below was crushed into 300 px.
-        body = QHBoxLayout()
-        body.setSpacing(Space.GAP)
-
-        left = QVBoxLayout()
-        left.setSpacing(Space.SNUG)
-
-        # The legend sits beside the calendar rather than under it. A calendar cell is
-        # square and capped, so seven of them stop at about 400 px however wide the window
-        # is — and stacking the legend below left that leftover strip empty while making the
-        # column taller. Side by side, the strip is the legend's and the table starts sooner.
-        calendar = QHBoxLayout()
-        calendar.setSpacing(Space.GAP)
+        # The calendar, and beside it the day it was clicked on. The drawer used to sit
+        # beside the table and squeeze it into three fifths of the width, while the strip
+        # beside the calendar held five lines of key.
+        middle = QHBoxLayout()
+        middle.setSpacing(Space.SECTION)
+        calendar = QVBoxLayout()
+        calendar.setSpacing(Space.SNUG)
         self.heatmap = MonthHeatmap(palette)
         self.heatmap.day_selected.connect(self.show_day)
         calendar.addWidget(self.heatmap)
-        calendar.addWidget(self._build_legend(), 1)
-        left.addLayout(calendar)
+        calendar.addWidget(self._build_legend())
+        calendar.addStretch(1)
+        # No stretch: a calendar cell is square and capped, so the column is as wide as
+        # seven of them and the day beside it takes the rest. Given a share of the width,
+        # the cells stretched into bricks twice as wide as they were tall.
+        middle.addLayout(calendar, 0)
 
-        left.addWidget(SectionTitle("Days"))
-        self.table = self._build_table()
-        # Enough for a few rows however short the window; past that the page scrolls.
-        self.table.setMinimumHeight(TABLE_MIN_HEIGHT)
-        left.addWidget(self.table, 1)
-        body.addLayout(left, 3)
-
+        side = QVBoxLayout()
+        side.setSpacing(0)
         self.drawer = _DayDrawer(palette)
         self.drawer.open_in_today.connect(self.day_selected)
         self.drawer.open_portal.connect(self.open_portal)
-        body.addWidget(self.drawer, 2)
-        layout.addLayout(body, 1)
+        side.addWidget(self.drawer)
+        self._pick_a_day = kit.Text(
+            "Pick a day on the calendar or in the table to see its punches here. "
+            "Double-click one to open it in Today.",
+            tone="muted",
+            wrap=True,
+        )
+        side.addWidget(self._pick_a_day)
+        side.addStretch(1)
+        middle.addLayout(side, 1)
+        layout.addLayout(middle)
 
-    def _build_header(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(Space.SNUG)
-
-        # Stepping is what people actually do; the dropdown was the only way to move a month
-        # and it makes reading three months in sequence six clicks instead of two.
-        previous = step_button("◀", "Previous month", lambda: self._step_month(-1))
-        row.addWidget(previous)
-
-        self._period = QComboBox()
-        self._period.setMinimumWidth(160)
-        self._period.currentIndexChanged.connect(self._emit_month)
-        row.addWidget(self._period)
-
-        self._next = step_button("▶", "Next month", lambda: self._step_month(1))
-        row.addWidget(self._next)
-
-        self._filter = QComboBox()
+        # The filter and the punch-detail fetch both act on the table, so they sit on its
+        # heading — which also gives the title row the room the month picker needs.
+        self._days_header = kit.SectionHeader("Days")
+        self._filter = kit.ComboBox()
         self._filter.setMinimumWidth(170)
         for label, _predicate in FILTERS:
             self._filter.addItem(label)
         self._filter.currentIndexChanged.connect(lambda _index: self._apply_filter())
-        row.addWidget(self._filter)
-        row.addStretch(1)
-
+        self._days_header.add_action(self._filter)
         # Punch detail arrives five days per refresh, so a fresh month needs four or five
         # of them. This asks for the rest in one go rather than leaving the user to guess.
-        self._fetch_detail = QPushButton("Fetch punch detail")
-        self._fetch_detail.clicked.connect(self.fetch_detail_requested)
-        row.addWidget(self._fetch_detail)
+        self._fetch_detail = kit.Button(
+            "Fetch punch detail", on_click=self.fetch_detail_requested.emit
+        )
+        self._days_header.add_action(self._fetch_detail)
+        layout.addWidget(self._days_header)
 
-        refresh = QPushButton("Refresh")
-        refresh.clicked.connect(self.refresh_requested)
-        row.addWidget(refresh)
+        self.table = self._build_table()
+        # Enough for a few rows however short the window; past that the page scrolls.
+        self.table.setMinimumHeight(TABLE_MIN_HEIGHT)
+        layout.addWidget(self.table, 1)
+
+    def _build_header(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(Space.SNUG)
+        row.addWidget(kit.Text("Attendance", role="title"))
+        row.addSpacing(Space.SNUG)
+
+        # Stepping is what people actually do; the dropdown was the only way to move a month
+        # and it makes reading three months in sequence six clicks instead of two.
+        self._previous = kit.StepButton(
+            "‹", "Previous month", on_click=lambda: self._step_month(-1)
+        )
+        row.addWidget(self._previous)
+
+        self._period = kit.ComboBox()
+        self._period.setMinimumWidth(160)
+        self._period.currentIndexChanged.connect(self._emit_month)
+        row.addWidget(self._period)
+
+        self._next = kit.StepButton("›", "Next month", on_click=lambda: self._step_month(1))
+        row.addWidget(self._next)
+        row.addStretch(1)
+
+        row.addWidget(kit.Button("Refresh", on_click=self.refresh_requested.emit))
         return row
 
     def _build_legend(self) -> QWidget:
-        host = QWidget()
-        layout = QVBoxLayout(host)
-        layout.setContentsMargins(0, Space.ROW, 0, 0)
-        layout.setSpacing(3)
-        for text in (
-            "Deeper fill = more hours",
-            "Green = target met",
-            "Red outline = needs attention",
-            "Dashed outline = outdoor duty",
-            "Click a day for its detail",
+        """The calendar's key, as the marks themselves rather than sentences naming colours."""
+        palette = self._palette
+        host = kit.Box()
+        flow = FlowLayout(host, spacing=Space.SNUG)
+        for words, swatch in (
+            ("Target met", kit.Swatch(palette, fill="good")),
+            ("Under it — deeper is more", kit.Swatch(palette, fill="work", opacity=0.55)),
+            ("Needs attention", kit.Swatch(palette, outline="bad")),
+            ("Outdoor duty", kit.Swatch(palette, outline="adjust", dashed=True)),
         ):
-            label = QLabel(text)
-            label.setObjectName("CardCaption")
-            label.setWordWrap(True)
-            layout.addWidget(label)
-        # Now that this sits beside the calendar rather than under it, the stretch does
-        # something: it holds the lines at the top of the strip instead of centring them.
-        layout.addStretch(1)
+            flow.addWidget(kit.LegendItem(swatch, words, host))
         return host
 
     def _build_table(self) -> QTableWidget:
@@ -330,40 +323,46 @@ class AttendanceView(QWidget):
 
     def show_month(self, view: MonthView) -> None:
         analysis = view.analysis
-        self.worked.set_value(fmt.duration(analysis.total_worked), accent=self._palette.work)
+        self.worked.set_value(fmt.duration(analysis.total_worked), tone="work")
         # Against what the month has asked for *so far*, not against its eventual total.
         # Comparing with the full month read "0m of 168h" on the second of August — a
         # month's work presented as a debt on a day when nothing was owed.
         if analysis.has_started:
             self.worked.set_caption(
-                f"of {fmt.duration(analysis.elapsed_target)} owed so far  ·  "
-                f"{fmt.duration(analysis.month_target)} for the full month"
+                f"of {fmt.duration(analysis.elapsed_target)} owed so far · "
+                f"{fmt.duration(analysis.month_target)} for the month"
                 + (
-                    f"  ·  plus {fmt.duration(analysis.off_day_worked)} on days off"
+                    f" · {fmt.duration(analysis.total_overtime)} overtime"
+                    if analysis.total_overtime
+                    else ""
+                )
+                + (
+                    f" · plus {fmt.duration(analysis.off_day_worked)} on days off"
                     if analysis.off_day_worked
                     else ""
                 )
             )
         else:
             self.worked.set_caption(
-                f"nothing owed yet  ·  {fmt.duration(analysis.month_target)} once the "
-                f"month is worked"
+                f"nothing owed yet · {fmt.duration(analysis.month_target)} once the month is worked"
             )
-        self.overtime.set_value(
-            fmt.duration(analysis.total_overtime),
-            accent=self._palette.good if analysis.total_overtime else None,
-        )
         self.short_days.set_value(
-            str(analysis.short_days),
-            accent=self._palette.bad if analysis.short_days else None,
+            str(analysis.short_days), tone="bad" if analysis.short_days else None
+        )
+        self.short_days.set_caption(
+            f"under {fmt.duration(analysis.policy.shift_span)} · click to list them"
+            if analysis.short_days
+            else "none this month"
         )
         self.average_in.set_value(
             analysis.average_in_time.strftime("%I:%M %p").lstrip("0")
             if analysis.average_in_time
             else fmt.EMPTY
         )
+        self.average_in.set_caption(
+            "across the days worked" if analysis.average_in_time else "no arrivals yet"
+        )
         self._view = view
-        # Nothing to fetch is worth saying with the button rather than in a banner.
         # Never disabled — a greyed button reads as broken. With nothing pending it says so
         # in its own label, and pressing it still answers.
         self._fetch_detail.setText(
@@ -383,56 +382,50 @@ class AttendanceView(QWidget):
         self._apply_filter()
 
     def _render_bank(self, analysis: MonthAnalysis) -> None:
+        """The month's verdict: ahead or behind, and what the figure leaves out."""
         if not analysis.has_started:
             # No completed working day means no bank. Reporting "+0m ahead across 0 working
             # days" is arithmetic about nothing, and it made an empty month look assessed.
-            self.bank.show_message(
-                f"{analysis.working_days_remaining} working day(s) ahead this month. "
-                f"Nothing to compare yet.",
-                Severity.INFO,
+            self.bank.set_value(fmt.EMPTY, tone="muted")
+            self.bank.set_caption(
+                f"{analysis.working_days_remaining} working day(s) ahead · nothing to compare yet"
             )
-            return
+        elif analysis.is_ahead:
+            self.bank.set_value(fmt.duration(analysis.bank_delta, signed=True), tone="good")
+            self.bank.set_caption(f"ahead across {analysis.working_days_elapsed} working days")
+        else:
+            tail = ""
+            if analysis.required_daily_average and analysis.working_days_remaining:
+                tail = (
+                    f" · {fmt.duration(analysis.required_daily_average)} a day for the "
+                    f"remaining {analysis.working_days_remaining} to catch up"
+                )
+            self.bank.set_value(fmt.duration(analysis.bank_delta, signed=True), tone="bad")
+            self.bank.set_caption(f"behind{tail}")
 
         notes = []
         if analysis.on_duty_days:
             # Real working days with no swipes to measure. They were excluded from the bank
             # and from the excluded count too, so a week of outdoor duty simply vanished.
             notes.append(
-                f"{analysis.on_duty_days} day(s) on outdoor duty — worked, but with no "
+                f"{analysis.on_duty_days} day(s) on outdoor duty, worked but with no "
                 f"swipes to measure"
             )
-        if analysis.estimated_days:
+        if analysis.estimated_days and analysis.has_started:
             # Say so rather than implying a precision the cache cannot support.
             notes.append(
-                f"{analysis.estimated_days} of {analysis.working_days_elapsed} days "
+                f"{analysis.estimated_days} of {analysis.working_days_elapsed} days are "
                 f"estimated until their punch detail syncs"
             )
         if analysis.unmeasured_days:
-            # These are excluded from the bank entirely; saying so stops the totals looking
+            # Excluded from the bank entirely; saying so stops the totals looking
             # unaccountably low against the calendar.
             notes.append(
-                f"{analysis.unmeasured_days} day(s) excluded — the portal holds no punches for them"
+                f"{analysis.unmeasured_days} day(s) are left out, the portal holding no "
+                f"punches for them"
             )
-        qualifier = f"  ({'; '.join(notes)})" if notes else ""
-
-        if analysis.is_ahead:
-            self.bank.show_message(
-                f"Hours bank: {fmt.duration(analysis.bank_delta, signed=True)} ahead across "
-                f"{analysis.working_days_elapsed} working days.{qualifier}",
-                Severity.SUCCESS,
-            )
-            return
-
-        tail = ""
-        if analysis.required_daily_average and analysis.working_days_remaining:
-            tail = (
-                f" Work {fmt.duration(analysis.required_daily_average)} per day over the "
-                f"remaining {analysis.working_days_remaining} to finish even."
-            )
-        self.bank.show_message(
-            f"Hours bank: {fmt.duration(analysis.bank_delta)} behind.{tail}{qualifier}",
-            Severity.WARNING,
-        )
+        self._bank_notes.setText("; ".join(notes) + "." if notes else "")
+        self._bank_notes.setVisible(bool(notes))
 
     def _render_table(self, view: MonthView) -> None:
         month = view.month
@@ -504,19 +497,18 @@ class AttendanceView(QWidget):
             shown += int(keep)
             self.table.setRowHidden(row, not keep)
 
+        # On the table's own heading, where the eye already is when it picks a filter. An
+        # empty table under a filter reads as a bug, so it says that nothing matched.
         if self._filter.currentIndex() == 0:
-            self.banner.clear_message(key="filter")
+            self._days_header.set_meta(f"{len(self._rows)} days")
         elif not shown:
-            # An empty table under a filter reads as a bug, so name which filter emptied it.
-            self.banner.show_message(
-                f"No days match “{label}” this month.", Severity.SUCCESS, key="filter"
-            )
+            self._days_header.set_meta(f"No days match “{label}” this month")
         else:
-            self.banner.show_message(
-                f"Showing {shown} of {len(self._rows)} days — {label.lower()}.",
-                Severity.INFO,
-                key="filter",
-            )
+            self._days_header.set_meta(f"{shown} of {len(self._rows)} · {label.lower()}")
+
+    def _select_filter(self, label: str) -> None:
+        index = next((i for i, (name, _) in enumerate(FILTERS) if name == label), 0)
+        self._filter.setCurrentIndex(index)
 
     def _on_selection(self) -> None:
         """A single click fills the drawer; a double click still opens the day fully."""
@@ -525,7 +517,7 @@ class AttendanceView(QWidget):
             return
         entry = self._rows[rows.pop()] if self._rows else None
         if entry is not None:
-            self.drawer.show_day(entry)
+            self._open_drawer(entry)
 
     def show_day(self, day: date) -> None:
         """Select and reveal one date — the heatmap's click lands here."""
@@ -535,8 +527,24 @@ class AttendanceView(QWidget):
                 cell = self.table.item(row, 0)
                 if cell is not None:
                     self.table.scrollToItem(cell)
-                self.drawer.show_day(entry)
+                self._open_drawer(entry)
                 return
+
+    def show_view(self, index: int) -> None:
+        """The two shapes this screen takes: 0 is the month alone, 1 the month with its
+        latest worked day open beside the calendar. The layout QC checks both."""
+        if index == 0:
+            self.table.clearSelection()
+            self.drawer.setVisible(False)
+            self._pick_a_day.setVisible(True)
+            return
+        worked = [row for row in self._rows if row.analysis is not None and row.analysis.segments]
+        if worked:
+            self.show_day(worked[-1].day.day)
+
+    def _open_drawer(self, entry: _Row) -> None:
+        self.drawer.show_day(entry)
+        self._pick_a_day.setVisible(False)
 
     def _emit_day(self, row: int, _column: int) -> None:
         item = self.table.item(row, 0)
@@ -555,63 +563,51 @@ class AttendanceView(QWidget):
             self._period.setCurrentIndex(target)
 
 
-class _DayDrawer(QWidget):
-    """One day beside the table: its shape, its punches, and what can be done about it."""
+class _DayDrawer(kit.Surface):
+    """One day beside the calendar: its shape, its punches, and what can be done about it."""
 
     open_in_today = Signal(object)  # date
     open_portal = Signal()
 
-    #: A floor, not a fixed width. Pinned at 300 px the timeline inside it was drawn at a
-    #: third of the width its constants assumed, and the fact lines wrapped mid-column.
-    MIN_WIDTH = 300
-
     def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
+        super().__init__(parent, variant="card")
         self._palette = palette
         self._entry: _Row | None = None
-        self.setMinimumWidth(self.MIN_WIDTH)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(Space.GAP, 0, 0, 0)
+        layout.setContentsMargins(Space.GAP, 14, Space.GAP, 14)
         layout.setSpacing(Space.SNUG)
 
         top = QHBoxLayout()
-        self._date = QLabel()
-        self._date.setStyleSheet("font-size: 14px; font-weight: 600;")
+        self._date = kit.Text(role="subtitle")
         top.addWidget(self._date)
         top.addStretch(1)
-        self._status = StatusChip("", palette.text_muted)
+        self._status = kit.Pill(tone="muted")
         top.addWidget(self._status)
         layout.addLayout(top)
 
-        self._headline = QLabel()
-        self._headline.setObjectName("CardCaption")
-        self._headline.setWordWrap(True)
+        self._headline = kit.Text(tone="muted", wrap=True)
         layout.addWidget(self._headline)
 
         self._timeline = DayTimeline(palette)
         layout.addWidget(self._timeline)
 
-        self._facts = QLabel()
-        self._facts.setWordWrap(True)
-        self._facts.setStyleSheet("font-variant-numeric: tabular-nums;")
+        self._facts = kit.Text(wrap=True)
         layout.addWidget(self._facts)
 
-        self._note = QLabel()
-        self._note.setObjectName("CardCaption")
-        self._note.setWordWrap(True)
+        self._note = kit.Text(role="caption", tone="muted", wrap=True)
         layout.addWidget(self._note)
 
-        layout.addStretch(1)
-
-        self._open = QPushButton("Open in Today")
-        self._open.clicked.connect(self._emit_open)
-        self._copy = QPushButton("Copy summary")
-        self._copy.clicked.connect(self._copy_summary)
-        self._portal = QPushButton("Open in SpineHR")
-        self._portal.clicked.connect(self.open_portal)
+        actions = kit.Box(self)
+        flow = FlowLayout(actions, spacing=Space.SNUG)
+        self._open = kit.Button("Open in Today", on_click=self._emit_open)
+        self._copy = kit.Button("Copy summary", variant="quiet", on_click=self._copy_summary)
+        self._portal = kit.Button(
+            "Open in SpineHR", variant="quiet", on_click=self.open_portal.emit
+        )
         for button in (self._open, self._copy, self._portal):
-            layout.addWidget(button)
+            flow.addWidget(button)
+        layout.addWidget(actions)
 
         self.setVisible(False)
 
@@ -620,7 +616,7 @@ class _DayDrawer(QWidget):
         day, analysis = entry.day, entry.analysis
 
         self._date.setText(day.day.strftime("%A, %d %B").replace(" 0", " "))
-        self._status.set_state(_status_text(day.status), _status_hex(day.status, self._palette))
+        self._status.set_state(_status_text(day.status), _status_tone(day.status))
 
         if analysis is not None and analysis.next_action is not None:
             self._headline.setText(analysis.next_action.headline)
@@ -637,6 +633,7 @@ class _DayDrawer(QWidget):
                 if entry.day.remarks.strip()
                 else "Outdoor duty — worked off site, no swipes to measure"
             )
+        self._headline.setVisible(bool(self._headline.text()))
 
         segments = analysis.segments if analysis is not None else ()
         self._timeline.set_day(
@@ -655,22 +652,26 @@ class _DayDrawer(QWidget):
 
         self._facts.setText(self._fact_lines(entry))
         self._note.setText(self._note_text(entry))
+        self._note.setVisible(bool(self._note.text()))
         self._copy.setEnabled(analysis is not None)
         self.setVisible(True)
 
     def _fact_lines(self, entry: _Row) -> str:
         day, analysis = entry.day, entry.analysis
-        lines = [
-            f"In {fmt.clock_time(day.first_in)}     Out {fmt.clock_time(day.last_out)}",
+        parts = [
+            f"In {fmt.clock_time(day.first_in)}",
+            f"Out {fmt.clock_time(day.last_out)}",
             f"Span {fmt.duration(day.total_hours) if day.total_hours else fmt.EMPTY}",
         ]
         if analysis is not None:
-            lines.append(f"Worked {analysis.worked}     Break {analysis.break_taken}")
+            parts += [f"Worked {analysis.worked}", f"Break {analysis.break_taken}"]
         elif entry.rollup is not None and entry.rollup.estimated:
-            lines.append(f"Worked ≈{entry.rollup.worked}  (estimated)")
+            parts.append(f"Worked ≈{entry.rollup.worked} (estimated)")
         if day.late_mark:
-            lines.append(f"Late {day.late_mark}")
-        return "\n".join(lines)
+            parts.append(f"Late {day.late_mark}")
+        # A no-break space before each dot, so a line that wraps ends on one rather than
+        # starting the next with it.
+        return " · ".join(parts)
 
     def _note_text(self, entry: _Row) -> str:
         notes = []
@@ -694,21 +695,13 @@ class _DayDrawer(QWidget):
             self.open_in_today.emit(self._entry.day.day)
 
     def _copy_summary(self) -> None:
-        from PySide6.QtWidgets import QApplication
-
         from cerepulse.ui.views.today import summary_text
 
         if self._entry is None or self._entry.analysis is None:
             return
         QApplication.clipboard().setText(summary_text(self._entry.analysis))
         self._copy.setText("Copied")
-        _restore_later(self._copy, "Copy summary")
-
-
-def _restore_later(button: QPushButton, text: str) -> None:
-    from PySide6.QtCore import QTimer
-
-    QTimer.singleShot(1500, lambda: button.setText(text))
+        QTimer.singleShot(1500, lambda: self._copy.setText("Copy summary"))
 
 
 def _status_text(status: DayStatus) -> str:
@@ -724,18 +717,18 @@ def _status_text(status: DayStatus) -> str:
     }[status]
 
 
-def _status_hex(status: DayStatus, palette: Palette) -> str:
+def _status_tone(status: DayStatus) -> str:
     return {
-        DayStatus.PRESENT: palette.good,
-        DayStatus.HALF_DAY: palette.rest,
-        DayStatus.ABSENT: palette.bad,
-        DayStatus.LEAVE: palette.adjust,
-        DayStatus.ON_DUTY: palette.work,
-    }.get(status, palette.text_muted)
+        DayStatus.PRESENT: "good",
+        DayStatus.HALF_DAY: "rest",
+        DayStatus.ABSENT: "bad",
+        DayStatus.LEAVE: "adjust",
+        DayStatus.ON_DUTY: "work",
+    }.get(status, "muted")
 
 
 def _status_colour(status: DayStatus, palette: Palette) -> QColor:
-    return QColor(_status_hex(status, palette))
+    return QColor(tone_colour(palette, _status_tone(status)))
 
 
 def _swipe_text(requests: list[SwipeRequest]) -> str:

@@ -33,6 +33,8 @@ from cerepulse.ui.kit.inputs import (
     SpinBox,
     TimeEdit,
 )
+from cerepulse.ui.kit.legend import LegendItem, Swatch
+from cerepulse.ui.kit.meter import Meter
 from cerepulse.ui.kit.surfaces import Divider, ListRow, SectionHeader, StatCard, Surface
 from cerepulse.ui.kit.text import Pill, Text
 from cerepulse.ui.kit.views import Box, ScrollArea, TableWidget
@@ -47,8 +49,10 @@ __all__ = [
     "DoubleSpinBox",
     "IconButton",
     "IconLabel",
+    "LegendItem",
     "LineEdit",
     "ListRow",
+    "Meter",
     "NavButton",
     "Pill",
     "ScrollArea",
@@ -58,6 +62,7 @@ __all__ = [
     "StatCard",
     "StepButton",
     "Surface",
+    "Swatch",
     "TableWidget",
     "Tabs",
     "Text",

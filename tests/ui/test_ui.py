@@ -605,7 +605,7 @@ def test_an_empty_filter_result_says_so_rather_than_showing_a_blank_table(
     view.show_month(_month_view(attention_on=set()))
     _select_filter(view, "Needs attention")
 
-    assert "No days match" in view.banner.text()
+    assert "No days match" in view._days_header.meta.text()
 
 
 def test_going_back_to_all_days_brings_every_row_back(qapp: QApplication) -> None:
@@ -654,6 +654,44 @@ def test_the_drawer_says_when_the_figures_came_from_the_grid(qapp: QApplication)
     view.show_day(date(2026, 7, 1))
 
     assert "not synced" in view.drawer._note.text()
+
+
+def test_the_bank_is_a_card_with_its_verdict(qapp: QApplication) -> None:
+    """The month's one verdict sits with the other figures, toned, not in a banner."""
+    from cerepulse.ui.views.attendance import AttendanceView
+
+    view = AttendanceView(DARK)
+    view.show_month(_month_view())
+
+    assert view.bank.value.text() != "—"
+    assert view.bank.value.property("tone") in ("good", "bad")
+    assert view.bank.caption.text().startswith(("ahead", "behind"))
+
+
+def test_the_short_days_card_lists_them(qapp: QApplication) -> None:
+    from cerepulse.ui.views.attendance import AttendanceView
+
+    view = AttendanceView(DARK)
+    view.show_month(_month_view())
+    view.short_days.clicked.emit()
+
+    assert view._filter.currentText() == "Short days"
+    assert "short days" in view._days_header.meta.text() or "No days match" in (
+        view._days_header.meta.text()
+    )
+
+
+def test_the_drawer_has_its_own_view_for_the_layout_check(qapp: QApplication) -> None:
+    """The QC lays the screen out with a day open as well as without one."""
+    from cerepulse.ui.views.attendance import AttendanceView
+
+    view = AttendanceView(DARK)
+    view.show_month(_month_view())
+    view.show_view(1)
+    view.show_view(0)
+
+    assert not view.drawer.isVisibleTo(view)
+    assert view._pick_a_day.isVisibleTo(view)
 
 
 def test_the_heatmap_measures_worked_time_not_the_gross_span(qapp: QApplication) -> None:

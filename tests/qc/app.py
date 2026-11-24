@@ -21,7 +21,10 @@ SCREENS = ("today", "week", "attendance", "insights", "records", "pay", "setting
 
 #: Screens with more than one view behind tabs: (file suffix, view index) for each view
 #: after the first, which the screen opens on.
-VIEWS: dict[str, tuple[tuple[str, int], ...]] = {"records": (("-balances", 1), ("-calendar", 2))}
+VIEWS: dict[str, tuple[tuple[str, int], ...]] = {
+    "attendance": (("-day", 1),),
+    "records": (("-balances", 1), ("-calendar", 2)),
+}
 
 
 def config_for(theme: str = "dark") -> AppConfig:

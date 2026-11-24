@@ -902,9 +902,17 @@ class DayTimeline(QWidget):
     #: Below this the hour axis and in-block labels stop fitting, so they are dropped
     #: rather than overlapped.
     COMPACT_BELOW = 460
+    #: A lane has no hour labels to lose, and its punch times give way to each other one by
+    #: one, so it keeps them down to a much narrower column — on Week at the window's
+    #: minimum size they are most of what the lane is for.
+    COMPACT_LANE_BELOW = 280
 
     HEIGHT_FULL = 96
     HEIGHT_COMPACT = 54
+    #: A lane has no hour labels of its own, so it is the full height less that row.
+    HEIGHT_LANE = 82
+    #: A lane with no punches: its band, and room either side.
+    HEIGHT_QUIET = 44
     #: Minimum axis span. A day two hours old would otherwise be drawn at absurd magnification.
     MIN_HOURS = 5
     #: Narrower than this and a label written inside a block would be clipped.
@@ -912,9 +920,18 @@ class DayTimeline(QWidget):
     #: Clock time kept clear before the first punch and after the last moment drawn.
     LEAD = timedelta(minutes=30)
 
-    def __init__(self, palette: Palette, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, palette: Palette, parent: QWidget | None = None, *, lane: bool = False
+    ) -> None:
         super().__init__(parent)
         self._palette = palette
+        #: One day in a stack of them on one clock, as on Week. The stack has one ruler
+        #: under it, so a lane draws faint hour lines instead of its own labels, and today's
+        #: finish is the stretch still to go rather than a marker over the bar.
+        self._lane = lane
+        self._domain: tuple[int, int] | None = None
+        #: The last block is still being worked: its end is "now", not a missing punch.
+        self._ongoing = False
         self._segments: tuple[WorkSegment, ...] = ()
         self._leave_at: datetime | None = None
         #: The finish time before an over-long break pushed it out. Drawn fainter, so the
@@ -942,6 +959,7 @@ class DayTimeline(QWidget):
         status_colour: str | None = None,
         domain: tuple[int, int] | None = None,
         worked_spans: Sequence[WorkedGap] = (),
+        ongoing: bool = False,
     ) -> None:
         """Render a day.
 
@@ -954,9 +972,16 @@ class DayTimeline(QWidget):
         scales to its own day, which is right in isolation and wrong in a column: a nine-to-
         six Monday and a noon-to-nine Tuesday would draw as identical bars, hiding the very
         difference the stack exists to show.
+
+        ``ongoing`` says the last block is still being worked, so its end is labelled "now"
+        rather than left blank as a missing punch.
         """
         self._segments = segments
+        self._domain = domain
+        self._ongoing = ongoing
         self._worked_spans = tuple(worked_spans)
+        # A lane's height follows whether it has punches to draw.
+        self.updateGeometry()
         self._leave_at = leave_at
         self._flat_at = flat_at
         self._now = now
@@ -1031,7 +1056,7 @@ class DayTimeline(QWidget):
         and a stored flag has to be kept in step with every resize — including the ones Qt
         delivers before a widget is ever shown. Reading the width is always right.
         """
-        return self.width() < self.COMPACT_BELOW
+        return self.width() < (self.COMPACT_LANE_BELOW if self._lane else self.COMPACT_BELOW)
 
     def sizeHint(self) -> QSize:  # noqa: N802 — Qt override
         """Height follows the mode, which follows the width.
@@ -1040,7 +1065,11 @@ class DayTimeline(QWidget):
         widget never has to keep a cached height in step with a resize it might not have
         been told about yet.
         """
-        return QSize(self.width(), self.HEIGHT_COMPACT if self._compact else self.HEIGHT_FULL)
+        if self._compact:
+            return QSize(self.width(), self.HEIGHT_COMPACT)
+        if self._lane:
+            return QSize(self.width(), self.HEIGHT_LANE if self._segments else self.HEIGHT_QUIET)
+        return QSize(self.width(), self.HEIGHT_FULL)
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802 — Qt override
         """Only the height is a real minimum. The width is whatever it is given.
@@ -1062,12 +1091,19 @@ class DayTimeline(QWidget):
 
     @property
     def _inset(self) -> float:
-        """Side margin: room for half a time label, so the first and last fit inside."""
-        return 4.0 if self._compact else timeline_inset(self.font())
+        """Side margin: room for half a time label, so the first and last fit inside.
+
+        A lane keeps it even when compact, because it has to line up with the one ruler
+        drawn under the stack — which is a claim about the scale, not about room.
+        """
+        return 4.0 if self._compact and not self._lane else timeline_inset(self.font())
 
     @property
     def _bar(self) -> QRectF:
-        top = 8.0 if self._compact else 34.0
+        # A lane with nothing to draw has no times above or below its band, so it gives up
+        # their rows: a week of leave should not stand as tall as the days that were worked.
+        quiet = self._compact or (self._lane and not self._segments)
+        top = 8.0 if quiet else 34.0
         height = 22.0 if self._compact else 28.0
         inset = self._inset
         return QRectF(inset, top, max(0.0, self.width() - 2 * inset), height)
@@ -1078,6 +1114,8 @@ class DayTimeline(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         bar = self._bar
+        if self._lane:
+            self._paint_grid(painter, bar)
 
         if self._start is None or self._end is None:
             self._paint_status(painter, bar)
@@ -1085,21 +1123,69 @@ class DayTimeline(QWidget):
 
         self._paint_track(painter, bar)
         self._paint_breaks(painter, bar)
+        if self._lane:
+            self._paint_ahead(painter, bar)
         self._paint_work(painter, bar)
-        self._paint_markers(painter, bar)
+        if not self._lane:
+            self._paint_markers(painter, bar)
         self._paint_adjustments(painter, bar)
         self._paint_punches(painter, bar)
-        if not self._compact:
+        if not self._compact and not self._lane:
             self._paint_hours(painter, bar)
+
+    def _paint_grid(self, painter: QPainter, bar: QRectF) -> None:
+        """Faint hour lines at the ruler's own ticks, so a lane reads against the one axis.
+
+        Drawn from the domain rather than from the day, so a day with no punches — leave, a
+        holiday — still carries the lines and the stack reads as one chart.
+        """
+        if self._domain is None:
+            return
+        first, last = self._domain
+        span = max(1, last - first)
+        painter.save()
+        painter.setPen(QPen(QColor(self._palette.border), 1))
+        for hour in range(first, last + 1, axis_step(span)):
+            x = round(bar.left() + (hour - first) / span * bar.width()) + 0.5
+            painter.drawLine(QPointF(x, 0), QPointF(x, self.height()))
+        painter.restore()
+
+    def _paint_ahead(self, painter: QPainter, bar: QRectF) -> None:
+        """Today's finish as the stretch still to go: a dashed block up to the leave time.
+
+        The same shape as the work beside it, outlined rather than filled, because it is
+        the work that has not happened yet — a marker line said *when* but not *how much*.
+        """
+        if self._leave_at is None or not self._segments:
+            return
+        start = self._segments[-1].end
+        if self._leave_at <= start:
+            return
+        left, right = self._x_for(start), self._x_for(self._leave_at)
+        if right - left < 2:
+            return
+        block = QRectF(left, bar.top(), right - left, bar.height()).adjusted(1, 1, -1, -1)
+        pen = QPen(QColor(self._palette.work), 1.5)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        painter.save()
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(block, 4, 4)
+        painter.restore()
 
     def _paint_status(self, painter: QPainter, bar: QRectF) -> None:
         """One labelled band for a day that has no punches to draw."""
         colour = QColor(self._status_colour or self._palette.border)
         path = QPainterPath()
         path.addRoundedRect(bar, 6, 6)
-        painter.fillPath(path, QColor(colour.red(), colour.green(), colour.blue(), 60))
-        painter.setPen(QPen(colour, 1))
-        painter.drawPath(path)
+        # A lane is one of seven, so its band is quieter: the stack is about the days that
+        # have a shape, and a week of leave should not out-shout them.
+        painter.fillPath(
+            path, QColor(colour.red(), colour.green(), colour.blue(), 34 if self._lane else 60)
+        )
+        if not self._lane:
+            painter.setPen(QPen(colour, 1))
+            painter.drawPath(path)
 
         painter.setPen(
             QColor(self._palette.text if self._status_label else self._palette.text_faint)
@@ -1226,13 +1312,19 @@ class DayTimeline(QWidget):
 
         above: list[tuple[float, str]] = []
         below: list[tuple[float, str]] = []
-        for segment in self._segments:
+        for index, segment in enumerate(self._segments):
+            still_going = self._ongoing and index == len(self._segments) - 1
             self._dot(painter, bar, segment.start, above=True, inferred=False)
             self._dot(painter, bar, segment.end, above=False, inferred=segment.end_inferred)
             above.append((self._x_for(segment.start), _clock_short(segment.start)))
-            if not segment.end_inferred:
+            if still_going:
+                below.append((self._x_for(segment.end), f"now {_clock_short(segment.end)}"))
+            elif not segment.end_inferred:
                 # No time was punched, so writing one would be inventing it.
                 below.append((self._x_for(segment.end), _clock_short(segment.end)))
+        if self._lane and self._leave_at is not None and self._segments:
+            if self._leave_at > self._segments[-1].end:
+                below.append((self._x_for(self._leave_at), f"leave {_clock_short(self._leave_at)}"))
 
         painter.setPen(QColor(self._palette.text))
         self._row(painter, above, top=bar.top() - 17)
@@ -1333,6 +1425,16 @@ LABEL_GAP = 6.0
 LABEL_DRIFT = 18.0
 
 
+def axis_step(span: int) -> int:
+    """Hours between labelled ticks on a shared ruler.
+
+    One label every hour is unreadable at seven days' width; every other hour, or every
+    third for a long span, keeps them apart at any window size. Shared, because the hour
+    lines in each lane have to fall exactly on the ruler's ticks.
+    """
+    return 1 if span <= 8 else (2 if span <= 14 else 3)
+
+
 def timeline_inset(font: QFont) -> float:
     """The side margin every clock-axis widget keeps: half a time label, plus air.
 
@@ -1394,9 +1496,7 @@ class HourAxis(QWidget):
     def paintEvent(self, event: object) -> None:  # noqa: N802 — Qt override
         first, last = self._domain
         span = max(1, last - first)
-        # One label every hour is unreadable at seven days' width; every other hour, or
-        # every third for a long span, keeps them apart at any window size.
-        step = 1 if span <= 8 else (2 if span <= 14 else 3)
+        step = axis_step(span)
 
         painter = QPainter(self)
         font = painter.font()
@@ -2110,8 +2210,10 @@ def card_row(*cards: QWidget) -> QWidget:
     layout = QHBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(Space.ROW)
+    # Equal shares, so a card with a long caption does not take its neighbours' width and
+    # leave one of them a column of three-word lines.
     for card in cards:
-        layout.addWidget(card)
+        layout.addWidget(card, 1)
     return container
 
 

@@ -22,8 +22,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import date
 
-from PySide6.QtCore import QRectF, Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPaintEvent
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -50,7 +50,7 @@ from cerepulse.services.leave import LeaveView as LeaveData
 from cerepulse.ui import formatting as fmt
 from cerepulse.ui import kit
 from cerepulse.ui.kit.text import measure
-from cerepulse.ui.theme import Palette, Space, tone_colour
+from cerepulse.ui.theme import Palette, Space
 from cerepulse.ui.widgets import Banner, EmptyState, FlowLayout, InsightStrip, empty_layout
 
 #: The three views, in the order the screen is used.
@@ -806,7 +806,9 @@ class _CreditRow(QWidget):
         self.left = kit.Text(left, self, role="caption", tone=left_tone)
         line.addWidget(self.left)
         clock.addLayout(line)
-        clock.addWidget(_Meter(fraction, left_tone, palette, self))
+        meter = kit.Meter(palette, self, height=4)
+        meter.set_fraction(min(1.0, fraction), left_tone)
+        clock.addWidget(meter)
         holder = kit.Box(self)
         holder.setLayout(clock)
         # A floor, so the bars line up down the list, and room to grow past it: a fixed
@@ -817,32 +819,6 @@ class _CreditRow(QWidget):
             + measure("38 days left", role="caption")
         )
         row.addWidget(holder)
-
-
-class _Meter(QWidget):
-    """A thin bar: how much of a credit's window is left, in the tone of its state."""
-
-    def __init__(
-        self, fraction: float, tone: str, palette: Palette, parent: QWidget | None = None
-    ) -> None:
-        super().__init__(parent)
-        self._fraction = max(0.0, min(1.0, fraction))
-        self._tone = tone
-        self._palette = palette
-        self.setFixedHeight(4)
-
-    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 — Qt override
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        track = QRectF(self.rect())
-        painter.setBrush(QColor(self._palette.overlay))
-        painter.drawRoundedRect(track, 2, 2)
-        if self._fraction > 0:
-            filled = QRectF(track.x(), track.y(), track.width() * self._fraction, track.height())
-            painter.setBrush(QColor(tone_colour(self._palette, self._tone)))
-            painter.drawRoundedRect(filled, 2, 2)
-        painter.end()
 
 
 def _credit_fate(credit: CompOffCredit, today: date) -> tuple[str, str | None]:

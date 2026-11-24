@@ -85,7 +85,7 @@ def test_a_week_behind_says_what_each_remaining_day_needs(qapp: QApplication) ->
     verdict = view._verdict.text()
     assert "behind" in verdict
     assert "remaining 2 day(s)" in verdict
-    assert view.needed._value.text() != "—"
+    assert view.needed.value.text() != "—"
 
 
 def test_a_finished_week_that_fell_short_does_not_ask_for_the_impossible(
@@ -96,7 +96,7 @@ def test_a_finished_week_that_fell_short_does_not_ask_for_the_impossible(
     view.show_week(week(rollup(0, worked=300), worked=300, target=480, ahead=0), TARGET)
 
     assert "Nothing left to make it up in" in view._verdict.text()
-    assert "no days left" in view.needed._caption.text()
+    assert "no days left" in view.needed.caption.text()
 
 
 def test_a_week_with_nothing_measurable_gives_no_verdict(qapp: QApplication) -> None:
@@ -147,9 +147,10 @@ def test_an_outdoor_duty_day_says_what_it_was(qapp: QApplication) -> None:
         TARGET,
     )
 
-    wording = _text(view)
-    assert "Outdoor" in wording
-    assert "Bengaluru" in wording
+    assert "Outdoor" in _text(view)
+    # Said in the lane's band, with the portal's remark: it has no bars to sit under.
+    lane = view._days.itemAt(0).widget()
+    assert lane.timeline.toolTip() == "Outdoor duty — Bengaluru"
 
 
 def test_a_holiday_and_an_absence_do_not_look_alike(qapp: QApplication) -> None:
@@ -229,6 +230,58 @@ def test_the_hour_axis_is_hidden_when_no_day_has_punches(qapp: QApplication) -> 
     view.show_week(week(rollup(0), worked=480, target=480), TARGET)
 
     assert not view._axis.isVisibleTo(view)
+
+
+def test_today_s_lane_runs_on_to_when_you_can_leave(qapp: QApplication) -> None:
+    """Today's finish is the stretch still to go, on the same clock as the other days, and
+    its open block is "still going" — not a missing punch the key would have to explain."""
+    analysis = analyze_day(
+        [Punch(at=time(9, 0), direction=PunchDirection.IN)],
+        day=MONDAY,
+        now=datetime.combine(MONDAY, time(13, 0)),
+    )
+    view = WeekView(DARK)
+    view.show_week(
+        week(rollup(0, worked=240, in_progress=True), worked=0, target=0, ahead=1),
+        TARGET,
+        analyses={MONDAY: analysis},
+    )
+
+    lane = view._days.itemAt(0).widget()
+    assert lane.timeline._leave_at == analysis.expected_out
+    assert lane.verdict.text().startswith("so far · ")
+    key = _text(view._legend)
+    assert "Until you can leave" in key
+    assert "missing punch" not in key
+
+
+def test_a_day_with_no_punches_says_what_it_was_in_its_band(qapp: QApplication) -> None:
+    view = WeekView(DARK)
+    view.show_week(
+        week(rollup(0, worked=0, status=DayStatus.HOLIDAY, note="Diwali"), worked=0, target=0),
+        TARGET,
+    )
+
+    lane = view._days.itemAt(0).widget()
+    assert lane.timeline.toolTip() == "Holiday — Diwali"
+    assert lane.verdict.text() == "owes nothing"
+
+
+def test_a_finished_day_states_its_verdict_in_words(qapp: QApplication) -> None:
+    """The shared grammar: the total, then over or short — never a bare signed number."""
+    view = WeekView(DARK)
+    short = DayRollup(
+        day=MONDAY,
+        worked=Duration(470),
+        status=DayStatus.PRESENT,
+        estimated=False,
+        is_working_day=True,
+        owed=Duration(540),
+    )
+    view.show_week(week(short, worked=470, target=540), TARGET)
+
+    lane = view._days.itemAt(0).widget()
+    assert (lane.status.text(), lane.verdict.text()) == ("Short", "1h 10m short")
 
 
 def test_the_shared_domain_is_clamped_against_one_outlier() -> None:

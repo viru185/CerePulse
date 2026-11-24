@@ -73,6 +73,9 @@ class StatCard(Surface):
         layout.addWidget(self.title)
         layout.addWidget(self.value)
         layout.addWidget(self.caption)
+        # Top-aligned: cards in a row share the tallest one's height, and without this the
+        # others spread their lines to fill it, so no two titles sat on the same line.
+        layout.addStretch(1)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
     def set_value(self, value: str, *, tone: str | None = None) -> None:
@@ -85,8 +88,9 @@ class StatCard(Surface):
 
     def add_detail(self, widget: QWidget) -> None:
         layout = self.layout()
-        if layout is not None:
-            layout.addWidget(widget)
+        if isinstance(layout, QVBoxLayout):
+            # Above the stretch, so the detail stays with the figure it explains.
+            layout.insertWidget(layout.count() - 1, widget)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 — Qt override
         if self._clickable and event.button() == Qt.MouseButton.LeftButton:
