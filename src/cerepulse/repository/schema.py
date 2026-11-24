@@ -23,7 +23,7 @@ from loguru import logger
 from cerepulse.core.errors import MigrationError
 
 #: Bumped whenever a migration is added. Checked against the database on open.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def _migration_001(connection: sqlite3.Connection) -> None:
@@ -343,6 +343,50 @@ def _migration_009(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_010(connection: sqlite3.Connection) -> None:
+    """Comp-off as the portal records it, and a leave register that is replaced, not merged.
+
+    The register was merged on a hash of each row's content, and its opening and available
+    columns are running totals: a credit re-listed after a later movement hashes differently,
+    so every sync added another copy — three of each October credit in the field. Saving now
+    replaces the register per fetch, and the copies already stored are cleared here, with the
+    leave scope marked stale so the next sync refills it.
+
+    ``comp_off_link`` is which credit each ``CO-`` application drew on, read off the
+    application's own form; an empty ``credit_date`` records that the portal named none, so
+    the application is not opened again. ``comp_off_snapshot`` is the portal's own balance
+    and the credits it would offer, kept as a cross-check. The applications scope is marked
+    stale too, so the links are read on the next sync rather than a TTL later.
+    """
+    connection.execute("DELETE FROM leave_transaction")
+    connection.execute("DELETE FROM sync_metadata WHERE scope IN ('leave', 'applications')")
+    connection.execute(
+        """
+        CREATE TABLE comp_off_link (
+            employee_code TEXT NOT NULL,
+            app_id        TEXT NOT NULL,
+            credit_date   TEXT NOT NULL DEFAULT '',  -- '' when the portal recorded none
+            days          REAL NOT NULL DEFAULT 0,
+            half          TEXT NOT NULL DEFAULT '',
+            fetched_at    TEXT NOT NULL,
+            PRIMARY KEY (employee_code, app_id, credit_date)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE comp_off_snapshot (
+            employee_code TEXT NOT NULL PRIMARY KEY,
+            as_of         TEXT NOT NULL,
+            balance       REAL NOT NULL,
+            dates         TEXT NOT NULL,   -- JSON [[iso date, amount], ...]
+            signature     TEXT NOT NULL DEFAULT '',
+            fetched_at    TEXT NOT NULL
+        )
+        """
+    )
+
+
 #: Ordered migrations. Append only; never edit one that has shipped.
 MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migration_001,
@@ -354,6 +398,7 @@ MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migration_007,
     _migration_008,
     _migration_009,
+    _migration_010,
 )
 
 

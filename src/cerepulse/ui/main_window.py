@@ -975,18 +975,12 @@ class MainWindow(QMainWindow):
     def _render_records(self, days: list[object], start: date | None) -> None:
         from cerepulse.intelligence.records import build_records
 
-        lots = [
-            lot
-            for outlook in (self._leave_data.outlooks if self._leave_data else [])
-            if outlook.balance.is_comp_off
-            for lot in outlook.lots
-        ]
         records = build_records(
             days=days,  # type: ignore[arg-type]
             requests=self._swipes,  # type: ignore[arg-type]
             transactions=self._ledger,  # type: ignore[arg-type]
             applications=self._applications,  # type: ignore[arg-type]
-            lots=lots,
+            comp_off=self._leave_data.comp_off if self._leave_data else None,
             today=date.today(),
         )
         if start is not None:

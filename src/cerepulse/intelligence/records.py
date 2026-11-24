@@ -25,7 +25,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from enum import Enum
 
-from cerepulse.intelligence.leave import WARNING_WINDOW_DAYS, LeaveLot
+from cerepulse.intelligence.comp_off import CompOffCredit, CompOffLedger, CreditState
+from cerepulse.intelligence.leave import WARNING_WINDOW_DAYS
 from cerepulse.intelligence.wording import clean_remark, day_label, days_phrase, same_reason
 from cerepulse.models.application import Application, ApplicationKind
 from cerepulse.models.attendance import AttendanceDay, DayStatus
@@ -40,6 +41,10 @@ class RecordKind(Enum):
     OUTDOOR_DUTY = "outdoor_duty"
     COMP_OFF_EARNED = "comp_off_earned"
     COMP_OFF_SPENT = "comp_off_spent"
+    #: A credit that ran out its window with something left on it. Its own row, dated the
+    #: last day it could have been used, so a loss reads where it happened rather than only
+    #: as a caption on a row from three months earlier.
+    COMP_OFF_LAPSED = "comp_off_lapsed"
     SWIPE_REQUEST = "swipe_request"
     ABSENCE = "absence"
 
@@ -51,6 +56,7 @@ class RecordKind(Enum):
             RecordKind.OUTDOOR_DUTY: "Outdoor duty",
             RecordKind.COMP_OFF_EARNED: "Comp-off",
             RecordKind.COMP_OFF_SPENT: "Comp-off",
+            RecordKind.COMP_OFF_LAPSED: "Comp-off",
             RecordKind.SWIPE_REQUEST: "Swipe",
             RecordKind.ABSENCE: "Absence",
         }[self]
@@ -142,7 +148,7 @@ def build_records(
     requests: Sequence[SwipeRequest] | None = None,
     transactions: Sequence[LeaveTransaction] | None = None,
     applications: Sequence[Application] | None = None,
-    lots: Sequence[LeaveLot] = (),
+    comp_off: CompOffLedger | None = None,
     today: date | None = None,
 ) -> list[Record]:
     """Assemble every non-ordinary day into one list, newest first.
@@ -153,9 +159,9 @@ def build_records(
     Applications lead and absorb the muster days they produced; comp-off credits that no
     application explains come next and absorb the day that earned them; then whatever the
     muster holds that nothing explains; then swipe requests, which are about a punch rather
-    than a day and never overlap the rest. ``lots`` are the comp-off credits' expiry and use,
-    so an earned credit can say what became of it; ``today`` is what its countdown is measured
-    from.
+    than a day and never overlap the rest. ``comp_off`` is the credit-by-credit ledger, so an
+    earned credit can say what became of it, a comp-off leave which credit it spent, and a
+    credit that lapsed gets a row of its own; ``today`` is what a countdown is measured from.
 
     Holidays are deliberately absent. They lived here until 0.13.1 — and also in the
     calendar section directly above the timeline, so the same holiday sat on screen twice.
@@ -169,7 +175,6 @@ def build_records(
         and entry.credit_days > 0
         and LeaveCategory.classify(entry.leave_type) is LeaveCategory.COMP_OFF
     }
-    lots_by_day = {lot.earned_on: lot for lot in lots}
     absorbed: set[date] = set()
     claimed_credits: set[date] = set()
     records: list[Record] = []
@@ -183,7 +188,7 @@ def build_records(
         credit = None
         if filed.kind is ApplicationKind.COMP_OFF:
             credit = next((credits[when] for when in _span(filed) if when in credits), None)
-        records.append(_application_record(filed, covered, credit, lots_by_day, today))
+        records.append(_application_record(filed, covered, credit, comp_off, today))
         absorbed.update(day.day for day in covered)
         if credit is not None and credit.transaction_date is not None:
             claimed_credits.add(credit.transaction_date)
@@ -194,8 +199,9 @@ def build_records(
         day = by_date.get(when)
         if day is not None and _credit_explains(credit, day):
             absorbed.add(when)
-        records.append(_credit_record(when, credit, lots_by_day.get(when), today))
+        records.append(_credit_record(when, credit, _register_credit(comp_off, when), today))
 
+    records += _lapses(comp_off)
     records += _from_days([day for day in by_date.values() if day.day not in absorbed])
     records += _from_requests(requests or [])
 
@@ -231,7 +237,7 @@ def _application_record(
     filed: Application,
     covered: list[AttendanceDay],
     credit: LeaveTransaction | None,
-    lots_by_day: dict[date, LeaveLot],
+    comp_off: CompOffLedger | None,
     today: date | None,
 ) -> Record:
     amount = filed.days or (credit.credit_days if credit else 0.0) or float(len(covered)) or 1.0
@@ -265,11 +271,13 @@ def _application_record(
         detail = _credit_reason(credit)
 
     aside, tone, note = "", Tone.MUTED, ""
-    if kind is RecordKind.COMP_OFF_EARNED and credit is not None and credit.transaction_date:
-        lot = lots_by_day.get(credit.transaction_date)
-        if lot is not None:
-            aside, tone = _credit_aside(lot, today)
+    if comp_off is not None and kind is RecordKind.COMP_OFF_EARNED:
+        earned = comp_off.credit_earned(filed.app_id)
+        if earned is not None:
+            aside, tone = _credit_aside(earned, today)
             note = CAVEAT
+    elif comp_off is not None and kind is RecordKind.COMP_OFF_SPENT:
+        aside, tone, note = _spend_aside(comp_off, filed.app_id)
 
     state = RecordState.from_status(filed.status)
     return Record(
@@ -314,9 +322,9 @@ def _credit_reason(credit: LeaveTransaction) -> str:
 
 
 def _credit_record(
-    when: date, credit: LeaveTransaction, lot: LeaveLot | None, today: date | None
+    when: date, credit: LeaveTransaction, earned: CompOffCredit | None, today: date | None
 ) -> Record:
-    aside, tone = _credit_aside(lot, today) if lot is not None else ("", Tone.MUTED)
+    aside, tone = _credit_aside(earned, today) if earned is not None else ("", Tone.MUTED)
     return Record(
         when,
         RecordKind.COMP_OFF_EARNED,
@@ -324,37 +332,89 @@ def _credit_record(
         _credit_reason(credit),
         aside=aside,
         aside_tone=tone,
-        note=CAVEAT if lot is not None else "",
+        note=CAVEAT if earned is not None else "",
     )
 
 
-def _credit_aside(lot: LeaveLot, today: date | None) -> tuple[str, Tone]:
-    """What became of a credit: ``expires Mon 2 Nov · 57 days · unused``."""
-    used = ", ".join(
-        f"{day_label(day)} ({amount:g})" if amount != lot.days else day_label(day)
-        for day, amount in lot.used_on
-    )
-    if lot.unattributed:
-        used = ", ".join(
-            part for part in (used, f"{lot.unattributed:g} before the cached history") if part
-        )
-    if lot.is_spent:
-        return f"used {used}" if used else "used", Tone.FAINT
-    if today is not None and lot.has_lapsed(today):
-        return f"lapsed {day_label(lot.expires_on)} · {days_phrase(lot.remaining)} lost", Tone.BAD
-    parts = [f"expires {day_label(lot.expires_on)}"]
+def _register_credit(comp_off: CompOffLedger | None, when: date) -> CompOffCredit | None:
+    """The ledger's credit for a register row no application explains."""
+    if comp_off is None:
+        return None
+    return next((c for c in comp_off.credits if c.earned_on == when and not c.app_id), None)
+
+
+def _credit_aside(credit: CompOffCredit, today: date | None) -> tuple[str, Tone]:
+    """What became of a credit, in a few words: ``available until Thu 31 Dec · 37 days``."""
+    spent_on = ", ".join(day_label(spend.day) for spend in credit.spent_by)
+    if credit.state is CreditState.USED:
+        return f"spent on {spent_on}", Tone.FAINT
+    if credit.state is CreditState.BOOKED:
+        return f"booked for {spent_on}, awaiting approval", Tone.MUTED
+    if credit.state is CreditState.PENDING:
+        return "counts once approved", Tone.FAINT
+    if credit.state is CreditState.LAPSED:
+        lost = "" if not credit.spent_by else f" · {days_phrase(credit.remaining).lower()} of it"
+        return f"lapsed unused after {day_label(credit.expires_on)}{lost}", Tone.BAD
+    parts = [f"available until {day_label(credit.expires_on)}"]
     tone = Tone.MUTED
     if today is not None:
-        remaining = lot.days_remaining(today)
-        parts.append(f"{remaining} days")
-        if remaining <= WARNING_WINDOW_DAYS:
+        left = credit.days_left(today)
+        parts.append(f"{left} day{'s' if left != 1 else ''} left")
+        if left <= WARNING_WINDOW_DAYS:
             tone = Tone.WARN
-    if used:
-        parts.append(f"used {used}")
-        parts.append(f"{lot.remaining:g} left")
-    else:
-        parts.append("unused")
+    if credit.spent_by:
+        parts.append(f"{credit.remaining:g} of {credit.days:g} left after {spent_on}")
     return " · ".join(parts), tone
+
+
+#: Said on hover beside a comp-off leave, depending on where its credit came from.
+LINK_FROM_PORTAL = "SpineHR records which credit each comp-off leave used."
+LINK_INFERRED = (
+    "Inferred: SpineHR's record of which credit this used has not been read yet, or names "
+    "none. The oldest credit still valid on the day is assumed, which matches every leave "
+    "SpineHR did record."
+)
+
+
+def _spend_aside(comp_off: CompOffLedger, app_id: str) -> tuple[str, Tone, str]:
+    """Which credit a comp-off leave spent: ``used the credit earned Sat 19 Sep``."""
+    credits = comp_off.credits_for(app_id)
+    if not credits:
+        if any(spend.app_id == app_id for spend in comp_off.unmatched):
+            return "no credit CerePulse holds pays for this one", Tone.FAINT, ""
+        return "", Tone.MUTED, ""
+    earned = " and ".join(day_label(credit.earned_on) for credit in credits)
+    noun = "credit" if len(credits) == 1 else "credits"
+    from_portal = all(
+        spend.from_portal
+        for credit in credits
+        for spend in credit.spent_by
+        if spend.app_id == app_id
+    )
+    return (
+        f"used the {noun} earned {earned}",
+        Tone.FAINT,
+        LINK_FROM_PORTAL if from_portal else LINK_INFERRED,
+    )
+
+
+def _lapses(comp_off: CompOffLedger | None) -> list[Record]:
+    """A row for every credit that ran out its window with something left on it."""
+    if comp_off is None:
+        return []
+    return [
+        Record(
+            credit.expires_on,
+            RecordKind.COMP_OFF_LAPSED,
+            f"{days_phrase(credit.remaining)} lapsed unused",
+            credit.reason,
+            aside=f"earned {day_label(credit.earned_on)} · this was its last usable day",
+            aside_tone=Tone.BAD,
+            note=CAVEAT,
+        )
+        for credit in comp_off.credits
+        if credit.state is CreditState.LAPSED and credit.remaining > 0
+    ]
 
 
 # --- the muster on its own -------------------------------------------------------------------

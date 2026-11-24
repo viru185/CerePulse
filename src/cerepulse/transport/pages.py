@@ -17,5 +17,8 @@ SHIFT_CHANGE_REQUEST = "/Atten/ShiftChangeRequest.aspx"
 LEAVE_BALANCE = "/BalanceLeave.aspx"
 LEAVE_LIST = "/Leave/LeaveList.aspx"
 LEAVE_BALANCE_DETAIL = "/Leave/LeaveBalanceDetail.aspx"
+#: The leave application form. Reached only through the list's own postbacks; its page
+#: methods (the comp-off lookups) are called on this path.
+LEAVE_APPLICATION = "/Leave/EmpLeaveApp.aspx"
 
 HOLIDAY_LIST = "/HolidayList.aspx"

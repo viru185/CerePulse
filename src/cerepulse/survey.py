@@ -47,6 +47,7 @@ from cerepulse.capture import MissingCredentialsError, resolve_credentials
 from cerepulse.core.config import AppConfig
 from cerepulse.core.errors import CerePulseError, SessionExpiredError
 from cerepulse.core.logging_setup import workflow
+from cerepulse.parsers.comp_off import comp_off_spend_rows
 from cerepulse.parsers.menu import MenuIndex, parse_menu
 from cerepulse.transport import pages
 from cerepulse.transport.client import HttpClient
@@ -543,7 +544,7 @@ def _probe_co_minus_rows(survey: Survey, list_url: str, view: str) -> None:
     if shown is None:
         return
     view_page, view_body = shown
-    rows = _co_minus_rows(view_body)
+    rows = comp_off_spend_rows(view_body)
     logger.info("  {} CO- application(s) in {}", len(rows), view)
     for index, (app_id, target, argument) in enumerate(rows):
         # Every open starts from a fresh render of the view: a postback's state is only good
@@ -568,23 +569,6 @@ def _probe_co_minus_rows(survey: Survey, list_url: str, view: str) -> None:
         )
         if opened is not None:
             _probe_past_history(survey, f"co-{app_id}h", *opened)
-
-
-def _co_minus_rows(body: str) -> list[tuple[str, str, str]]:
-    """(app id, postback target, argument) for every grid row whose leave type is CO-."""
-    document = lxml_html.fromstring(body)
-    found: list[tuple[str, str, str]] = []
-    for row in document.xpath("//table[contains(@id,'GridView')]//tr"):
-        cells = [" ".join(cell.text_content().split()) for cell in row.xpath("./td")]
-        if not any(cell.upper() == "CO-" for cell in cells):
-            continue
-        markup = lxml_html.tostring(row, encoding="unicode")
-        match = _POSTBACK.search(markup)
-        if match is None:
-            continue
-        app_id = next((cell for cell in cells if cell.isdigit()), str(len(found)))
-        found.append((app_id, match.group(1), match.group(2)))
-    return found
 
 
 __all__ = ["Guard", "Refused", "describe_page", "discovered_urls", "names_an_action", "run_survey"]

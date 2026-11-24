@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 
 from loguru import logger
 
 from cerepulse.core.config import AppConfig
-from cerepulse.core.errors import CerePulseError, SessionExpiredError
+from cerepulse.core.errors import ENDS_THE_RUN, CerePulseError, ParserError, SessionExpiredError
 from cerepulse.intelligence.attention import StatusChange, status_changes
+from cerepulse.intelligence.comp_off import CompOffLedger, comp_off_ledger, is_comp_off_spend
 from cerepulse.intelligence.insights import Insight
 from cerepulse.intelligence.leave import LeaveOutlook, LeavePolicy, analyze_leave, leave_insights
 from cerepulse.intelligence.optimizer import BreakPlan, suggest_breaks
 from cerepulse.intelligence.sandwich import SandwichAssessment, SandwichRule, assess
-from cerepulse.models.application import Application
+from cerepulse.models.application import Application, ApplicationKind, RequestStatus
 from cerepulse.models.leave import Holiday, LeaveBalance, LeaveCategory, LeaveTransaction
 from cerepulse.models.swipe import SwipeRequest
 from cerepulse.repository.attendance import AttendanceRepository
@@ -38,10 +39,6 @@ def _parse_rule(value: str) -> SandwichRule:
 
 
 LEAVE_SCOPE = "leave"
-#: How far back to read the muster for comp-off days taken. A credit lives 90 days, and
-#: the register is scoped to the financial year, so a year and a bit covers every credit
-#: that can still be on the balance.
-COMP_OFF_LOOKBACK_DAYS = 400
 SWIPE_SCOPE = "swipe_requests"
 APPLICATION_SCOPE = "applications"
 HOLIDAY_SCOPE = "holidays"
@@ -73,6 +70,8 @@ class LeaveView:
     #: aligned with ``breaks``. Every entry reports no sandwiches while the rule is off,
     #: which is what keeps an unconfirmed policy off the screen entirely.
     sandwiches: list[SandwichAssessment] = field(default_factory=list)
+    #: Comp-off credit by credit, when anything has synced to rebuild it from.
+    comp_off: CompOffLedger | None = None
 
 
 class LeaveService:
@@ -93,7 +92,7 @@ class LeaveService:
     ) -> None:
         self._gateway = gateway
         self._leave = leave
-        #: The muster is where comp-off consumption lives; the ledger never records it.
+        #: Kept for the composition root's signature; comp-off is read from applications now.
         self._attendance = attendance
         self._swipes = swipes
         self._applications = applications
@@ -134,16 +133,8 @@ class LeaveService:
                 logger.warning("Leave refresh failed, serving cached balances: {}", exc)
 
         now = today or date.today()
-        # The ledger's dated rows, so comp-off can be dated per credit rather than as one
-        # block. Without them the aggregate balance carries no date the portal ever fills in,
-        # and the expiry warning for the only leave type on a rolling window never fires.
-        outlooks = analyze_leave(
-            balances,
-            today=now,
-            policy=self._policy,
-            credits=self._leave.find_transactions(employee_code),
-            taken=self._comp_off_days_taken(employee_code, today=now),
-        )
+        ledger = self.comp_off_ledger(employee_code, today=now)
+        outlooks = analyze_leave(balances, today=now, policy=self._policy, comp_off=ledger)
         breaks = self.suggest_breaks(outlooks, today=now)
         return LeaveView(
             balances=balances,
@@ -153,24 +144,33 @@ class LeaveService:
             from_cache=from_cache,
             breaks=breaks,
             sandwiches=[self.assess_sandwich(plan, today=now) for plan in breaks],
+            comp_off=ledger,
         )
 
-    def _comp_off_days_taken(self, employee_code: str, *, today: date) -> list[tuple[date, float]]:
-        """The muster's comp-off days, or nothing when the cache cannot answer.
+    def comp_off_ledger(self, employee_code: str, *, today: date) -> CompOffLedger | None:
+        """Comp-off credit by credit, from everything the cache holds about it.
 
-        This is the one leave query that scans a year of attendance rows, and a cache with
-        one damaged page — seen in the wild — fails the scan while every point read still
-        works. Losing the used-on dates is a caption; losing the leave screen is not.
+        ``None`` when the cache holds nothing to rebuild it from — no comp-off application
+        and no comp-off row in the register — so the screens can tell "none yet" from "none".
         """
-        if self._attendance is None:
-            return []
-        try:
-            return self._attendance.find_comp_off_days(
-                employee_code, today - timedelta(days=COMP_OFF_LOOKBACK_DAYS), today
-            )
-        except CerePulseError as exc:
-            logger.warning("Comp-off days could not be read from the cache: {}", exc)
-            return []
+        applications = self.cached_applications(employee_code)
+        register = self._leave.find_transactions(employee_code)
+        links = {
+            app_id: found
+            for app_id, (found, _at) in self._leave.find_comp_off_links(employee_code).items()
+        }
+        ledger = comp_off_ledger(
+            today=today,
+            applications=applications,
+            links=links,
+            register=register,
+            snapshot=self._leave.find_comp_off_snapshot(employee_code),
+            validity_days=self._policy.comp_off_validity_days,
+            financial_year_end=self._policy.financial_year_end,
+        )
+        if not ledger.credits and not ledger.unmatched:
+            return None
+        return ledger
 
     def suggest_breaks(
         self,
@@ -231,6 +231,11 @@ class LeaveService:
     def refresh_leave(self, employee_code: str) -> None:
         logger.info("Refreshing leave balances")
         balances, transactions = self._gateway.fetch_leave()
+        if not transactions:
+            # The register is replaced per fetch, so an empty one would wipe it. A real
+            # register always has rows — one summary per leave type at the least — so an
+            # empty one is a page that was not the register, said as such.
+            raise ParserError("The leave register came back with no rows")
         self._leave.save_balances(employee_code, balances)
         self._leave.save_transactions(employee_code, transactions)
         self._sync_meta.mark_synced(LEAVE_SCOPE)
@@ -277,6 +282,73 @@ class LeaveService:
         self._applications.save_all(employee_code, fetched)
         self._sync_meta.mark_synced(APPLICATION_SCOPE)
         logger.info("{} application(s) cached", len(fetched))
+        try:
+            self.refresh_comp_off(employee_code, fetched)
+        except ENDS_THE_RUN:
+            raise
+        except CerePulseError as exc:
+            # The applications are saved and good; which credit each leave used is a detail
+            # that falls back to inference until the next sync reads it.
+            logger.warning("Comp-off links not refreshed: {}", exc)
+
+    def refresh_comp_off(
+        self,
+        employee_code: str,
+        applications: list[Application] | None = None,
+        *,
+        today: date | None = None,
+        force: bool = False,
+    ) -> None:
+        """Read which credit each comp-off leave used, and the portal's own balance.
+
+        Bounded on purpose, because each application costs two requests to open. An approved
+        leave's credit never changes, so it is opened once, ever; one still awaiting approval
+        can be edited, so it is opened again at most once a day. The portal's balance is asked
+        for once a day, and again whenever a comp-off application has been decided since —
+        that is when it moves.
+        """
+        if self._applications is None:
+            return
+        now = today or date.today()
+        filed = (
+            applications if applications is not None else self.cached_applications(employee_code)
+        )
+        spends = [
+            app
+            for app in filed
+            if is_comp_off_spend(app)
+            and app.status in (RequestStatus.APPROVED, RequestStatus.IN_PROCESS)
+        ]
+        stored = self._leave.find_comp_off_links(employee_code)
+        wanted = [
+            app.app_id
+            for app in spends
+            if app.app_id not in stored or (app.is_open and stored[app.app_id][1].date() < now)
+        ]
+        earns = any(app.kind is ApplicationKind.COMP_OFF for app in filed)
+        signature = _comp_off_signature(filed)
+        previous = self._leave.find_comp_off_snapshot(employee_code)
+        due = (earns or bool(spends)) and (
+            force or previous is None or previous.as_of != now or previous.signature != signature
+        )
+        if not wanted and not due:
+            return
+
+        logger.info("Reading comp-off: {} application(s) to open", len(wanted))
+        fetched = self._gateway.fetch_comp_off(wanted, today=now, snapshot=due)
+        if fetched.links:
+            self._leave.save_comp_off_links(employee_code, fetched.links)
+        if fetched.snapshot is not None:
+            self._leave.save_comp_off_snapshot(
+                employee_code, replace(fetched.snapshot, signature=signature)
+            )
+            ledger = self.comp_off_ledger(employee_code, today=now)
+            if ledger is not None and ledger.portal_agrees is False:
+                logger.warning(
+                    "Comp-off: the portal counts {:g} usable, the ledger {:g}",
+                    fetched.snapshot.balance,
+                    ledger.usable,
+                )
 
     def load_swipe_requests_with_changes(
         self, employee_code: str, *, force_refresh: bool = False
@@ -340,3 +412,14 @@ class LeaveService:
         logger.info("Refreshing holiday calendar")
         self._holidays.save_all(self._gateway.fetch_holidays())
         self._sync_meta.mark_synced(HOLIDAY_SCOPE)
+
+
+def _comp_off_signature(applications: list[Application]) -> str:
+    """Every comp-off application's id and state, so a decision can be noticed."""
+    return "|".join(
+        sorted(
+            f"{app.app_id}:{app.status.value}"
+            for app in applications
+            if app.kind is ApplicationKind.COMP_OFF or is_comp_off_spend(app)
+        )
+    )

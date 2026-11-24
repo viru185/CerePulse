@@ -87,3 +87,42 @@ class Holiday:
     day: date
     weekday: str
     name: str
+
+
+@dataclass(frozen=True, slots=True)
+class CompOffLink:
+    """Which comp-off credit a ``CO-`` leave application drew on, as the portal recorded it.
+
+    Read off the application itself: opening it (the list's own Select postback, view-only)
+    renders the form with ``hdnCOAdjDate`` — the earned date of the credit chosen when it was
+    filed — beside ``hdnCOAdjustmenttype1`` (``Full``/``Half``) and, for a half,
+    ``hdnCOAdjustmentHalfType1`` (``First``/``Second``). Nothing else in the portal says which
+    credit a day off spent, and without it the answer is inferred.
+    """
+
+    app_id: str
+    #: ``None`` when the portal recorded no credit at all — a CO- filed against the previous
+    #: financial year's balance carries an empty field.
+    credit_date: date | None
+    days: float = 1.0
+    #: ``First``/``Second`` for a half credit, empty for a whole one.
+    half: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class CompOffSnapshot:
+    """The portal's own comp-off balance and the credits it would offer, on one day.
+
+    Two read-only page methods on the leave form answer these — the ones its date picker
+    calls — so this is the portal's figure rather than ours. Kept as a cross-check on the
+    ledger the app computes, never as a replacement for it: it says *how many* and *which*,
+    and nothing about what became of the rest.
+    """
+
+    as_of: date
+    balance: float
+    #: Earned date and amount of every credit the portal would offer for a leave on ``as_of``.
+    dates: tuple[tuple[date, float], ...] = ()
+    #: The comp-off applications' ids and states when this was taken, so a decision made
+    #: since can make it stale before the day is out.
+    signature: str = ""

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
+from cerepulse.parsers.comp_off import comp_off_spend_rows as co_minus_rows
 from cerepulse.survey import Guard, Refused, SurveyPage, describe_page, discovered_urls
-from cerepulse.survey import _co_minus_rows as co_minus_rows
 
 HOST = "cerebulb.spinehr.in"
 BASE = f"https://{HOST}"

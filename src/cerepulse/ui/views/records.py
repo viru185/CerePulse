@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from cerepulse.intelligence.attention import duplicate_requests
+from cerepulse.intelligence.comp_off import CompOffCredit, CompOffLedger, CreditState
 from cerepulse.intelligence.insights import Severity
 from cerepulse.intelligence.leave import LeaveOutlook
 from cerepulse.intelligence.optimizer import BreakPlan
@@ -74,6 +75,9 @@ CARD_ORDER = (
 
 HOLIDAY_COLUMNS = ("Date", "Day", "Holiday", "")
 
+#: One row per comp-off credit: the question the register's single figure could not answer.
+CREDIT_COLUMNS = ("Earned", "Days", "Use by", "Status", "Earned for")
+
 #: The timeline filters, on **two** axes rather than one.
 #:
 #: They used to share a single dropdown of eight entries: three describing a *state* and five
@@ -89,7 +93,9 @@ KIND_FILTERS: tuple[tuple[str, Callable[[Record], bool]], ...] = (
     ("Outdoor duty", lambda record: record.is_kind(RecordKind.OUTDOOR_DUTY)),
     (
         "Comp-off",
-        lambda record: record.is_kind(RecordKind.COMP_OFF_EARNED, RecordKind.COMP_OFF_SPENT),
+        lambda record: record.is_kind(
+            RecordKind.COMP_OFF_EARNED, RecordKind.COMP_OFF_SPENT, RecordKind.COMP_OFF_LAPSED
+        ),
     ),
     ("Swipe requests", lambda record: record.is_kind(RecordKind.SWIPE_REQUEST)),
     # Absence had no entry at all under the old single dropdown, so the one kind that always
@@ -182,6 +188,17 @@ class RecordsView(QWidget):
 
         self._insights = InsightStrip(palette)
         layout.addWidget(self._insights)
+
+        # Every comp-off credit and what became of it. The card above gives the one number;
+        # this answers which credits make it up, which a leave spent, and which were lost.
+        self._credits_title = SectionTitle("Comp-off credits")
+        layout.addWidget(self._credits_title)
+        self.credits = data_table(CREDIT_COLUMNS, fit_rows=True)
+        layout.addWidget(self.credits)
+        self._credits_note = QLabel()
+        self._credits_note.setObjectName("CardCaption")
+        self._credits_note.setWordWrap(True)
+        layout.addWidget(self._credits_note)
 
         layout.addWidget(SectionTitle("Best breaks you can book"))
         self.breaks = data_table(BREAK_COLUMNS, fit_rows=True)
@@ -282,6 +299,7 @@ class RecordsView(QWidget):
         self._render_total(data.outlooks)
         self._render_cards(data.outlooks)
         self._insights.set_insights(data.insights)
+        self._render_credits(data.comp_off)
         self._render_breaks(data.breaks)
 
     def show_records(self, records: list[Record]) -> None:
@@ -327,13 +345,6 @@ class RecordsView(QWidget):
         expired = [outlook for outlook in outlooks if outlook.is_expired]
         if expired:
             parts.append(f"{len(expired)} type(s) already lapsed and not counted")
-        # Days that passed their own window while the portal still counts them. Separate from
-        # the lapsed types above, and only ever what this app has watched: no snapshot of a
-        # balance exists before the first sync, so anything lost earlier is unknowable here
-        # and is not going to be guessed at.
-        lapsed = sum(outlook.expired_days for outlook in outlooks)
-        if lapsed:
-            parts.append(f"{_days(lapsed)} past their window since CerePulse started watching")
         self.total.set_caption("  ·  ".join(parts))
 
     def _render_cards(self, outlooks: list[LeaveOutlook]) -> None:
@@ -358,9 +369,58 @@ class RecordsView(QWidget):
         # A balance card shows a balance. The credits behind a comp-off figure — earned,
         # expiring, used — are events, and live on the timeline below as "Comp-off earned".
         card = Card(balance.leave_type, value=f"{balance.available_balance:g}", accent=accent)
-        card.set_caption(_expiry_caption(outlook))
+        caption = _expiry_caption(outlook)
+        if outlook.comp_off is not None:
+            extra = _comp_off_caption(outlook.comp_off)
+            caption = " · ".join(part for part in (caption, extra) if part)
+        card.set_caption(caption)
         card.setMinimumWidth(170)
         return card
+
+    def _render_credits(self, ledger: CompOffLedger | None) -> None:
+        """Every comp-off credit of the financial year, and any older one still open.
+
+        Newest first, like the timeline. Credits from an earlier year are history once
+        settled, and the register stops showing them in April, so they stay off this table
+        too; they remain on the timeline.
+        """
+        from PySide6.QtWidgets import QTableWidgetItem
+
+        shown = _credits_to_show(ledger)
+        visible = bool(shown)
+        self._credits_title.setVisible(visible)
+        self.credits.setVisible(visible)
+        self._credits_note.setVisible(visible)
+        self.credits.setRowCount(len(shown))
+        if ledger is None or not shown:
+            return
+
+        today = ledger.assessed_on
+        for row, credit in enumerate(shown):
+            status, colour = _credit_status(credit, today, self._palette)
+            values = (
+                fmt.day_label(credit.earned_on),
+                f"{credit.days:g}",
+                fmt.day_label(credit.expires_on),
+                status,
+                credit.reason or "—",
+            )
+            settled = credit.state in (CreditState.USED, CreditState.LAPSED)
+            for column, text in enumerate(values):
+                item = QTableWidgetItem(text)
+                if column == 1:
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                if column == 3:
+                    item.setForeground(QColor(colour))
+                elif settled:
+                    item.setForeground(QColor(self._palette.text_faint))
+                if column == 4 and credit.reason:
+                    item.setToolTip(credit.reason)
+                self.credits.setItem(row, column, item)
+
+        self._credits_note.setText(_credits_note(ledger))
 
     def show_holidays(self, holidays: list[Holiday], *, today: date | None = None) -> None:
         """The published calendar, past dimmed and the next one named."""
@@ -561,6 +621,7 @@ def _kind_colour(kind: RecordKind, palette: Palette) -> str:
         RecordKind.OUTDOOR_DUTY: palette.work,
         RecordKind.COMP_OFF_EARNED: palette.good,
         RecordKind.COMP_OFF_SPENT: palette.good,
+        RecordKind.COMP_OFF_LAPSED: palette.bad,
         RecordKind.SWIPE_REQUEST: palette.text_muted,
         RecordKind.ABSENCE: palette.bad,
     }.get(kind, palette.text_muted)
@@ -601,14 +662,87 @@ def _expiry_caption(outlook: LeaveOutlook) -> str:
         return f"lapsed {fmt.day_label(outlook.expires_on)}"
 
     when = fmt.day_label(outlook.expires_on)
-    open_lots = outlook.open_lots
-    lead = f"{_days(open_lots[0].remaining)} expires" if len(open_lots) > 1 else "expires"
+    ledger = outlook.comp_off
+    available = ledger.available if ledger is not None else ()
+    lead = f"{_days(available[0].remaining)} expires" if len(available) > 1 else "expires"
     parts = [f"{lead} {when}"]
     if outlook.days_remaining is not None:
         parts.append(f"{outlook.days_remaining} days")
-    if len(open_lots) > 1:
-        parts.append(f"{len(open_lots) - 1} more later")
+    if len(available) > 1:
+        parts.append(f"{len(available) - 1} more later")
     return " · ".join(parts)
+
+
+def _comp_off_caption(ledger: CompOffLedger) -> str:
+    """What the comp-off figure leaves out: booked, awaiting approval, lost this year."""
+    parts = []
+    if ledger.booked_days:
+        parts.append(f"{_days(ledger.booked_days)} booked")
+    if ledger.pending_days:
+        parts.append(f"{_days(ledger.pending_days)} awaiting approval")
+    lapsed = sum(c.remaining for c in ledger.lapsed_since(_financial_year_start(ledger)))
+    if lapsed:
+        parts.append(f"{_days(lapsed)} lapsed this year")
+    if ledger.portal_agrees is False and ledger.portal is not None:
+        parts.append(f"SpineHR counts {ledger.portal.balance:g}")
+    return " · ".join(parts)
+
+
+def _financial_year_start(ledger: CompOffLedger) -> date:
+    today = ledger.assessed_on
+    return date(today.year if today.month >= 4 else today.year - 1, 4, 1)
+
+
+def _credits_to_show(ledger: CompOffLedger | None) -> list[CompOffCredit]:
+    if ledger is None:
+        return []
+    start = _financial_year_start(ledger)
+    settled = (CreditState.USED, CreditState.LAPSED)
+    return sorted(
+        (c for c in ledger.credits if c.earned_on >= start or c.state not in settled),
+        key=lambda credit: credit.earned_on,
+        reverse=True,
+    )
+
+
+def _credit_status(credit: CompOffCredit, today: date, palette: Palette) -> tuple[str, str]:
+    """``Available · 37 days left``, ``Used Wed 26 Aug``, and the colour to draw it in."""
+    spent_on = ", ".join(fmt.day_label(spend.day) for spend in credit.spent_by)
+    if credit.state is CreditState.AVAILABLE:
+        left = credit.days_left(today)
+        text = f"Available · {left} day{'s' if left != 1 else ''} left"
+        if credit.spent_by:
+            text += f" · {credit.remaining:g} of {credit.days:g} unused"
+        return text, palette.rest if left <= 60 else palette.good
+    if credit.state is CreditState.BOOKED:
+        return f"Booked for {spent_on} · leave awaiting approval", palette.rest
+    if credit.state is CreditState.USED:
+        return f"Used {spent_on}", palette.text_muted
+    if credit.state is CreditState.LAPSED:
+        partly = f" · {credit.remaining:g} of {credit.days:g}" if credit.spent_by else ""
+        return f"Lapsed unused{partly}", palette.bad
+    return "Awaiting approval", palette.text_muted
+
+
+def _credits_note(ledger: CompOffLedger) -> str:
+    """Where the use-by dates and the credit-to-leave links come from."""
+    note = (
+        "Use by is 90 days from the day it was earned, or 31 March if that comes first — "
+        "SpineHR does not publish the approval date its rule counts from."
+    )
+    if ledger.inferred:
+        count = len(ledger.inferred)
+        note += (
+            " Which credit a leave used comes from SpineHR where it says; for "
+            f"{count} leave{'s' if count != 1 else ''} it is inferred — the oldest credit "
+            "still valid on the day."
+        )
+    if ledger.portal_agrees is False and ledger.portal is not None:
+        note += (
+            f" SpineHR's own lookup counts {ledger.portal.balance:g} usable today against "
+            f"{ledger.usable:g} here; SpineHR's figure is the one it will enforce."
+        )
+    return note
 
 
 def _booking_text(plan: BreakPlan) -> str:

@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
+from dataclasses import dataclass, field
 from datetime import date
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import httpx
 from loguru import logger
@@ -27,11 +28,24 @@ from cerepulse.auth.manager import AuthManager
 from cerepulse.core.errors import ParserError, PrivilegeError, ProtocolError
 from cerepulse.models.application import Application, ApplicationKind
 from cerepulse.models.attendance import AttendanceMonth, Punch
-from cerepulse.models.leave import Holiday, LeaveBalance, LeaveTransaction
+from cerepulse.models.leave import (
+    CompOffLink,
+    CompOffSnapshot,
+    Holiday,
+    LeaveBalance,
+    LeaveTransaction,
+)
 from cerepulse.models.pay import CtcStatement, MonthlyStatement, Payslip
 from cerepulse.models.swipe import SwipeRequest
 from cerepulse.parsers.applications import parse_applications
 from cerepulse.parsers.attendance import ParsedDay, parse_month, parse_punches
+from cerepulse.parsers.comp_off import (
+    comp_off_spend_rows,
+    employee_key,
+    parse_balance_answer,
+    parse_comp_off_link,
+    parse_dates_answer,
+)
 from cerepulse.parsers.leave import current_balances, parse_holidays, parse_leave_register
 from cerepulse.parsers.menu import MenuIndex, parse_menu
 from cerepulse.parsers.pay import (
@@ -94,9 +108,22 @@ APPLICATION_STATUS_VIEWS = (
     "Lapsed Applications",
 )
 
+MENU_LEAVE_LIST = ("Apply", "Leave > Leave")
+#: The views a comp-off spend that still holds a credit can be in. A rejected or lapsed one
+#: never held one.
+COMP_OFF_SPEND_VIEWS = ("Recent Applications", "Approved Applications")
+#: The read-only lookups the leave form's comp-off date picker calls. ASP.NET page methods:
+#: a JSON POST to ``<page>/<method>``, on the form's own path.
+COMP_OFF_BALANCE_METHOD = f"{pages.LEAVE_APPLICATION}/COAdjDateCount"
+COMP_OFF_DATES_METHOD = f"{pages.LEAVE_APPLICATION}/FillCoAdjDates"
+_PAGE_METHOD_HEADERS = {
+    "Content-Type": "application/json; charset=utf-8",
+    "X-Requested-With": "XMLHttpRequest",
+}
+
 # The three application lists, as (kind, menu label, menu section).
 MENU_APPLICATIONS: tuple[tuple[ApplicationKind, str, str], ...] = (
-    (ApplicationKind.LEAVE, "Apply", "Leave > Leave"),
+    (ApplicationKind.LEAVE, *MENU_LEAVE_LIST),
     (ApplicationKind.OUTDOOR_DUTY, "Apply", "Leave > Outdoor Duty"),
     (ApplicationKind.COMP_OFF, "Apply", "Leave > Comp. Off"),
 )
@@ -104,6 +131,16 @@ MENU_APPLICATIONS: tuple[tuple[ApplicationKind, str, str], ...] = (
 _EMPLOYEE_BANNER_ID = "ctl00_BodyContentPlaceHolder_lblEmpCode"
 
 T = TypeVar("T")
+
+
+@dataclass(frozen=True, slots=True)
+class CompOffFetch:
+    """What one comp-off read brought back."""
+
+    #: The credit each opened application drew on, by application id.
+    links: dict[str, list[CompOffLink]] = field(default_factory=dict)
+    #: The portal's own balance and credits on offer, when they were asked for.
+    snapshot: CompOffSnapshot | None = None
 
 
 class PortalGateway:
@@ -430,6 +467,112 @@ class PortalGateway:
             return sorted(collected.values(), key=lambda item: item.start, reverse=True)
 
         return self._retrying_stale_menu(get)
+
+    def fetch_comp_off(
+        self, app_ids: Collection[str], *, today: date, snapshot: bool = True
+    ) -> CompOffFetch:
+        """Which credit each named ``CO-`` application drew on, and the portal's balance.
+
+        The leave register cannot say which credit a day off spent; the application can. Each
+        is opened the way its own row opens it — the list's ``Select$N`` postback, view-only,
+        which renders the filled form — and the hidden fields holding the chosen credit are
+        read. Nothing is ever posted from the form itself.
+
+        Each open starts from a fresh render of the list: a postback's state belongs to the
+        page it came from, and the November survey opened every application that way. So it
+        costs two requests per application, which is why the service asks only for the ones
+        it does not hold yet — an approved application's credit never changes, so it is
+        opened once, ever.
+
+        ``snapshot`` also asks the form's two lookups for the balance and the credits on offer,
+        as of ``today``, scoped to the financial year the way the form scopes them.
+        """
+
+        def get() -> CompOffFetch:
+            url = self._url(*MENU_LEAVE_LIST)
+            listed = self._page(self._client.get(url, follow_redirects=True))
+            wanted = set(app_ids)
+            links: dict[str, list[CompOffLink]] = {}
+            for view in COMP_OFF_SPEND_VIEWS:
+                if not wanted:
+                    break
+                shown = self._status_view(url, listed, view)
+                rows = [row for row in comp_off_spend_rows(shown) if row[0] in wanted]
+                for index, (app_id, target, argument) in enumerate(rows):
+                    if index:
+                        shown = self._status_view(url, listed, view, fresh=True)
+                    state = WebFormsState.from_html(shown)
+                    opened = self._page(
+                        self._client.post(
+                            url, data=state.postback(target, argument), follow_redirects=True
+                        )
+                    )
+                    try:
+                        links[app_id] = parse_comp_off_link(opened, app_id=app_id)
+                    except ParserError as exc:
+                        # One application that will not open is not a reason to lose the
+                        # others; it is asked for again next time.
+                        logger.warning("Comp-off application {} not read: {}", app_id, exc)
+                    wanted.discard(app_id)
+            if wanted:
+                logger.info("{} comp-off application(s) not on the list", len(wanted))
+
+            reading = None
+            if snapshot:
+                try:
+                    reading = self._comp_off_snapshot(employee_key(listed), today)
+                except (ParserError, ProtocolError) as exc:
+                    # A cross-check that cannot be read costs the cross-check, not the links.
+                    logger.warning("The portal's comp-off balance could not be read: {}", exc)
+            return CompOffFetch(links=links, snapshot=reading)
+
+        return self._retrying_stale_menu(get)
+
+    def _status_view(self, url: str, page: str, view: str, *, fresh: bool = False) -> str:
+        """A request list re-rendered on one status, from the page it was first served as."""
+        if not fresh and WebFormsState.from_html(page).fields.get(STATUS_SELECT, "") == view:
+            return page
+        state = WebFormsState.from_html(page)
+        payload = state.postback(STATUS_SELECT, **{STATUS_SELECT: view})
+        return self._page(self._client.post(url, data=payload, follow_redirects=True))
+
+    def _comp_off_snapshot(self, employee: str, today: date) -> CompOffSnapshot:
+        """The portal's comp-off balance and the credits on offer, as on ``today``.
+
+        ``mTransNo`` is the one argument sent empty on purpose. The form fills it with a SQL
+        fragment of its own, and a client that sends SQL to an HR system is not a read-only
+        client, whatever the fragment says.
+        """
+        start = today.year if today.month >= 4 else today.year - 1
+        body = {
+            "mApplyDate": today.strftime("%d-%b-%y"),
+            "mTransNo": "",
+            "mEmpCode": employee,
+            "mPeriodFromDate": f"{start}04",
+            "mPeriodToDate": f"{start + 1}03",
+        }
+        balance = parse_balance_answer(self._page_method(COMP_OFF_BALANCE_METHOD, body))
+        offered = parse_dates_answer(self._page_method(COMP_OFF_DATES_METHOD, body))
+        return CompOffSnapshot(as_of=today, balance=balance, dates=tuple(offered))
+
+    def _page_method(self, path: str, body: dict[str, str]) -> Any:
+        """Call an ASP.NET page method and return its decoded answer."""
+        response = self._auth.check_response(
+            self._client.post(
+                path, content=json.dumps(body), headers=_PAGE_METHOD_HEADERS, follow_redirects=True
+            )
+        )
+        for hop in response.history:
+            if _LOGIN_PATH in hop.headers.get("location", "").lower():
+                raise self._auth.session_lost(f"{path} redirected to the login page")
+        if _LOGIN_PATH in _url_of(response).lower():
+            raise self._auth.session_lost(f"{path} landed on the login page")
+        if response.status_code >= 400:
+            raise ProtocolError(f"{path} answered {response.status_code}")
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise ParserError(f"{path} did not answer in JSON ({_title(response.text)})") from exc
 
     def _status_views(self, menu: tuple[str, str], views: tuple[str, ...]) -> Iterator[str]:
         """Yield one request list's HTML once per status its filter offers.

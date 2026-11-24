@@ -158,6 +158,25 @@ Download CTC page carries the employee's **PAN** in `hdnEmpPanNo`, and the expor
 `hdnPayslipHTML` carries the whole slip — both are in the log scrubber and neither is
 parsed, stored or logged.
 
+**16. Which comp-off credit a `CO-` leave spent is on the application, and the balance is a
+page method.** Found by the November 2026 survey of every portal link. Opening a `CO-` row
+from the leave list (`GridView1` `Select$N`, the list's own view-only postback) redirects to
+`/Leave/EmpLeaveApp.aspx` with the filled form, whose hidden fields hold the credit chosen at
+filing: `hdnCOAdjDate` (`31-May-26`), `hdnCOAdjustmenttype1` (`Full`/`Half`),
+`hdnCOAdjustmentHalfType1` (`First`/`Second`), and `HdnTransNo` (the app id, checked before
+anything is saved). A `CO-` against the previous financial year carries an empty date. Credits
+are spent whole — a full day takes a full credit, a half a half — oldest still-valid first,
+and `hdnCOAdjDaysSetting = 90` is the window. The form's date picker calls two **read-only**
+page methods on that path, `COAdjDateCount` (`{"d": "CO Balance As On Date … : 5"}`) and
+`FillCoAdjDates` (`{"d": [{"Text": "02-Oct-26", "Value": "1"}, …]}`), with
+`{mApplyDate, mTransNo, mEmpCode, mPeriodFromDate, mPeriodToDate}`. `mEmpCode` is the short
+internal number in the leave list's `hdnEmpCode`, not the banner's employee code; the period
+is the financial year as `YYYY04`/`YYYY+103`. **`mTransNo` is always sent empty**: the form
+fills it with a SQL fragment, and a client that sends SQL to an HR system is not read-only.
+The register's comp-off figure (8 in November) counts pending credits, booked credits and
+lapsed ones; the lookup's (5) is what the portal enforces, and `intelligence/comp_off.py`
+reproduces it credit by credit.
+
 ## Architecture
 
 Dependency flow is strictly one way:
@@ -239,11 +258,16 @@ for good — so lunch and the evening out were never read and every automatic pa
 the morning. Today is always eligible while it is still today, and `load_day` treats a live
 day as unsettled. `drain_detail` still terminates, because today stops being today.
 
-**The leave ledger records credits, never consumption.** Every row this portal writes has
-`consumed_days = 0.0`, for every leave type, across the whole year. Anything that needs to
-know when leave was actually *taken* reads the muster — a day marked leave or half-day — not
-the ledger. A feature built on `consumed_days` is silent forever and looks like a threshold
-set too high.
+**The leave register is replaced per fetch, and its comp-off figure is not a balance.** It
+was merged on a hash of each row, and its opening and available columns are running totals,
+so a credit re-listed after a later movement hashed as new and every sync stored another
+copy — three of each October credit. Migration 10 cleared them; an empty fetch is refused
+rather than saved over the old one. The register *does* record consumption — `CO-` and `CF`
+rows carry `consumed_days` — which an earlier rule here denied. But nothing about comp-off
+should be read off its summary row: it sums pending, booked and lapsed credits. Comp-off is
+rebuilt from the applications (CO+ earns, a leave typed `CO-` spends), the portal's own link
+from each spend to its credit (fact 16), and the register only for rows no application
+explains — `comp_off_ledger`, and the comp-off card shows its `usable` figure.
 
 **Replay expired sessions exactly once.** A retry loop turns a rejected credential into an
 authentication storm against the employer's HR system. A second expiry is surfaced.
@@ -494,7 +518,10 @@ applications → unexplained credits → leftover muster days → swipes: an app
 the muster days it explains (`_absorbs`, kind-aware, so a genuine mismatch still shows as
 two rows), owns the title, the amount, the state and the reason as typed, and the muster is
 consulted only for what it lacks. Remarks go through `wording.clean_remark` before anyone
-reads them. A record is dated by its start; the span lives in its title.
+reads them. A record is dated by its start; the span lives in its title. A comp-off credit
+that lapsed with something left on it gets a row of its own, dated its last usable day, so
+a loss reads where it happened; a `CO-` leave names the credit it spent, and says on hover
+whether SpineHR recorded that or it was inferred.
 
 **Voice appends, never substitutes.** `intelligence/voice.py` may only add a sentence to an
 insight's detail. It cannot change a number, reword a warning, or drop a line, so no tone
@@ -563,9 +590,12 @@ links to the portal; it never files one.
 ## Known gaps
 
 - **Comp-off expiry counts from the earned date, not the approval date the rule names.**
-  The portal publishes no approval date for comp-off (fact 14). Each credit is dated by its
-  ledger row and spent oldest-first against the muster's `CO-` days; the caveat is on the
-  Records card. The captured Leave Rules page confirms the 90 days and names no anchor.
+  The portal publishes no approval date for comp-off (fact 14), so each credit's 90 days run
+  from the day it was earned, and never past 31 March of that financial year: the lookups are
+  scoped to the financial year, and the register opened April at zero with the previous
+  March's half day gone. The portal's own lookup agreed with this on every credit in
+  November 2026, but no credit was then close enough to its edge to tell "day 90" from
+  "day 89"; `CompOffCredit.expires_on` is the last usable day either way.
 - **31 Dec for carry-forward and 31 March for PL are what the user was told, not what the
   portal confirms.** The 90-day comp-off window is now confirmed by the Leave Rules page.
   All three are `LeavePolicy` fields.
@@ -573,11 +603,10 @@ links to the portal; it never files one.
   text are pinned; a real update from a path with spaces and parentheses, with a held DLL,
   with a WAL file present, and from a USB stick is the manual checklist before it is
   trusted.
-- **The user's cache has had a damaged page twice** (`cerepulse.db.corrupt-20260802`, and a
-  scan of `attendance_day` fails today while point reads work). Quarantine only runs at
-  open. The single shared connection used from two threads (audit M11) is the prime
-  suspect; until it is fixed, any new query that scans a table must degrade rather than
-  raise — see `LeaveService._comp_off_days_taken`.
+- **The user's cache has had a damaged page twice** (`cerepulse.db.corrupt-20260802`, and
+  a scan of `attendance_day` that once failed while point reads worked). Per-thread
+  connections have since landed, and the cache read on 24 Nov 2026 was at schema 9 with
+  `quick_check` clean and every table scanning. Quarantine still runs only at open.
 - **No traffic baseline.** The commute card reports what the journey costs now, not whether
   that is worse than usual. A baseline needs estimates stored over time, and TomTom's terms
   restrict caching results beyond their own headers — so it says what it knows and no more.

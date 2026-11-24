@@ -1033,39 +1033,107 @@ def test_the_legend_stays_quiet_when_the_break_was_within_the_allowance(
     assert view._timeline._flat_at is None
 
 
-def test_the_comp_off_card_shows_only_the_balance(qapp: QApplication) -> None:
-    """A balance card shows a balance. The credits behind it — earned, expiring, used — are
-    events, and live on the timeline; the card says how much is left and when the first of
-    it goes."""
+def _comp_off_year():  # type: ignore[no-untyped-def]
+    """Two credits available, one booked by a leave awaiting approval, one awaiting its own
+    approval, and one lapsed — every state a credit can be in."""
+    from cerepulse.intelligence.comp_off import comp_off_ledger
+    from cerepulse.models.application import Application, ApplicationKind, RequestStatus
+
+    def earned(app_id: str, when: date, days: float = 1.0, *, pending: bool = False):  # type: ignore[no-untyped-def]
+        status = RequestStatus.IN_PROCESS if pending else RequestStatus.APPROVED
+        return Application(app_id, ApplicationKind.COMP_OFF, when, when, days, "Deploy", status)
+
+    applications = [
+        earned("1", date(2026, 6, 4), 0.5),
+        earned("2", date(2026, 7, 18), 0.5),
+        earned("3", date(2026, 8, 4), 0.5),
+        earned("4", date(2026, 8, 8)),
+        earned("5", date(2026, 8, 30), pending=True),
+        Application(
+            "6",
+            ApplicationKind.LEAVE,
+            date(2026, 9, 10),
+            date(2026, 9, 10),
+            1.0,
+            "Trip",
+            RequestStatus.IN_PROCESS,
+            leave_type="CO-",
+        ),
+    ]
+    return comp_off_ledger(today=date(2026, 9, 6), applications=applications)
+
+
+def test_the_comp_off_card_shows_what_can_be_spent(qapp: QApplication) -> None:
+    """A balance card shows a balance — the one the portal will let be spent, not the
+    register's sum — and says in a line what that figure leaves out. The credits behind it
+    are a table and the timeline below."""
     from PySide6.QtWidgets import QLabel
 
     from cerepulse.intelligence.leave import analyze_leave
-    from cerepulse.models.leave import LeaveBalance, LeaveTransaction
+    from cerepulse.models.leave import LeaveBalance
     from cerepulse.ui.views.records import RecordsView
 
-    def credit(when: date, days: float, remark: str) -> LeaveTransaction:
-        return LeaveTransaction(
-            leave_type="CO- / CO+",
-            opening_balance=0.0,
-            consumed_days=0.0,
-            credit_days=days,
-            available_balance=days,
-            transaction_date=when,
-            remark=remark,
-        )
-
     outlook = analyze_leave(
-        [LeaveBalance(leave_type="CO- / CO+", available_balance=1.0)],
+        [LeaveBalance(leave_type="CO- / CO+", available_balance=4.0)],
         today=date(2026, 9, 6),
-        credits=[credit(date(2026, 7, 18), 0.5, "Newmont"), credit(date(2026, 8, 4), 0.5, "LFO")],
-        taken=[],
+        comp_off=_comp_off_year(),
     )[0]
     card = RecordsView(DARK)._card_for(outlook)
 
-    text = "\n".join(label.text() for label in card.findChildren(QLabel))
+    text = " | ".join(label.text() for label in card.findChildren(QLabel))
+    assert outlook.balance.available_balance == 1.0
     assert "0.5 days expires Fri 16 Oct · 40 days · 1 more later" in text
-    assert "earned" not in text
+    assert "1 day booked · 1 day awaiting approval · 0.5 days lapsed this year" in text
     assert "approval date" not in text
+
+
+def test_the_comp_off_credits_table_lists_every_credit_and_its_fate(qapp: QApplication) -> None:
+    from cerepulse.services.leave import LeaveView
+    from cerepulse.ui.views.records import RecordsView
+
+    view = RecordsView(DARK)
+    view.show_leave(
+        LeaveView(
+            balances=[],
+            outlooks=[],
+            insights=[],
+            last_synced=None,
+            from_cache=True,
+            comp_off=_comp_off_year(),
+        )
+    )
+
+    rows = [
+        [view.credits.item(row, column).text() for column in range(view.credits.columnCount())]
+        for row in range(view.credits.rowCount())
+    ]
+    assert [row[0] for row in rows] == [
+        "Sun 30 Aug",
+        "Sat 8 Aug",
+        "Tue 4 Aug",
+        "Sat 18 Jul",
+        "Thu 4 Jun",
+    ]
+    assert [row[3] for row in rows] == [
+        "Awaiting approval",
+        "Booked for Thu 10 Sep · leave awaiting approval",
+        "Available · 57 days left",
+        "Available · 40 days left",
+        "Lapsed unused",
+    ]
+    assert "31 March" in view._credits_note.text()
+
+
+def test_the_comp_off_credits_table_hides_with_nothing_to_show(qapp: QApplication) -> None:
+    from cerepulse.services.leave import LeaveView
+    from cerepulse.ui.views.records import RecordsView
+
+    view = RecordsView(DARK)
+    view.show()
+    view.show_leave(LeaveView([], [], [], None, True))
+
+    assert view.credits.isHidden()
+    assert view._credits_title.isHidden()
 
 
 def test_settings_sections_are_in_order(qapp: QApplication) -> None:

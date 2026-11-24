@@ -394,3 +394,37 @@ def test_find_any_restores_session_context(employees: EmployeeRepository) -> Non
     found = employees.find_any()
     assert found is not None
     assert found.code == EMPLOYEE
+
+
+def test_migration_10_clears_the_duplicated_register_and_marks_it_stale() -> None:
+    """The register was merged on a hash of rows whose running totals change as they are
+    re-listed, so the field cache held three of each October credit. Replacing per fetch
+    stops new copies; this clears the old ones, and the next sync refills the register."""
+    from cerepulse.repository.schema import MIGRATIONS
+
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE schema_version (version INTEGER NOT NULL PRIMARY KEY)")
+    for number, step in enumerate(MIGRATIONS[:9], start=1):
+        step(connection)
+        connection.execute("INSERT INTO schema_version VALUES (?)", (number,))
+    for copy in range(3):
+        connection.execute(
+            "INSERT INTO leave_transaction (employee_code, leave_type, transaction_date, "
+            "credit_days, available_balance, row_hash) VALUES (?, ?, ?, ?, ?, ?)",
+            (EMPLOYEE, "CO- / CO+", "2026-10-02", 1.0, 4.0 + copy, f"hash{copy}"),
+        )
+    for scope in ("leave", "applications", "holidays"):
+        connection.execute(
+            "INSERT INTO sync_metadata (scope, last_synced_at) VALUES (?, ?)",
+            (scope, "2026-11-23T22:41:44"),
+        )
+
+    assert migrate(connection) == SCHEMA_VERSION
+
+    assert connection.execute("SELECT COUNT(*) FROM leave_transaction").fetchone() == (0,)
+    scopes = {row[0] for row in connection.execute("SELECT scope FROM sync_metadata")}
+    assert scopes == {"holidays"}
+    tables = {
+        row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    assert {"comp_off_link", "comp_off_snapshot"} <= tables

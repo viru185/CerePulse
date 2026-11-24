@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import json
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 
 from cerepulse.models.application import Application
-from cerepulse.models.leave import Holiday, LeaveBalance, LeaveTransaction
+from cerepulse.models.leave import (
+    CompOffLink,
+    CompOffSnapshot,
+    Holiday,
+    LeaveBalance,
+    LeaveTransaction,
+)
 from cerepulse.models.swipe import SwipeRequest
 from cerepulse.repository.database import Database
 from cerepulse.repository.mappers import (
@@ -60,12 +67,23 @@ class LeaveRepository:
     def save_transactions(
         self, employee_code: str, transactions: Iterable[LeaveTransaction]
     ) -> None:
-        """Merge ledger rows, keyed on content so a re-sync cannot duplicate them."""
+        """Replace the stored register with a fetched one, atomically.
+
+        It used to merge, keyed on a hash of each row's content — and the register's opening
+        and available columns are running totals, so a credit re-listed after any later
+        movement hashed as a new row and every sync stored another copy. The register is
+        fetched whole (one View postback renders every row of the financial year), which is
+        what makes replacing safe; an empty fetch is refused by the service before it gets
+        here.
+        """
         rows = [
             leave_transaction_to_row(transaction, employee_code=employee_code)
             for transaction in transactions
         ]
         with self.database.transaction() as connection:
+            connection.execute(
+                "DELETE FROM leave_transaction WHERE employee_code = ?", (employee_code,)
+            )
             connection.executemany(
                 """
                 INSERT INTO leave_transaction (
@@ -107,6 +125,115 @@ class LeaveRepository:
                 (employee_code, leave_type),
             ).fetchall()
         return [row_to_leave_transaction(row) for row in rows]
+
+    # --- comp-off, as the portal records it ---------------------------------------------
+
+    def save_comp_off_links(
+        self,
+        employee_code: str,
+        links: Mapping[str, Iterable[CompOffLink]],
+        *,
+        fetched_at: datetime | None = None,
+    ) -> None:
+        """Store which credit each named application drew on, replacing what it had.
+
+        Per application rather than for the whole set, because only the applications that
+        were opened this time are in ``links`` — an approved one is opened once, ever.
+        """
+        stamp = (fetched_at or datetime.now()).isoformat()
+        with self.database.transaction() as connection:
+            for app_id, found in links.items():
+                connection.execute(
+                    "DELETE FROM comp_off_link WHERE employee_code = ? AND app_id = ?",
+                    (employee_code, app_id),
+                )
+                connection.executemany(
+                    """
+                    INSERT OR REPLACE INTO comp_off_link (
+                        employee_code, app_id, credit_date, days, half, fetched_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            employee_code,
+                            app_id,
+                            link.credit_date.isoformat() if link.credit_date else "",
+                            link.days,
+                            link.half,
+                            stamp,
+                        )
+                        for link in found
+                    ],
+                )
+
+    def find_comp_off_links(
+        self, employee_code: str
+    ) -> dict[str, tuple[list[CompOffLink], datetime]]:
+        """Every stored link, by application, with when it was read.
+
+        An application the portal named no credit for maps to an empty list — present, so it
+        is not opened again, and empty, so nothing is attributed to it.
+        """
+        rows = self.database.execute(
+            "SELECT * FROM comp_off_link WHERE employee_code = ? ORDER BY app_id, credit_date",
+            (employee_code,),
+        ).fetchall()
+        found: dict[str, tuple[list[CompOffLink], datetime]] = {}
+        for row in rows:
+            links, _stamp = found.setdefault(
+                row["app_id"], ([], datetime.fromisoformat(row["fetched_at"]))
+            )
+            if row["credit_date"]:
+                links.append(
+                    CompOffLink(
+                        app_id=row["app_id"],
+                        credit_date=date.fromisoformat(row["credit_date"]),
+                        days=float(row["days"]),
+                        half=row["half"],
+                    )
+                )
+        return found
+
+    def save_comp_off_snapshot(
+        self,
+        employee_code: str,
+        snapshot: CompOffSnapshot,
+        *,
+        fetched_at: datetime | None = None,
+    ) -> None:
+        stamp = (fetched_at or datetime.now()).isoformat()
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO comp_off_snapshot (
+                    employee_code, as_of, balance, dates, signature, fetched_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    employee_code,
+                    snapshot.as_of.isoformat(),
+                    snapshot.balance,
+                    json.dumps([[when.isoformat(), amount] for when, amount in snapshot.dates]),
+                    snapshot.signature,
+                    stamp,
+                ),
+            )
+
+    def find_comp_off_snapshot(self, employee_code: str) -> CompOffSnapshot | None:
+        row = self.database.execute(
+            "SELECT * FROM comp_off_snapshot WHERE employee_code = ?", (employee_code,)
+        ).fetchone()
+        if row is None:
+            return None
+        return CompOffSnapshot(
+            as_of=date.fromisoformat(row["as_of"]),
+            balance=float(row["balance"]),
+            dates=tuple(
+                (date.fromisoformat(str(when)), float(amount))
+                for when, amount in json.loads(row["dates"])
+            ),
+            signature=row["signature"],
+        )
 
 
 class SwipeRequestRepository:

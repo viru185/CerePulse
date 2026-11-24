@@ -10,11 +10,17 @@ from __future__ import annotations
 
 from datetime import date, time, timedelta
 
-from cerepulse.intelligence.leave import LeaveLot
-from cerepulse.intelligence.records import RecordKind, RecordState, build_records
+from cerepulse.intelligence.comp_off import comp_off_ledger
+from cerepulse.intelligence.records import (
+    LINK_FROM_PORTAL,
+    LINK_INFERRED,
+    RecordKind,
+    RecordState,
+    build_records,
+)
 from cerepulse.models.application import Application, ApplicationKind
 from cerepulse.models.attendance import AttendanceDay, DayStatus
-from cerepulse.models.leave import Holiday, LeaveTransaction
+from cerepulse.models.leave import CompOffLink, Holiday, LeaveTransaction
 from cerepulse.models.swipe import SwipeRequest, SwipeStatus
 from cerepulse.models.values import Duration
 
@@ -672,37 +678,69 @@ def test_a_comp_off_application_is_an_earning_unless_the_muster_says_it_was_spen
     assert spent.title == "1 day taken"
 
 
-def test_a_credit_with_a_lot_says_what_became_of_it() -> None:
-    lot = LeaveLot(
-        earned_on=date(2026, 7, 18),
-        days=1.0,
-        expires_on=date(2026, 10, 16),
-        used_on=((date(2026, 8, 27), 0.5),),
-    )
-    (entry,) = build_records(
-        transactions=[ledger(date(2026, 7, 18), credit=1.0)],
-        lots=[lot],
+def test_a_credit_says_what_became_of_it() -> None:
+    def aside(register: list[LeaveTransaction], *spends: Application, today: date) -> str:
+        ledger = comp_off_ledger(today=today, register=register, applications=spends)
+        earned = [
+            entry
+            for entry in build_records(
+                transactions=register, applications=spends, comp_off=ledger, today=today
+            )
+            if entry.kind is RecordKind.COMP_OFF_EARNED
+        ]
+        return earned[0].aside
+
+    july = [ledger(date(2026, 7, 18), credit=1.0)]
+    assert aside(july, today=date(2026, 9, 6)) == "available until Fri 16 Oct · 40 days left"
+
+    spent = application(date(2026, 8, 26), kind=ApplicationKind.LEAVE, leave_type="CO-", days=1)
+    assert aside(july, spent, today=date(2026, 9, 6)) == "spent on Wed 26 Aug"
+
+    may = [ledger(date(2026, 5, 31), credit=0.5)]
+    assert aside(may, today=date(2026, 9, 6)) == "lapsed unused after Sat 29 Aug"
+
+
+def test_a_comp_off_leave_names_the_credit_it_spent() -> None:
+    register = [ledger(date(2026, 7, 18), credit=1.0)]
+    leave = application(date(2026, 8, 26), kind=ApplicationKind.LEAVE, leave_type="CO-", days=1)
+
+    recorded = comp_off_ledger(
         today=date(2026, 9, 6),
+        register=register,
+        applications=[leave],
+        links={leave.app_id: [CompOffLink(leave.app_id, date(2026, 7, 18), 1.0)]},
     )
-    assert entry.aside == "expires Fri 16 Oct · 40 days · used Thu 27 Aug (0.5) · 0.5 left"
-    assert "approval date" in entry.note
+    (entry,) = [
+        e
+        for e in build_records(applications=[leave], comp_off=recorded, today=date(2026, 9, 6))
+        if e.kind is RecordKind.COMP_OFF_SPENT
+    ]
+    assert entry.aside == "used the credit earned Sat 18 Jul"
+    assert entry.note == LINK_FROM_PORTAL
 
-    spent = LeaveLot(
-        earned_on=date(2026, 4, 9),
-        days=0.5,
-        expires_on=date(2026, 7, 8),
-        used_on=((date(2026, 8, 26), 0.5),),
-    )
-    (used,) = build_records(
-        transactions=[ledger(date(2026, 4, 9), credit=0.5)], lots=[spent], today=date(2026, 9, 6)
-    )
-    assert used.aside == "used Wed 26 Aug"
+    inferred = comp_off_ledger(today=date(2026, 9, 6), register=register, applications=[leave])
+    (guess,) = [
+        e
+        for e in build_records(applications=[leave], comp_off=inferred, today=date(2026, 9, 6))
+        if e.kind is RecordKind.COMP_OFF_SPENT
+    ]
+    assert guess.aside == "used the credit earned Sat 18 Jul"
+    assert guess.note == LINK_INFERRED
 
-    unused = LeaveLot(earned_on=date(2026, 5, 31), days=0.5, expires_on=date(2026, 8, 29))
-    (lapsed,) = build_records(
-        transactions=[ledger(date(2026, 5, 31), credit=0.5)], lots=[unused], today=date(2026, 9, 6)
-    )
-    assert lapsed.aside == "lapsed Sat 29 Aug · Half day lost"
+
+def test_a_lapsed_credit_gets_a_row_on_the_day_it_was_lost() -> None:
+    register = [ledger(date(2026, 8, 4), credit=0.5, remark="x |night work")]
+    recorded = comp_off_ledger(today=date(2026, 11, 24), register=register)
+
+    lapses = [
+        entry
+        for entry in build_records(transactions=register, comp_off=recorded)
+        if entry.kind is RecordKind.COMP_OFF_LAPSED
+    ]
+    assert [(entry.day, entry.title, entry.detail) for entry in lapses] == [
+        (date(2026, 11, 2), "Half day lapsed unused", "night work")
+    ]
+    assert lapses[0].is_kind(RecordKind.COMP_OFF_LAPSED)
 
 
 def test_a_stateless_record_reads_as_settled_and_unlabelled() -> None:
