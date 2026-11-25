@@ -2,6 +2,14 @@
 
 All notable changes to CerePulse are documented here.
 
+## [0.17.1] - 2026-11-25
+
+### Bug Fixes
+- One step smaller type and spacing, so the day fits on a laptop screen
+
+### Chores
+- Bump to 0.17.1
+
 ## [0.17.0] - 2026-11-24
 
 ### Bug Fixes
