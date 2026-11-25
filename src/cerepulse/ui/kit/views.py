@@ -41,7 +41,7 @@ class ScrollArea(QScrollArea):
         self,
         parent: QWidget | None = None,
         *,
-        margins: tuple[int, int, int, int] = (Space.PAGE, 28, Space.PAGE, Space.PAGE),
+        margins: tuple[int, int, int, int] = (Space.PAGE, Space.SECTION, Space.PAGE, Space.PAGE),
         spacing: int = Space.SECTION,
     ) -> None:
         super().__init__(parent)

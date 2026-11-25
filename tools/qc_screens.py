@@ -141,6 +141,11 @@ def _child(args: argparse.Namespace) -> int:
                 target = screen_size(scale)
             elif size_name == "min":
                 target = minimum
+            elif "x" in size_name:
+                # A particular screen, in logical pixels: "1440x820" is a 2880x1800 panel at
+                # 200%, less the taskbar and the title bar.
+                width, height = size_name.split("x", 1)
+                target = (int(width), int(height))
             else:
                 target = default
             window.resize(*target)

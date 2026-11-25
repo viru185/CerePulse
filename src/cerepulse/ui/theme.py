@@ -126,31 +126,40 @@ class Space:
     Every screen previously picked its own margins and spacings, so a card on Today sat at
     a different distance from its heading than the same card on Insights. A fixed ladder
     means a layout either matches the rest of the app or is obviously wrong.
+
+    One step tighter than Fluent's 4/8/12/16/24/32, for the reason `Type` gives.
     """
 
     TIGHT = 4
-    SNUG = 8
-    ROW = 12
-    GAP = 16
-    SECTION = 24
-    PAGE = 32
+    SNUG = 6
+    ROW = 10
+    GAP = 12
+    SECTION = 18
+    PAGE = 24
 
 
 class Type:
-    """The type ramp, in points — Windows 11's own (Fluent 2).
+    """The type ramp, in points, one step below Windows 11's own (Fluent 2).
 
     Points rather than the pixels the sheet used to hard-code: a point follows the screen's
     logical DPI, so the ramp is one set of numbers at every display scale, and a size the
     sheet names in points is one the design can reason about. At 96 DPI each is the pixel
     size in the comment.
+
+    0.17 shipped Fluent's ramp as it stands — 14 px body, 28 px titles, a 68 px finish time —
+    and on a 16-inch 2880x1800 laptop at 200%, which gives the app 1440x820, the hero and the
+    cards filled the window and the day's timeline started at its bottom edge. Fluent sizes
+    for WinUI's spacious pages; this is a dense desktop utility that people glance at, closer
+    to Windows' own 12 px UI text and to the 13 px body 0.16 had. The sizes were right in
+    every offscreen render, which is why it took a real screen to see it.
     """
 
-    CAPTION = 9.0  # 12 px — captions, legends, the line under a number
-    BODY = 10.5  # 14 px — everything else
-    SUBTITLE = 15.0  # 20 px — section headings
-    TITLE = 21.0  # 28 px — page titles, the figure on a card
-    LARGE_TITLE = 30.0  # 40 px — a screen's one headline figure
-    DISPLAY = 51.0  # 68 px — "you can leave at", and nothing else
+    CAPTION = 8.25  # 11 px — captions, legends, the line under a number
+    BODY = 9.75  # 13 px — everything else
+    SUBTITLE = 12.0  # 16 px — section headings
+    TITLE = 16.5  # 22 px — page titles, the figure on a card
+    LARGE_TITLE = 22.5  # 30 px — a screen's one headline figure
+    DISPLAY = 36.0  # 48 px — "you can leave at", and nothing else
 
 
 class Radius:

@@ -384,6 +384,13 @@ test checks the drawing, never `label.pixmap()`. `tests/ui/test_layout_qc.py` ho
 result at four scales with an empty `KNOWN` list, and `tools/qc_screens.py` takes the
 pictures a person judges.
 
+**Fitting is not the same as reading well.** 0.17 shipped Fluent's type ramp unchanged
+(14 px body, 28 px titles, a 68 px finish time) and passed every layout check, and on the
+user's own laptop — 2880x1800 at 200%, so 1440x820 for the app — the hero and the cards
+filled the window and the day's timeline began at its bottom edge. The ramp and the spacing
+ladder in `ui/theme.py` are one step below Fluent for that reason (13 px body). Judge a
+size change on that screen too: `qc_screens.py --scales 2.0 --sizes 1440x820`.
+
 **Removing a widget from a layout does not stop it drawing.** `takeAt` detaches the layout
 item but leaves the widget parented, painting at its last geometry until `deleteLater` is
 serviced — which happens when the event loop next drains, not when you asked. The Records
